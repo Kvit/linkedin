@@ -1,37 +1,38 @@
 # select target profiles from linked it with quanteda
+library(data.table)
 library(stringr)
 library(quanteda)
-library(data.table)
+library(tidytext)
 
 # folders 
-dir_reports='Z:/Reports' 
-dir_data = "L:"
-
-
-
-# data files
-input="L:/reimb_group_autovisit_min.csv"
-input[2] ="L:/lab_managers_group_autovisit_min.csv"
-input[3] = "L:/exec_group_autovisit_min.csv"
+dir_data = "E:/OneDrive/MyDocs/Pinnacle Services/Marketing/linkedin/profile_extracts"
+dir_reports="E:/OneDrive/MyDocs/Pinnacle Services/Marketing/linkedin"
 
 
 
 # ---- load data -----
+
+files<-list.files(dir_data, full.names = T)
+
 dt_in=list()
-for (i in 1: length(input)){
-  dt_in[[i]] <-fread(input[i], sep = ";", check.names = T)
+i=1
+for (fl in files){
+  dt_in[[i]] <-fread(fl, check.names = T)
+  i=i+1
 }
 
 # bind
-dt_all<-rbindlist(dt_in)%>%unique(by="id")
+dt_all<-rbindlist(dt_in, fill = T)%>%unique(by="id")
+
+names<-data.table(Names=names(dt_all))
 
 # ---- process data -----
 
-# remove empty position or company
-dt<-dt_all[Position!="" & Company != ""]
+dt<-dt_all[Relationship>1 ,.(Organization.1, Organization.Title.1 , Organization.Description.1, Title, Summary, id)]
 
 # make full description
-dt[,FullDesc:=tolower(paste(Title, Position, Company))]
+dt[,FullDesc:=tolower(paste(Organization.1, Organization.Title.1 , Organization.Description.1, Title, Summary))]
+dt[,FullDesc:=str_replace_all(FullDesc, "na|show|summary", "")]
 
 # construct corpus
 corp<-corpus(dt, text_field = "FullDesc", docid_field = "id")
@@ -46,89 +47,71 @@ toks<-tokens_select(toks, stopwords('en'), selection = 'remove', padding = FALSE
 # collocation analysis
 coloc<-textstat_collocations(toks, min_count = 20)%>%setDT()
 
-
 # compound high colocation tokens
 toks_comp<-tokens_compound(toks, phrase(coloc$collocation[coloc$z > 4]))
 
 # make dfm
-dfm1<-dfm(toks_comp)%>%dfm_trim(min_count = 10)
-features<-topfeatures(dfm1, 1000)
-stat<-data.table(Features=names(features), Count = features)
+dfm1<-dfm(toks_comp)%>%dfm_trim(min_termfreq =  10)
+
+
+# count feature frequency
+features=topfeatures(dfm1, n = 1000, decreasing = TRUE, scheme = "count")
+
+#----- map features to categories -----
 
 # read mapped features
-fl=file.path(dir_data, "linkedin_features_mapped.csv")
-if (file.exists(fl))  {
-  
-  dic_features= fread(fl)
-  stat<-merge(stat, dic_features[, .(Features, Level, Function)], by = "Features", all.x = T)
-  setorder(stat, -Count)
+fl=file.path(dir_reports, "linkedin_features_mapped.csv")
+dic_features<-fread(fl)
 
-} else message(" ! updated features files does not exist")
+# merge stat with feature mapping
+stat<-data.table(Features=names(features), Count = features)%>%
+  merge(dic_features[, .(Features, Level, Function)], by = "Features", all.x = T)
+
+setorder(stat, -Count)
 
 # save features to csv for manual mapping
 fl=file.path(dir_reports, "linkedin_features.csv")
 fwrite(stat, file = fl)
 message("features saved to: ", fl)
 
-#--- select docs based on mappings ---- 
+#---- subset by dicionary ----
 
-# select levels
-levls=unique(dic_features[Level!="",Level])
+# level dictionary
+lev_dt<-stat[Level!="", .(Dic=list(Features)), by=Level]
+lev<-as.list(lev_dt$Dic)
+names(lev)<-lev_dt$Level
+dic_lev<-dictionary(lev)
 
-lvl=levls[1] #!dev
-for (lvl in levls) {
-selection = dic_features[Level==lvl, Features ]
-message("Level = ", lvl, " | Features = ", paste(selection, collapse = ", "))
+# levels data.table
+dt_level<-tidy( dfm_lookup(dfm1, dic_lev) )%>%setDT()
 
-# subset
-dfm_sel<-dfm_keep(dfm1, selection)
-mx_sel<-convert(dfm_sel, to="matrix")
-row_sum<-rowSums(mx_sel)
-dt_sel<-data.table(id=rownames(mx_sel), Count=row_sum)[Count>0, id]
-dt[id %chin% dt_sel, Level:=lvl]
+# function dictionary
+fun_dt<-stat[Function!="", .(Dic=list(Features)), by=Function]
+fun<-as.list(fun_dt$Dic)
+names(fun)<-fun_dt$Function
+dic_fun<-dictionary(fun)
 
-#test dt
-dt_sel<-convert(dfm_sel, to="data.frame")
-dt_test<-merge(dt[,.(id, FullDesc)], dt_sel, by.x = "id", by.y = "document")
+# function data.table
+dt_fun<-tidy( dfm_lookup(dfm1, dic_fun) )%>%setDT()
 
-}
 
-# select function
-funcs<-unique(dic_features[Function!="",Function])
+#----- make target lists ---- 
 
-fn<-funcs[1] #!dev
-for (fn in funcs){
-selection = dic_features[Function==fn, Features ]
+# function
+res_lab<-dt_fun[term=="lab" & !(term %chin% c("sales", "consulting")),.(scoreL=sum(count)), by=.(id=document)]
 
-# subset
-dfm_sel<-dfm_keep(dfm1, selection)
-mx_sel<-convert(dfm_sel, to="matrix")
-row_sum<-rowSums(mx_sel)
-dt_sel<-data.table(id=rownames(mx_sel), Count=row_sum)[Count>0, id]
-dt[id %chin% dt_sel, Function:=fn]
-}
+# level
+res_exec<-dt_level[term %chin% c("cxo", "vp"),.(scoreF=sum(count)), by=.(id=document)]
+res_director<-dt_level[term %chin% c("director"),.(scoreF=sum(count)), by=.(id=document)]
 
-# check non classified
-dt_na<-dt[is.na(Level) & is.na(Function), .(Level, Function, FullDesc)]
+# target lab
+res_target_lab_id<-unique(rbind(res_exec, res_director))%>%merge(res_lab, by="id")
+res_target_lab_id[,Score:=scoreL+scoreF][,c("scoreF", "scoreL"):=NULL]
+res_target_lab_url<-dt_all[res_target_lab_id, on="id",.(Profile.url, Organization.Title.1, Organization.1, Organization.Description.1, Score)][order(-Score)]
 
 
 #---- save results -----
 
 
-
-# distribution and clustering
-# 
-# # find distances
-# dist <- textstat_dist(dfm_weight(dfm1,'prop'), margin = "documents")
-# clust<-hclust(dist)
-# 
-# # cut tree into groups
-# groups <- cutree(clust, h=1) # at level
-# clust_groups<-data.table(id=names(groups), Cluster=groups)
-# print(clust_groups[,.N, by=Cluster])
-# 
-# 
-# # add cluster to original data
-# res<-merge(clust_groups, dt, by="id")
-
-
+fl<-file.path(dir_reports, 'target_lab_url.csv')
+fwrite(res_target_lab_url[,.(Profile.url)], fl)
