@@ -1,14 +1,14 @@
-# select target profiles from linked it with quanteda
+# find target contacst from profiles found by google search API on LinkedIn
+# profiles found by Google Search Custom API on Linkedin Site for Names on CMS list
+# profils extracted by LinkedIn Helper
 library(data.table)
 library(stringr)
 library(quanteda)
 library(tidytext)
 
 # folders 
-dir_data = "E:/OneDrive/MyDocs/Pinnacle Services/Marketing/linkedin/profile_extracts"
+dir_data = "E:/OneDrive/MyDocs/Pinnacle Services/Marketing/linkedin/profile_extracts/from_cms"
 dir_reports="E:/OneDrive/MyDocs/Pinnacle Services/Marketing/linkedin"
-
-
 
 # ---- load data -----
 
@@ -99,9 +99,10 @@ dt_fun<-tidy( dfm_lookup(dfm1, dic_fun) )%>%setDT()
 
 id_sales<-dt_fun[term=="sales",.(id=document)]%>%unique()
 id_consultant<-dt_fun[term=="consulting",.(id=document)]%>%unique()
+id_hr<-dt_fun[term=="recruiter",.(id=document)]%>%unique()
 
-# get lab ids exlcuding sales and consultants
-id_lab<-dt_fun[term=="lab",.(scoreL=sum(count)), by=.(id=document)][!id_consultant, on="id"][!id_sales, on="id"]
+# get lab ids exlcuding sales and consultants and hr
+id_lab<-dt_fun[,.(scoreL=sum(count)), by=.(id=document)][!id_consultant, on="id"][!id_sales, on="id"][!id_hr, on="id"]
 
 # levels
 id_exec<-dt_level[term %chin% c("cxo", "vp"),.(scoreF=sum(count)), by=.(id=document)]
@@ -119,5 +120,5 @@ res_url_lab<-dt_all[res_id_lab, on="id",.(Profile.url, Organization.Title.1, Org
 
 #---- save results -----
 
-fl<-file.path(dir_reports, 'target_url_lab.csv')
+fl<-file.path(dir_reports, 'target_url_fromcms-1-3.csv')
 fwrite(res_url_lab[,.(Profile.url)], fl)
