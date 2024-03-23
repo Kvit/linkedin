@@ -1,0 +1,702 @@
+{
+    "personId": 32,
+    "addToTargetDate": "March 21, 2024 10:51:02 PM",
+    "memberDistance": {
+        "id": 30,
+        "personId": 32,
+        "memberDistance": "DISTANCE_1"
+    },
+    "externalIds": [
+        {
+            "createdAt": "2020-11-13T00:59:59.543Z",
+            "sentAtToPAS": "2022-08-23T03:17:16.764Z",
+            "id": 32,
+            "personId": 32,
+            "type": "public-id",
+            "externalId": "david-capone-fache-fhfma-890a3611"
+        },
+        {
+            "createdAt": "2020-11-18T00:14:48.073Z",
+            "sentAtToPAS": "2022-08-23T03:17:16.764Z",
+            "id": 679,
+            "personId": 32,
+            "type": "li-hash-id",
+            "externalId": "ACoAAAJ3aGwBVtvBDpgIgoobtQz8luuRgzBrjBI",
+            "hash": "ACoAAAJ3aGwBVtvBDpgIgoobtQz8luuRgzBrjBI"
+        },
+        {
+            "createdAt": "2020-11-18T00:14:48.073Z",
+            "sentAtToPAS": "2022-08-23T03:17:16.764Z",
+            "id": 680,
+            "personId": 32,
+            "type": "member-id",
+            "externalId": "41379948",
+            "memberId": 41379948
+        },
+        {
+            "createdAt": "2020-11-18T00:14:48.073Z",
+            "sentAtToPAS": "2022-08-23T03:17:16.764Z",
+            "id": 681,
+            "personId": 32,
+            "type": "full-name-avatar-id",
+            "externalId": "David_Capone FACHE FHFMA_C4E03AQEqf59RAXn8ag"
+        },
+        {
+            "createdAt": "2020-11-18T00:14:48.073Z",
+            "sentAtToPAS": "2022-08-23T03:17:16.764Z",
+            "id": 682,
+            "personId": 32,
+            "type": "sn-hash-id",
+            "externalId": "ACoAAAJ3aGwBVtvBDpgIgoobtQz8luuRgzBrjBI",
+            "hash": "ACoAAAJ3aGwBVtvBDpgIgoobtQz8luuRgzBrjBI",
+            "authType": "name",
+            "authToken": "Gh4p"
+        },
+        {
+            "createdAt": "2022-08-22T16:36:05.357Z",
+            "sentAtToPAS": "2022-08-23T03:17:16.764Z",
+            "id": 85868,
+            "personId": 32,
+            "type": "full-name-avatar-id",
+            "externalId": "David_Capone%20FACHE%20FHFMA_C4E03AQEqf59RAXn8ag"
+        },
+        {
+            "createdAt": "2022-08-22T16:36:05.357Z",
+            "sentAtToPAS": "2022-08-23T03:17:16.764Z",
+            "id": 85869,
+            "personId": 32,
+            "type": "full-name-avatar-id",
+            "externalId": "David_Fhfma_C4E03AQEqf59RAXn8ag"
+        }
+    ],
+    "customFields": {},
+    "miniProfile": {
+        "id": 30,
+        "personId": 32,
+        "firstName": "David",
+        "lastName": "Capone",
+        "headline": "President at DCCS Consulting, LLC",
+        "avatar": "https://media-exp1.licdn.com/dms/image/C4E03AQEqf59RAXn8ag/profile-displayphoto-shrink_800_800/0/1571940902113?e=1666828800&v=beta&t=TAMkulIKdMQD_-N4M1cu7lJ9kphCY5VJBQCeT8BbruQ",
+        "customFirstNameOutdated": false,
+        "customLastNameOutdated": false,
+        "originalFirstName": "David",
+        "originalLastName": "Capone FACHE FHFMA",
+        "originalSentAtToPAS": "2022-08-23T03:17:16.764Z",
+        "createdAt": "2020-11-18T00:14:48.099Z",
+        "customFirstName": null,
+        "customLastName": null
+    },
+    "networkInfo": {
+        "id": 30,
+        "personId": 32,
+        "following": true,
+        "followable": true
+    },
+    "connectionsInfo": {
+        "id": 30,
+        "personId": 32,
+        "connectionsCount": 500
+    },
+    "currentPosition": {
+        "id": 28,
+        "personId": 32,
+        "company": "DCCS Consulting",
+        "originalCompany": "DCCS Consulting, LLC",
+        "originalPosition": "Founder & President",
+        "position": "Founder & President",
+        "customCompany": null,
+        "customCompanyOutdated": null,
+        "customPosition": null,
+        "customPositionOutdated": null
+    },
+    "email": {
+        "createdAt": "2021-01-27T21:48:21.829Z",
+        "id": 663,
+        "personId": 32,
+        "email": "dcapone@dccsconsulting.com"
+    },
+    "skills": [
+        {
+            "id": 22425,
+            "personId": 32,
+            "name": "Managed Care",
+            "endorsementsCount": 79
+        },
+        {
+            "id": 22422,
+            "personId": 32,
+            "name": "Healthcare Management",
+            "endorsementsCount": 156
+        },
+        {
+            "id": 22468,
+            "personId": 32,
+            "name": "Revenue Cycle Management",
+            "endorsementsCount": 23
+        },
+        {
+            "id": 22441,
+            "personId": 32,
+            "name": "Medicaid",
+            "endorsementsCount": 12
+        },
+        {
+            "id": 22431,
+            "personId": 32,
+            "name": "Medicare",
+            "endorsementsCount": 32
+        },
+        {
+            "id": 22433,
+            "personId": 32,
+            "name": "HIPAA",
+            "endorsementsCount": 24
+        },
+        {
+            "id": 22424,
+            "personId": 32,
+            "name": "Hospitals",
+            "endorsementsCount": 90
+        },
+        {
+            "id": 22436,
+            "personId": 32,
+            "name": "Medical Billing",
+            "endorsementsCount": 15
+        },
+        {
+            "id": 22449,
+            "personId": 32,
+            "name": "Inpatient",
+            "endorsementsCount": 9
+        },
+        {
+            "id": 22457,
+            "personId": 32,
+            "name": "EMR",
+            "endorsementsCount": 21
+        },
+        {
+            "id": 22459,
+            "personId": 32,
+            "name": "Physician Relations",
+            "endorsementsCount": 36
+        },
+        {
+            "id": 22463,
+            "personId": 32,
+            "name": "Team Building",
+            "endorsementsCount": 18
+        },
+        {
+            "id": 22462,
+            "personId": 32,
+            "name": "Performance Improvement",
+            "endorsementsCount": 20
+        },
+        {
+            "id": 22467,
+            "personId": 32,
+            "name": "Process Improvement",
+            "endorsementsCount": 37
+        },
+        {
+            "id": 22423,
+            "personId": 32,
+            "name": "Healthcare",
+            "endorsementsCount": 141
+        },
+        {
+            "id": 22429,
+            "personId": 32,
+            "name": "Strategic Planning",
+            "endorsementsCount": 49
+        },
+        {
+            "id": 22458,
+            "personId": 32,
+            "name": "Physicians",
+            "endorsementsCount": 100
+        },
+        {
+            "id": 22460,
+            "personId": 32,
+            "name": "Leadership",
+            "endorsementsCount": 33
+        },
+        {
+            "id": 22461,
+            "personId": 32,
+            "name": "Management",
+            "endorsementsCount": 22
+        },
+        {
+            "id": 22421,
+            "personId": 32,
+            "name": "Revenue Cycle",
+            "endorsementsCount": 177
+        },
+        {
+            "id": 22440,
+            "personId": 32,
+            "name": "Business Development",
+            "endorsementsCount": 13
+        },
+        {
+            "id": 22447,
+            "personId": 32,
+            "name": "Practice Management",
+            "endorsementsCount": 9
+        },
+        {
+            "id": 22427,
+            "personId": 32,
+            "name": "Healthcare Consulting",
+            "endorsementsCount": 70
+        },
+        {
+            "id": 22446,
+            "personId": 32,
+            "name": "Informatics",
+            "endorsementsCount": 9
+        },
+        {
+            "id": 22437,
+            "personId": 32,
+            "name": "Mergers & Acquisitions",
+            "endorsementsCount": 14
+        },
+        {
+            "id": 22430,
+            "personId": 32,
+            "name": "Healthcare Industry",
+            "endorsementsCount": 34
+        },
+        {
+            "id": 22434,
+            "personId": 32,
+            "name": "Budgets",
+            "endorsementsCount": 21
+        },
+        {
+            "id": 22464,
+            "personId": 32,
+            "name": "Executive Management",
+            "endorsementsCount": 11
+        },
+        {
+            "id": 22466,
+            "personId": 32,
+            "name": "EHR",
+            "endorsementsCount": 54
+        },
+        {
+            "id": 22428,
+            "personId": 32,
+            "name": "Healthcare Information Technology",
+            "endorsementsCount": 64
+        },
+        {
+            "id": 22443,
+            "personId": 32,
+            "name": "Clinical Research",
+            "endorsementsCount": 11
+        },
+        {
+            "id": 22445,
+            "personId": 32,
+            "name": "Patient Safety",
+            "endorsementsCount": 10
+        },
+        {
+            "id": 22469,
+            "personId": 32,
+            "name": "Turnaround Experience",
+            "endorsementsCount": 8
+        },
+        {
+            "id": 22426,
+            "personId": 32,
+            "name": "Consulting",
+            "endorsementsCount": 75
+        },
+        {
+            "id": 22442,
+            "personId": 32,
+            "name": "Change Management",
+            "endorsementsCount": 11
+        },
+        {
+            "id": 22444,
+            "personId": 32,
+            "name": "Nursing",
+            "endorsementsCount": 11
+        },
+        {
+            "id": 22448,
+            "personId": 32,
+            "name": "Quality Improvement",
+            "endorsementsCount": 9
+        },
+        {
+            "id": 22450,
+            "personId": 32,
+            "name": "Medical Coding",
+            "endorsementsCount": 8
+        },
+        {
+            "id": 22438,
+            "personId": 32,
+            "name": "Home Care",
+            "endorsementsCount": 13
+        },
+        {
+            "id": 22439,
+            "personId": 32,
+            "name": "Medicine",
+            "endorsementsCount": 13
+        },
+        {
+            "id": 22451,
+            "personId": 32,
+            "name": "Surgery",
+            "endorsementsCount": 8
+        },
+        {
+            "id": 22432,
+            "personId": 32,
+            "name": "Radiology",
+            "endorsementsCount": 28
+        },
+        {
+            "id": 22455,
+            "personId": 32,
+            "name": "HL7",
+            "endorsementsCount": 7
+        },
+        {
+            "id": 22465,
+            "personId": 32,
+            "name": "Contract Negotiation",
+            "endorsementsCount": 10
+        },
+        {
+            "id": 22456,
+            "personId": 32,
+            "name": "Mergers",
+            "endorsementsCount": 5
+        },
+        {
+            "id": 22453,
+            "personId": 32,
+            "name": "Medical Records",
+            "endorsementsCount": 7
+        },
+        {
+            "id": 22435,
+            "personId": 32,
+            "name": "Acute Care",
+            "endorsementsCount": 17
+        },
+        {
+            "id": 22452,
+            "personId": 32,
+            "name": "Health Policy",
+            "endorsementsCount": 8
+        },
+        {
+            "id": 22454,
+            "personId": 32,
+            "name": "Health Insurance",
+            "endorsementsCount": 7
+        },
+        {
+            "id": 22470,
+            "personId": 32,
+            "name": "Credentialing",
+            "endorsementsCount": 7
+        }
+    ],
+    "positions": [
+        {
+            "id": 4863,
+            "personId": 32,
+            "title": "Founder & President",
+            "companyName": "DCCS Consulting, LLC",
+            "companyId": null,
+            "dateRange": {
+                "start": {
+                    "year": 2010,
+                    "month": 1
+                },
+                "end": null
+            },
+            "locationName": "Wilmington, DE",
+            "description": "DCCS Consulting, LLC  \t 2010 \u2013 Present \nPresident and Founder                                                                           Wilmington, Delaware dccsconsulting.com\n \nDCCS has a successful track record assisting health systems to improve their strategic, financial, and operational market performance.  A full service consulting company supported by a deep national network of senior level independent consultants and service partners.  DCCS brings deep knowledge, independent thinking, and hands-on experience to assist clients to lead the way through healthcare transformation. \n \nDCCS: D. Capone Managed Projects: \n2016: Assisted regional health system to develop and implement $9 million operating margin improvement work plan. \n2016: Assisted \u201cgoing concern\u201d LTAC hospital to stabilize and merge with regional health system. \n2015: Assisted large health system to expand physician/hosp. network adding 12,000 lives to regional ACO. \n2014: Implemented $10 million \u201coperating margin improve work plan\u201d for $300m rev Hosp. (target exceeded by 40%). \n2013: Engaged to assist a 3 hospital merger for \u201cGo/No Go\u201d Board decision (merger completed). \n2013: Implemented $5 million \u201coperating margin \u201cimprovement work plan for $60m rev Hosp. (target exceeded by 20%).",
+            "isDefault": false,
+            "url": null,
+            "organizationDescription": null,
+            "website": null,
+            "domain": null
+        },
+        {
+            "id": 4864,
+            "personId": 32,
+            "title": "SVP Chief Financial Officer (Turnaround Engagement under Employment Model)",
+            "companyName": "Bon Secours Charity Health System",
+            "companyId": null,
+            "dateRange": {
+                "start": {
+                    "year": 2011,
+                    "month": 8
+                },
+                "end": {
+                    "year": 2012,
+                    "month": 8
+                }
+            },
+            "locationName": "Suffern, New York",
+            "description": "Bon Secours Charity Health System includes three hospitals:                \t \n\u2022 Good Samaritan Regional Medical Center, Suffern, NY\n\u2022 Bon Secours Community Hospital, Port Jervis, NY\n\u2022 St. Anthony Community Hospital, Warwick, NY\nBon Secours Charity Health System also provides the services of a Certified Home Health Agency, two long-term care facilities, an assisted living and adult home facility, and the International Cardiac Institute. $.5 billion NPR, 2,700 full-time employees, and over 1,000 physicians have privileges in the system.  \nMajor Accomplishments\n\uf0fcCompleted assessment & implemented $30 million turnaround work plan within 60 days of start date.\n\uf0fcRapid improvements in revenue cycle, budgeting, forecasting, and financial reporting.",
+            "isDefault": false,
+            "url": null,
+            "organizationDescription": null,
+            "website": null,
+            "domain": null
+        },
+        {
+            "id": 4865,
+            "personId": 32,
+            "title": "Interim Vice President/CFO (DCCS Turnaround Engagement)",
+            "companyName": "Hanover Hospital (Hanover, PA)",
+            "companyId": 459353,
+            "dateRange": {
+                "start": {
+                    "year": 2010,
+                    "month": 2
+                },
+                "end": {
+                    "year": 2011,
+                    "month": 7
+                }
+            },
+            "locationName": "Hanover, PA",
+            "description": "Major Accomplishments:\n>Produced a rapid assessment, and implemented a (6 month) $8,000,000 operating margin turnaround work plan.\n>Facilitated financing of $10 million IT strategic plan to achieve \u201cmeaningful use\u201d.\n>Implemented management strategies within the hospital-based multispecialty physician group to improve profitability by $2.5 million. \n>Restructured Hospital & Physician billing systems to achieve a $3,000,000 improvement in cash flow.\n>Implemented a hospital-wide productivity system that went live within 90 days of engagement start date.\n>Chaired ER \u201crapid\u201d Customer Service Improvement Taskforce reducing wait times, left without treatment, and improving throughput of admissions.",
+            "isDefault": false,
+            "url": "https://www.linkedin.com/company/459353/",
+            "organizationDescription": null,
+            "website": null,
+            "domain": null
+        },
+        {
+            "id": 4866,
+            "personId": 32,
+            "title": "Executive Vice President/CFO",
+            "companyName": "St. Francis Hospital a Regional Health Corp. of Catholic Health East Health System",
+            "companyId": 19963,
+            "dateRange": {
+                "start": {
+                    "year": 2006
+                },
+                "end": {
+                    "year": 2010
+                }
+            },
+            "locationName": null,
+            "description": "Wilmington, Delaware \n395 bed - Urban Acute Care Hospital\n\nMajor Accomplishments:\n&gt;Facilitated a rapid financial turnaround moving from a -4% operating loss to a 1% operating gain within 18 months of start date.\n&gt;Coordinated a series of payor contract negotiations, during the first calendar year of employment, that led to double digit % increases in contracted rates from the Hospital\u2019s largest Commercial and Medicaid managed care payors. \n&gt;Managed a team that transformed the Hospital\u2019s revenue cycle to best practice stature and improved days cash on hand by 22 days (+$9,000,000) within 18 months of start date.   \n&gt;Financially managed the implementation of several physician/hospital joint ventures, with the largest being a joint venture between St. Francis Hospital, several regional cardiology groups, and Medcath Partners that produced a reversal of a year-over-year decline in Hospital cath. lab volumes. \n&gt;Participated in the purchase &amp; implementation of the first DaVinci Surgical System in State of Delaware resulting in a 20% increase in urology and gyn. surgeries in first full year of operation. \n&gt;Broad operational responsibilities that included Finance, Managed Care Contracting, Revenue Cycle, Decision Support, IT, Supply Chain Management, Medical Records, Housekeeping &amp; Laundry, Sleep Lab, Inpatient Rehabilitation, Homecare, and Physician Practice Management &amp; Network Development.",
+            "isDefault": false,
+            "url": "https://www.linkedin.com/company/19963/",
+            "organizationDescription": null,
+            "website": null,
+            "domain": null
+        },
+        {
+            "id": 4867,
+            "personId": 32,
+            "title": "Senior Vice President/CFO",
+            "companyName": "St. James Mercy Health System a Regional Health Corp. of Catholic Health East Health System",
+            "companyId": null,
+            "dateRange": {
+                "start": {
+                    "year": 2003
+                },
+                "end": {
+                    "year": 2006
+                }
+            },
+            "locationName": null,
+            "description": "Hornell, New York\n225 bed - Rural Acute Care Hospital\n\nMajor Accomplishments:\n&gt;Facilitated a rapid financial turnaround from a (-6%) operating loss in 2003, to audited operating gains of +4% 2004, and +5% 2005.\n&gt;Managed a team that improved days cash on hand from a low of 10 in April 2003 to +100 days by March 2006.  A 90 day cash on hand improvement within 36 months from start date.\n&gt;Negotiated a new HUD DRF schedule that released $4,900,000 from mortgage trustee to Hospital.\n&gt;Designed and implemented online product line profit &amp; loss reports for all revenue centers. \n&gt;Board member and senior advisor to Southern Tier Health Associates, a 50 member hospital-based multi-specialty physician group.  Assisted with designing and implementing new physician compensation models; improvements in physician contracting &amp; recruiting processes; and the reorganization of physician governance.",
+            "isDefault": false,
+            "url": null,
+            "organizationDescription": null,
+            "website": null,
+            "domain": null
+        },
+        {
+            "id": 4868,
+            "personId": 32,
+            "title": "Senior Financial Consultant - Intensive Resource Division",
+            "companyName": "Cambio Health Solutions",
+            "companyId": null,
+            "dateRange": {
+                "start": {
+                    "year": 2002
+                },
+                "end": {
+                    "year": 2003
+                }
+            },
+            "locationName": null,
+            "description": "St. Joseph's Regional Medical Center \nPatterson, New Jersey                                \n566 bed - Tertiary Hospital\n\nA member of a consulting team that produced, within a 1-year engagement, a rapid financial turnaround of a major tertiary regional medical center.",
+            "isDefault": false,
+            "url": null,
+            "organizationDescription": null,
+            "website": null,
+            "domain": null
+        },
+        {
+            "id": 4869,
+            "personId": 32,
+            "title": "Vice President Finance/CFO",
+            "companyName": "St. Elizabeth's Medical Center",
+            "companyId": 11291,
+            "dateRange": {
+                "start": {
+                    "year": 1993
+                },
+                "end": {
+                    "year": 2001
+                }
+            },
+            "locationName": null,
+            "description": "Utica, New York                                                                                                     \n201 bed \u2013 Regional Acute Care Hospital \nMajor Accomplishments:\n>Facilitated eight years of continuous profitability with revenues increasing 92% over the 8 yr. period. (Moving from a \"going concern\" to a regional market leader)\n>Lead financial officer in the successful development of the Mohawk Valley Heart Institute, a multi-facility joint venture between St. Luke's Memorial Hospital and St. Elizabeth Medical Center to establish open-heart surgery and angioplasty services in the Utica/Rome region of Upstate NY. MVHI went from zero (0) to greater than 500 open heart surgeries within first (3) years of operation.  MVHI.org\n>Led a $30 million bond financing that refinanced prior debt, funded a new 52,000 sq. ft. addition, and provided funds for modernizing aged facilities and energy systems.\n>Directed the expansion of a hospital-based primary care physician network from 3 to 13 clinical locations, currently marketed as St. Elizabeth Medical Group.  \n>Assisted with the financial design and implementation of Central New York Medical Systems, a 3 Hospital 500 phy managed care contracting network",
+            "isDefault": false,
+            "url": "https://www.linkedin.com/company/11291/",
+            "organizationDescription": null,
+            "website": null,
+            "domain": null
+        }
+    ],
+    "educations": [
+        {
+            "id": 1583,
+            "personId": 32,
+            "schoolName": "MA - SUNY - Business & Policy Studies",
+            "degreeName": "MA",
+            "fieldOfStudy": "Business & Policy Studies",
+            "description": null,
+            "dateRange": null
+        },
+        {
+            "id": 1584,
+            "personId": 32,
+            "schoolName": "BS - Post College - Accounting",
+            "degreeName": "BS",
+            "fieldOfStudy": "Accounting",
+            "description": null,
+            "dateRange": {
+                "start": {
+                    "year": 1981
+                },
+                "end": {
+                    "year": 1983
+                }
+            }
+        }
+    ],
+    "mutualTotal": {
+        "id": 698,
+        "personId": 32,
+        "mutualTotal": 154
+    },
+    "badges": {
+        "id": 711,
+        "personId": 32,
+        "premium": false,
+        "influencer": false,
+        "openLink": false,
+        "jobSeeker": false
+    },
+    "mutual": {
+        "id": 29,
+        "personId": 32,
+        "firstFullName": "Seth Rainford",
+        "secondFullName": "Todd Ayers",
+        "originalFirstFullName": "Seth Rainford, MBA",
+        "originalSecondFullName": "Todd Ayers",
+        "customFirstFullName": null,
+        "customSecondFullName": null
+    },
+    "extra": {
+        "id": 711,
+        "personId": 32,
+        "industry": "Hospital & Health Care",
+        "locationName": "Wilmington, Delaware, United States",
+        "summary": "PROFESSIONAL PROFILE:\n\nAt DCCS Consulting we specialize in providing our healthcare clients with the added management bandwidth and organizational focus to rapidly improve operating margins.  Our clients really like the 1-stop \"turnkey\" operating margin work plan approach.   Over our history we have averaged $8 million of operating margin improvement per client, our largest success $30 million.\n\nA results oriented healthcare executive and entrepreneur with a steadily advancing 20-year career, and a continuous track record of successes working within free-standing community hospitals, national health systems, and \u201cturnaround\u201d consulting.  A  values-based decision maker, strong communicator and  team builder, working with \"best practice\" skills developed in both urban and rural markets, in the areas of healthcare administration; governance; finance & treasury; business development; medical group management; hospital operations; managed care contracting; IT; public relations & marketing; strategic planning; and the development of integrated provider networks.\n\nSee graph below, where a client Hospital heading for 0 days cash on hand in six months is pulled straight up financially working with the DCCS work plan approach.  The Hospital is now completely stable financially, growing revenues, and an excellent reference for DCCS Consulting, LLC."
+    },
+    "address": {
+        "id": 710,
+        "personId": 32,
+        "address": "Wilmington, Delaware, United States"
+    },
+    "connect": {
+        "id": 13601,
+        "personId": 32,
+        "connectedAt": 1522346312000,
+        "connectedAtISO": "2018-03-29T17:58:32.000Z"
+    },
+    "websites": [
+        {
+            "id": 311,
+            "personId": 32,
+            "type": "COMPANY",
+            "url": "http://www.dccsconsulting.com",
+            "createdAt": "2021-01-27T21:48:21.851Z",
+            "updatedAt": "2021-01-27T21:48:21.851Z"
+        }
+    ],
+    "twitters": [
+        {
+            "id": 112,
+            "personId": 32,
+            "name": "DCCSConsulting"
+        }
+    ],
+    "phoneNumbers": [
+        {
+            "id": 227,
+            "personId": 32,
+            "type": "MOBILE",
+            "number": "302-299-7627"
+        }
+    ],
+    "followers": {
+        "id": 711,
+        "personId": 32,
+        "count": 7733
+    },
+    "thirdPartyEmails": null,
+    "messagesInfo": null,
+    "fullMessagingHistory": null,
+    "campaignMessagingHistory": null,
+    "lastSendAndReceivedMessages": {},
+    "invitedDate": null,
+    "id": "david-capone-fache-fhfma-890a3611",
+    "profileUrl": "https://www.linkedin.com/in/david-capone-fache-fhfma-890a3611/",
+    "lhId": 32,
+    "fullName": "David Capone",
+    "addToTargetDateISO": "2024-03-22T03:51:02.709Z",
+    "resultCreatedAt": null,
+    "resultCreatedAtISO": null,
+    "invitedDateISO": null,
+    "isLastMessageIncoming": false,
+    "hasUnreadMessages": false,
+    "action_id": 29,
+    "action_name": "",
+    "action_type": "SendPersonToWebhook",
+    "campaign_id": 9,
+    "campaign_name": "Send to Firebase",
+    "campaign_type": 1,
+    "my_id": "2604",
+    "my_email": "vk@pinnacleservice.co",
+    "my_full_name": "Vitali Khvatkov"
+}
