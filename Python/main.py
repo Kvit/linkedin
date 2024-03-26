@@ -32,7 +32,7 @@ async def add_or_update_item(request: Request):
 
         # join several keys from the profile
         item["summary"] = join_keys(
-            item, ["currentPosition", "positions", "occupation", "extra"]
+            item, ["miniProfile", "currentPosition", "positions", "occupation", "extra"]
         )
 
         # Reference the specific document in the 'extracted' collection of 'db' database
@@ -63,4 +63,3 @@ async def echo(text: str):
 
 
 # Note: Adjust the GOOGLE_APPLICATION_CREDENTIALS path and ensure Firestore is properly configured in your environment.
-
