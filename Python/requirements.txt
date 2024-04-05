@@ -1,3 +1,6 @@
 fastapi
 google-cloud-firestore
 uvicorn
+ipykernel
+pandas
+openai
