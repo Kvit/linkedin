@@ -7,6 +7,11 @@
 		"dockerfile": "../Dockerfile",
 		"context": ".."
 	},
+	// run args are passed to the run command
+	"runArgs": [
+		"--env-file",
+		"./.env"
+	],
 	//"image": "mcr.microsoft.com/devcontainers/python:1-3.12-bullseye"
 	// Features to add to the dev container. More info: https://containers.dev/features.
 	// "features": {},
@@ -35,7 +40,9 @@
 				"ms-toolsai.datawrangler",
 				"ms-toolsai.jupyter",
 				"ms-python.python",
-				"alesdi.firestore-explorer"
+				"alesdi.firestore-explorer",
+				"ms-toolsai.jupyter",
+				"njpwerner.autodocstring"
 			]
 		}
 	}

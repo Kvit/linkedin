@@ -77,8 +77,8 @@ def join_keys(data, keys, separator="\n") -> str:
     return separator.join(result)
 
 
-# test with profile.json if file exists
-if os.path.exists("profile.json"):
+# test
+if __name__ == "__main__" and os.path.exists("profile.json"):
     with open("profile.json", "r") as f:
         profile = json.load(f)
 

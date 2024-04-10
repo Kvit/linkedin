@@ -25,11 +25,14 @@ def collection_to_csv(col, file):
     # count the number of rows
     print(f"Number of rows: {len(df)}")
 
+    # rename column profileUrl to profile_url
+    df = df.rename(columns={"profileUrl": "profile_url"})
+
     # save to csv
     df.to_csv(file + ".csv", index=False)
 
     # save profile urls to txt
-    df["profileUrl"].to_csv(file + ".txt", sep="\t", index=False, header=False)
+    df["profile_url"].to_csv(file + ".txt", sep="\t", index=False, header=False)
 
 
 # test function

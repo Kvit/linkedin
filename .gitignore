@@ -1,3 +1,6 @@
 __pycache__
 *service-account.json
 .Rproj.user
+*.csv
+*.env
+*.txt
