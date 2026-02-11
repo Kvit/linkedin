@@ -2,7 +2,11 @@
 
 import os
 import pandas as pd
+from dotenv import load_dotenv
 from google.cloud import firestore
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Initialize Firestore client with specific project ID, only if file is found
 if os.path.isfile("vk-linkedin-master-service-account.json"):

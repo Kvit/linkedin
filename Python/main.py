@@ -3,10 +3,14 @@ from fastapi import FastAPI, HTTPException, Request
 # import json
 import os
 
+from dotenv import load_dotenv
 from functions import join_keys
 
 # Assume the google-cloud-firestore import is available in the development environment
 from google.cloud import firestore
+
+# Load environment variables from .env file
+load_dotenv()
 
 app = FastAPI()
 
