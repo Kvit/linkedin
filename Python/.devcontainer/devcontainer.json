@@ -1,28 +1,44 @@
 // For format details, see https://aka.ms/devcontainer.json. For config options, see the
 // README at: https://github.com/devcontainers/templates/tree/main/src/python
 {
-	"name": "Linkedin Python",
+	"name": "Linkedin Project",
 	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
 	"build": {
-		"dockerfile": "../Dockerfile",
-		"context": ".."
+		"dockerfile": "Dockerfile"
 	},
-	// run args are passed to the run command
-	"runArgs": [
-		"--env-file",
-		"./.env"
-	],
-	//"image": "mcr.microsoft.com/devcontainers/python:1-3.12-bullseye"
+	"containerEnv": {
+		"UV_PROJECT_ENVIRONMENT": "/home/vscode/.venv",
+		"VIRTUAL_ENV": "/home/vscode/.venv",
+		"PYTHONUNBUFFERED": "1",
+		"GOOGLE_APPLICATION_CREDENTIALS": "/etc/credentials.json"
+	},
+	"postCreateCommand": "uv venv && uv sync --all-packages",
 	// Features to add to the dev container. More info: https://containers.dev/features.
-	// "features": {},
+		"features": {
+		"ghcr.io/devcontainers/features/node:1": {
+			"version": "22"
+		}
+	},
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
-	// "forwardPorts": [],
+	"forwardPorts": [
+		5433
+	],
 	// Use 'postCreateCommand' to run commands after the container is created.
 	// "postCreateCommand": "pip3 install --user -r requirements.txt",
-	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
-	// "remoteUser": "root"
+	// Configure tool-specific properties.
 	"customizations": {
 		"vscode": {
+			"settings": {
+				// This is the key that points the Python extension at your interpreter
+				"python.defaultInterpreterPath": "/home/vscode/.venv/bin/python",
+				// Optional: don’t auto-activate in the terminal (since we run via uv)
+				"python.terminal.activateEnvironment": false,
+				"jupyter.notebookFileRoot": "${workspaceFolder}",
+				"notebook.output.textLineLimit": 500,
+				"files.watcherExclude": {
+					"**/.venv/**": true
+				}
+			},
 			"extensions": [
 				"alefragnani.Bookmarks",
 				"donjayamanne.githistory",
@@ -35,15 +51,25 @@
 				"foxundermoon.shell-format",
 				"mhutchie.git-graph",
 				"charliermarsh.ruff",
-				"googlecloudtools.cloudcode",
-				"ms-azuretools.vscode-docker",
 				"ms-toolsai.datawrangler",
 				"ms-toolsai.jupyter",
 				"ms-python.python",
-				"alesdi.firestore-explorer",
-				"ms-toolsai.jupyter",
-				"njpwerner.autodocstring"
+				"malo.copy-json-path",
+				"visualstudioexptteam.vscodeintelli",
+				"mtxr.sqltools",
+				"mtxr.sqltools-driver-mysql",
+				"mtxr.sqltools-driver-pg",
+				"ms-ossdata.vscode-postgresql",
+				"streetsidesoftware.code-spell-checker",
+				"donjayamanne.vscode-jupytext",
+				"christian-kohler.path-intellisense",
+				"esbenp.prettier-vscode",
+				"ckolkman.vscode-postgres",
+				"tamasfe.even-better-toml",
+				"googlecloudtools.cloudcod"
 			]
 		}
 	}
+	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
+	// "remoteUser": "root"
 }
