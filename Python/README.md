@@ -102,3 +102,33 @@ python collection-tocsv.py
 ```
 
 This generates `analysis.csv` and `analysis.txt` from the Firestore collection.
+
+## AI Integration
+
+This project uses **OpenAI** (not Google AI) for profile analysis and outreach automation. The AI features are implemented in Jupyter notebooks and use the `gpt-4o-mini` model.
+
+### AI-Powered Features
+
+| Notebook | Feature | Description |
+|----------|---------|-------------|
+| `analysis.ipynb` | Profile Analysis | Analyzes profile summaries to extract structured data: **industry**, **job function**, and **seniority level** |
+| `intro.ipynb` | Introduction Generator | Creates personalized LinkedIn connection request messages based on profile content |
+
+### How It Works
+
+1. **Profile Analysis** (`analysis.ipynb`): Processes stored profiles from Firestore and uses OpenAI to classify each person by:
+   - Industry (e.g., Technology, Finance, Healthcare)
+   - Function (e.g., Engineering, Sales, Marketing)
+   - Seniority (e.g., Entry, Mid, Senior, Executive, C-Level)
+
+2. **Introduction Generator** (`intro.ipynb`): Reads profile summaries and generates brief, personalized connection request introductions (2-3 sentences) that reference specific details from the person's background.
+
+### Setup
+
+To enable AI features, set your OpenAI API key in the `.env` file:
+
+```bash
+OPENAI_API_KEY=your-api-key-here
+```
+
+Note: The core API server (`main.py`) does not require OpenAI—it only uses Google Cloud Firestore for data storage.
