@@ -1,0 +1,29 @@
+# Environment variables
+.env
+
+# Google Cloud credentials
+*.json
+!package.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# uv
+.uv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

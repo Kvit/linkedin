@@ -3,10 +3,14 @@ from fastapi import FastAPI, HTTPException, Request
 # import json
 import os
 
+from dotenv import load_dotenv
 from functions import join_keys
 
 # Assume the google-cloud-firestore import is available in the development environment
 from google.cloud import firestore
+
+# Load environment variables from .env file
+load_dotenv()
 
 app = FastAPI()
 
@@ -32,7 +36,7 @@ async def add_or_update_item(request: Request):
 
         # join several keys from the profile
         item["summary"] = join_keys(
-            item, ["miniProfile", "currentPosition", "positions", "occupation", "extra"]
+            item, ["miniProfile", "currentPosition", "positions", "occupation", "extra", "skills", "educations"]
         )
 
         # Reference the specific document in the 'extracted' collection of 'db' database
