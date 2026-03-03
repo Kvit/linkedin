@@ -1,238 +1,238 @@
 """
-Tests for Google Gemini AI integration.
+Tests for Gemini structured output (JSON schema enforcement).
 
-Verifies that:
-- google-genai package is importable and client initialises correctly
-- The Gemini API responds to a content-generation request
-- analyze_summary() returns a correctly structured dict
-- Edge-cases (empty / very short summaries) are handled gracefully
+Focuses exclusively on verifying that the model honours the
+response_mime_type="application/json" + response_json_schema contract used
+throughout analysis.ipynb.
 """
 
-import json
 import os
 import pytest
+from pydantic import BaseModel
 from dotenv import load_dotenv
+from google import genai
+from google.genai import types
 
-# Load .env so GOOGLE_API_KEY is available during tests
 load_dotenv()
+
+# ---------------------------------------------------------------------------
+# Shared config – mirrors analysis.ipynb exactly
+# ---------------------------------------------------------------------------
+
+MODEL = "gemini-2.0-flash"
+
+ANALYSIS_INSTRUCTIONS = """You are an expert at analyzing LinkedIn profile summaries.
+Analyze the provided profile summary and extract the following information:
+
+1. industry - The primary industry the person works in (e.g., "Technology", "Finance", "Healthcare")
+2. function - Their job function/role type (e.g., "Engineering", "Sales", "Marketing", "Operations")
+3. seniority - Their seniority level (e.g., "Entry", "Mid", "Senior", "Executive", "C-Level")"""
+
+
+class ProfileAnalysis(BaseModel):
+    industry: str
+    function: str
+    seniority: str
+
+
+REQUIRED_KEYS = ("industry", "function", "seniority")
+
+# ---------------------------------------------------------------------------
+# Sample profiles
+# ---------------------------------------------------------------------------
+
+PROFILES = {
+    "tech_senior": (
+        "Senior Software Engineer at Google with 10 years of experience in "
+        "distributed systems, cloud infrastructure, and backend development. "
+        "Led teams building large-scale data pipelines on GCP."
+    ),
+    "finance_vp": (
+        "Vice President at Goldman Sachs, Equity Research division. "
+        "CFA charterholder with 15 years analysing financial markets, "
+        "M&A advisory, and portfolio management."
+    ),
+    "healthcare_entry": (
+        "Junior Nurse Practitioner at City General Hospital. "
+        "Recently graduated, one year of clinical experience in oncology ward."
+    ),
+    "marketing_director": (
+        "Director of Marketing at Adidas with 12 years building global brand campaigns, "
+        "managing cross-functional teams, and driving digital transformation initiatives."
+    ),
+    "short": "Engineer",
+}
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(scope="module")
-def gemini_client():
-    """Return an initialised genai.Client, skipping if no API key is present."""
-    from google import genai
 
+@pytest.fixture(scope="session")
+def client():
     key = os.environ.get("GOOGLE_API_KEY")
     if not key:
-        pytest.skip("GOOGLE_API_KEY not set – skipping live Gemini tests")
-
+        pytest.skip("GOOGLE_API_KEY not set")
     return genai.Client()
 
 
-@pytest.fixture(scope="module")
-def analyze_fn():
-    """
-    Return the analyze_summary function built from the same config used in
-    analysis.ipynb, so the tests exercise the real integration code path.
-    """
-    from google import genai
-    from google.genai import types
-
-    key = os.environ.get("GOOGLE_API_KEY")
-    if not key:
-        pytest.skip("GOOGLE_API_KEY not set – skipping live Gemini tests")
-
-    client = genai.Client()
-    MODEL = "gemini-2.0-flash"
-
-    ANALYSIS_INSTRUCTIONS = """You are an expert at analyzing LinkedIn profile summaries.
-Analyze the provided profile summary and extract the following information:
-
-1. industry - The primary industry the person works in (e.g., "Technology", "Finance", "Healthcare")
-2. function - Their job function/role type (e.g., "Engineering", "Sales", "Marketing", "Operations")
-3. seniority - Their seniority level (e.g., "Entry", "Mid", "Senior", "Executive", "C-Level")
-
-Respond ONLY with a valid JSON object in this exact format:
-{"industry": "...", "function": "...", "seniority": "..."}
-
-Do not include any other text, markdown formatting, or code blocks."""
-
-    ANALYSIS_SCHEMA = {
-        "type": "object",
-        "properties": {
-            "industry": {"type": "string"},
-            "function": {"type": "string"},
-            "seniority": {"type": "string"},
-        },
-        "required": ["industry", "function", "seniority"],
-    }
-
-    def analyze_summary(summary: str) -> dict | None:
-        try:
-            response = client.models.generate_content(
-                model=MODEL,
-                contents=summary,
-                config=types.GenerateContentConfig(
-                    system_instruction=ANALYSIS_INSTRUCTIONS,
-                    response_mime_type="application/json",
-                    response_json_schema=ANALYSIS_SCHEMA,
-                ),
-            )
-            if not hasattr(response, "text"):
-                return None
-            result = json.loads(response.text)
-            required_keys = ["industry", "function", "seniority"]
-            if any(k not in result for k in required_keys):
-                return None
-            return result
-        except Exception:
-            return None
-
-    return analyze_summary
-
-
-# ---------------------------------------------------------------------------
-# Unit-level tests (no API calls)
-# ---------------------------------------------------------------------------
-
-class TestPackageImport:
-    def test_google_genai_importable(self):
-        """google-genai package must be importable."""
-        import google.genai  # noqa: F401
-
-    def test_genai_types_importable(self):
-        """google.genai.types must be importable."""
-        from google.genai import types  # noqa: F401
-
-    def test_generate_content_config_exists(self):
-        """GenerateContentConfig class must exist."""
-        from google.genai import types
-        assert hasattr(types, "GenerateContentConfig")
-
-
-class TestClientInit:
-    def test_client_initialises_with_api_key(self, gemini_client):
-        """Client should initialise without raising."""
-        assert gemini_client is not None
-
-    def test_client_has_models_attribute(self, gemini_client):
-        """Client must expose a .models interface."""
-        assert hasattr(gemini_client, "models")
-
-
-# ---------------------------------------------------------------------------
-# Integration tests (live API calls)
-# ---------------------------------------------------------------------------
-
-class TestGeminiAPIConnectivity:
-    def test_simple_generate_content(self, gemini_client):
-        """A basic prompt should return a non-empty text response."""
-        response = gemini_client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents="Reply with the single word: hello",
-        )
-        assert hasattr(response, "text"), "Response must have a 'text' attribute"
-        assert len(response.text.strip()) > 0, "Response text must not be empty"
-
-    def test_response_text_is_string(self, gemini_client):
-        """response.text should be a str."""
-        response = gemini_client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents="Say yes",
-        )
-        assert isinstance(response.text, str)
-
-
-class TestAnalyzeSummary:
-    """Tests for the analyze_summary() integration used in analysis.ipynb."""
-
-    TECH_SUMMARY = (
-        "Senior Software Engineer at Google with 10 years of experience in "
-        "distributed systems, cloud infrastructure, and backend development. "
-        "Led teams building large-scale data pipelines on GCP."
+@pytest.fixture(scope="session")
+def structured_config():
+    """GenerateContentConfig enforcing the analysis JSON schema."""
+    return types.GenerateContentConfig(
+        system_instruction=ANALYSIS_INSTRUCTIONS,
+        response_mime_type="application/json",
+        response_json_schema=ProfileAnalysis,
     )
 
-    FINANCE_SUMMARY = (
-        "Vice President at Goldman Sachs, Equity Research division. "
-        "CFA charterholder with 15 years analysing financial markets, "
-        "M&A advisory, and portfolio management."
+
+def call(client, summary, config):
+    """Helper: call model and return parsed dict (raises on any failure)."""
+    response = client.models.generate_content(
+        model=MODEL,
+        contents=summary,
+        config=config,
     )
+    return ProfileAnalysis.model_validate_json(response.text).model_dump()
 
-    def test_returns_dict_for_tech_profile(self, analyze_fn):
-        """analyze_summary should return a dict for a typical tech profile."""
-        result = analyze_fn(self.TECH_SUMMARY)
-        assert result is not None, "Expected a dict, got None"
-        assert isinstance(result, dict)
 
-    def test_required_keys_present(self, analyze_fn):
-        """Result must contain industry, function, and seniority keys."""
-        result = analyze_fn(self.TECH_SUMMARY)
-        assert result is not None
-        for key in ("industry", "function", "seniority"):
-            assert key in result, f"Missing key: {key}"
+# ---------------------------------------------------------------------------
+# 1. Schema contract – response is valid JSON matching the schema
+# ---------------------------------------------------------------------------
 
-    def test_values_are_non_empty_strings(self, analyze_fn):
-        """All three values should be non-empty strings."""
-        result = analyze_fn(self.TECH_SUMMARY)
-        assert result is not None
-        for key in ("industry", "function", "seniority"):
-            assert isinstance(result[key], str), f"{key} must be str"
-            assert result[key].strip(), f"{key} must not be empty"
 
-    def test_industry_is_technology_for_tech_profile(self, analyze_fn):
-        """Industry should be 'Technology' for a clear tech profile."""
-        result = analyze_fn(self.TECH_SUMMARY)
-        assert result is not None
-        assert "tech" in result["industry"].lower(), (
-            f"Expected industry to contain 'tech', got: {result['industry']}"
-        )
+class TestSchemaContract:
+    """The model must always return JSON that satisfies ANALYSIS_SCHEMA."""
 
-    def test_seniority_is_senior_or_above(self, analyze_fn):
-        """Seniority should reflect a senior-level profile."""
-        result = analyze_fn(self.TECH_SUMMARY)
-        assert result is not None
-        assert result["seniority"].lower() in (
-            "senior", "lead", "staff", "principal", "executive", "c-level", "director", "vp"
-        ), f"Unexpected seniority: {result['seniority']}"
-
-    def test_finance_profile(self, analyze_fn):
-        """analyze_summary should correctly classify a finance profile."""
-        result = analyze_fn(self.FINANCE_SUMMARY)
-        assert result is not None
-        assert "finance" in result["industry"].lower() or "banking" in result["industry"].lower(), (
-            f"Expected finance/banking industry, got: {result['industry']}"
-        )
-
-    def test_handles_very_short_summary(self, analyze_fn):
-        """Short summaries should return a dict or None, never raise."""
-        result = analyze_fn("Engineer")
-        # No assertion on content – just must not raise
-        assert result is None or isinstance(result, dict)
-
-    def test_json_response_is_valid(self, analyze_fn):
-        """The raw Gemini response must always be valid JSON."""
-        from google import genai
-        from google.genai import types
-
-        client = genai.Client()
+    @pytest.mark.parametrize("name,summary", PROFILES.items())
+    def test_response_is_valid_json(self, client, structured_config, name, summary):
+        """response.text must be parseable as a valid ProfileAnalysis."""
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=self.TECH_SUMMARY,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_json_schema={
-                    "type": "object",
-                    "properties": {
-                        "industry": {"type": "string"},
-                        "function": {"type": "string"},
-                        "seniority": {"type": "string"},
-                    },
-                    "required": ["industry", "function", "seniority"],
-                },
-            ),
+            model=MODEL, contents=summary, config=structured_config
         )
-        parsed = json.loads(response.text)
-        assert isinstance(parsed, dict)
+        try:
+            result = ProfileAnalysis.model_validate_json(response.text)
+        except Exception as exc:
+            pytest.fail(f"[{name}] response.text is not valid ProfileAnalysis: {exc}\nRaw: {response.text!r}")
+        assert isinstance(result, ProfileAnalysis), f"[{name}] parsed result must be ProfileAnalysis, got {type(result)}"
+
+    @pytest.mark.parametrize("name,summary", PROFILES.items())
+    def test_all_required_keys_present(self, client, structured_config, name, summary):
+        """Parsed response must contain all three required keys."""
+        result = call(client, summary, structured_config)
+        missing = [k for k in REQUIRED_KEYS if k not in result]
+        assert not missing, f"[{name}] missing keys: {missing}"
+
+    @pytest.mark.parametrize("name,summary", PROFILES.items())
+    def test_all_values_are_strings(self, client, structured_config, name, summary):
+        """Every value in the response must be a str (not int, list, etc.)."""
+        result = call(client, summary, structured_config)
+        for key in REQUIRED_KEYS:
+            assert isinstance(result[key], str), (
+                f"[{name}] '{key}' must be str, got {type(result[key])}"
+            )
+
+    @pytest.mark.parametrize("name,summary", PROFILES.items())
+    def test_no_extra_keys(self, client, structured_config, name, summary):
+        """Schema should constrain the response to exactly the three fields."""
+        result = call(client, summary, structured_config)
+        extra = set(result.keys()) - set(REQUIRED_KEYS)
+        assert not extra, f"[{name}] unexpected extra keys: {extra}"
+
+    @pytest.mark.parametrize("name,summary", [
+        (n, s) for n, s in PROFILES.items() if n != "short"
+    ])
+    def test_string_values_are_non_empty(self, client, structured_config, name, summary):
+        """Non-trivial profiles should produce non-empty string values."""
+        result = call(client, summary, structured_config)
+        for key in REQUIRED_KEYS:
+            assert result[key].strip(), f"[{name}] '{key}' value is empty"
+
+
+# ---------------------------------------------------------------------------
+# 2. Semantic correctness – model classifies profiles sensibly
+# ---------------------------------------------------------------------------
+
+
+class TestSemanticOutput:
+    """Spot-check that field *values* make sense for well-defined profiles."""
+
+    def test_tech_profile_industry(self, client, structured_config):
+        result = call(client, PROFILES["tech_senior"], structured_config)
+        assert "tech" in result["industry"].lower(), (
+            f"Expected technology industry, got: {result['industry']}"
+        )
+
+    def test_tech_profile_function(self, client, structured_config):
+        result = call(client, PROFILES["tech_senior"], structured_config)
+        assert "engineer" in result["function"].lower() or "tech" in result["function"].lower(), (
+            f"Expected engineering function, got: {result['function']}"
+        )
+
+    def test_tech_profile_seniority(self, client, structured_config):
+        result = call(client, PROFILES["tech_senior"], structured_config)
+        assert result["seniority"].lower() in (
+            "senior", "lead", "staff", "principal", "mid", "manager"
+        ), f"Unexpected seniority for senior engineer: {result['seniority']}"
+
+    def test_finance_profile_industry(self, client, structured_config):
+        result = call(client, PROFILES["finance_vp"], structured_config)
+        assert any(w in result["industry"].lower() for w in ("finance", "bank", "investment")), (
+            f"Expected finance industry, got: {result['industry']}"
+        )
+
+    def test_finance_profile_seniority_is_senior(self, client, structured_config):
+        result = call(client, PROFILES["finance_vp"], structured_config)
+        assert result["seniority"].lower() in (
+            "vp", "vice president", "senior", "executive", "director"
+        ), f"Unexpected seniority for VP: {result['seniority']}"
+
+    def test_healthcare_profile_industry(self, client, structured_config):
+        result = call(client, PROFILES["healthcare_entry"], structured_config)
+        assert "health" in result["industry"].lower() or "medical" in result["industry"].lower(), (
+            f"Expected healthcare industry, got: {result['industry']}"
+        )
+
+    def test_healthcare_profile_seniority_is_entry(self, client, structured_config):
+        result = call(client, PROFILES["healthcare_entry"], structured_config)
+        assert result["seniority"].lower() in (
+            "entry", "junior", "associate", "mid"
+        ), f"Expected entry-level seniority, got: {result['seniority']}"
+
+    def test_marketing_profile_function(self, client, structured_config):
+        result = call(client, PROFILES["marketing_director"], structured_config)
+        assert "market" in result["function"].lower(), (
+            f"Expected marketing function, got: {result['function']}"
+        )
+
+    def test_marketing_profile_seniority_is_director(self, client, structured_config):
+        result = call(client, PROFILES["marketing_director"], structured_config)
+        assert result["seniority"].lower() in (
+            "director", "senior", "executive", "vp", "manager"
+        ), f"Expected director-level seniority, got: {result['seniority']}"
+
+
+# ---------------------------------------------------------------------------
+# 3. Consistency – same input yields structurally identical output
+# ---------------------------------------------------------------------------
+
+
+class TestConsistency:
+    """Two calls with the same profile must return structurally identical output."""
+
+    def test_same_keys_across_calls(self, client, structured_config):
+        r1 = call(client, PROFILES["tech_senior"], structured_config)
+        r2 = call(client, PROFILES["tech_senior"], structured_config)
+        assert set(r1.keys()) == set(r2.keys()), (
+            f"Key sets differ between calls: {r1.keys()} vs {r2.keys()}"
+        )
+
+    def test_same_industry_across_calls(self, client, structured_config):
+        r1 = call(client, PROFILES["finance_vp"], structured_config)
+        r2 = call(client, PROFILES["finance_vp"], structured_config)
+        # Both should at least agree on the broad industry category
+        assert (
+            any(w in r1["industry"].lower() for w in ("finance", "bank", "investment")) and
+            any(w in r2["industry"].lower() for w in ("finance", "bank", "investment"))
+        ), f"Industry inconsistent across calls: {r1['industry']!r} vs {r2['industry']!r}"

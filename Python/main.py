@@ -36,7 +36,7 @@ async def add_or_update_item(request: Request):
 
         # join several keys from the profile
         item["summary"] = join_keys(
-            item, ["miniProfile", "currentPosition", "positions", "occupation", "extra"]
+            item, ["miniProfile", "currentPosition", "positions", "occupation", "extra", "skills", "educations"]
         )
 
         # Reference the specific document in the 'extracted' collection of 'db' database
