@@ -32,11 +32,7 @@ This package provides:
 
 ### Environment Variables
 
-Copy `.env.example` to `.env` and configure:
-
-```bash
-cp .env.example .env
-```
+Create a `.env` file in the project root and configure:
 
 | Variable | Description | Required |
 |----------|-------------|----------|
@@ -57,11 +53,27 @@ uv sync
 uv run uvicorn main:app --reload --port 8080
 ```
 
+### Running with Docker (Windows)
+
+Build the Docker images:
+
+```cmd
+build.cmd
+```
+
+Run the container locally with credentials mapped:
+
+```cmd
+start.cmd
+```
+
 ### Exposing Locally (for webhooks/testing)
 
 ```bash
 ngrok http http://localhost:8080
 ```
+
+Note: The Dockerfile copies `.env` into the image (`/etc/environment`), so the file must exist before building.
 
 ## Deployment
 
@@ -101,27 +113,29 @@ Export Firestore data to CSV:
 python collection-tocsv.py
 ```
 
-This generates `analysis.csv` and `analysis.txt` from the Firestore collection.
+This generates `analysis.csv` and `analysis.txt` from the `analysis` Firestore collection.
 
 ## AI Integration
 
-This project uses **OpenAI** (not Google AI) for profile analysis and outreach automation. The AI features are implemented in Jupyter notebooks and use the `gpt-4o-mini` model.
+This project uses **OpenAI** (not Google AI) for profile analysis and outreach automation. The AI features are implemented in Jupyter notebooks using the OpenAI **Responses API** (`client.responses.create`).
 
 ### AI-Powered Features
 
-| Notebook | Feature | Description |
-|----------|---------|-------------|
-| `analysis.ipynb` | Profile Analysis | Analyzes profile summaries to extract structured data: **industry**, **job function**, and **seniority level** |
-| `intro.ipynb` | Introduction Generator | Creates personalized LinkedIn connection request messages based on profile content |
+| Notebook | Feature | Model | Description |
+|----------|---------|-------|-------------|
+| `analysis.ipynb` | Profile Analysis | `gpt-5-mini` | Analyzes profile summaries to extract structured data: **industry**, **job function**, and **seniority level** |
+| `intro.ipynb` | Introduction Generator | `gpt-5.2` | Creates personalized LinkedIn connection request messages based on profile content |
 
 ### How It Works
 
-1. **Profile Analysis** (`analysis.ipynb`): Processes stored profiles from Firestore and uses OpenAI to classify each person by:
+1. **Profile Analysis** (`analysis.ipynb`): Reads profiles from the `extracted` Firestore collection and uses OpenAI to classify each person by:
    - Industry (e.g., Technology, Finance, Healthcare)
    - Function (e.g., Engineering, Sales, Marketing)
    - Seniority (e.g., Entry, Mid, Senior, Executive, C-Level)
 
-2. **Introduction Generator** (`intro.ipynb`): Reads profile summaries and generates brief, personalized connection request introductions (2-3 sentences) that reference specific details from the person's background.
+   Results are written to the `analysis` collection. The notebook also includes statistics on classification coverage and a `get_member_distance()` helper for filtering by LinkedIn network distance.
+
+2. **Introduction Generator** (`intro.ipynb`): Reads profile summaries from the `extracted` collection and generates brief, personalized connection request introductions (2-3 sentences). Results are stored in the `analysis` collection.
 
 ### Setup
 
