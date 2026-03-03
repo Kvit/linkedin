@@ -36,7 +36,7 @@ Create a `.env` file in the project root and configure:
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `OPENAI_API_KEY` | OpenAI API key for analysis notebooks | For notebooks |
+| `GOOGLE_API_KEY` | Google Gemini API key for analysis notebooks | For notebooks |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to GCP service account JSON | Optional* |
 
 *If not set, the app looks for `vk-linkedin-master-service-account.json` in the project root.
@@ -117,18 +117,18 @@ This generates `analysis.csv` and `analysis.txt` from the `analysis` Firestore c
 
 ## AI Integration
 
-This project uses **OpenAI** (not Google AI) for profile analysis and outreach automation. The AI features are implemented in Jupyter notebooks using the OpenAI **Responses API** (`client.responses.create`).
+This project uses **Google Gemini** for profile analysis and outreach automation. The AI features are implemented in Jupyter notebooks using the Google Gen AI SDK (`client.models.generate_content`).
 
 ### AI-Powered Features
 
 | Notebook | Feature | Model | Description |
 |----------|---------|-------|-------------|
-| `analysis.ipynb` | Profile Analysis | `gpt-5-mini` | Analyzes profile summaries to extract structured data: **industry**, **job function**, and **seniority level** |
-| `intro.ipynb` | Introduction Generator | `gpt-5.2` | Creates personalized LinkedIn connection request messages based on profile content |
+| `analysis.ipynb` | Profile Analysis | `gemini-3.1-pro-preview` | Analyzes profile summaries to extract structured data: **industry**, **job function**, and **seniority level** |
+| `intro.ipynb` | Introduction Generator | `gemini-3.1-pro-preview` | Creates personalized LinkedIn connection request messages based on profile content |
 
 ### How It Works
 
-1. **Profile Analysis** (`analysis.ipynb`): Reads profiles from the `extracted` Firestore collection and uses OpenAI to classify each person by:
+1. **Profile Analysis** (`analysis.ipynb`): Reads profiles from the `extracted` Firestore collection and uses Google Gemini to classify each person by:
    - Industry (e.g., Technology, Finance, Healthcare)
    - Function (e.g., Engineering, Sales, Marketing)
    - Seniority (e.g., Entry, Mid, Senior, Executive, C-Level)
@@ -139,10 +139,10 @@ This project uses **OpenAI** (not Google AI) for profile analysis and outreach a
 
 ### Setup
 
-To enable AI features, set your OpenAI API key in the `.env` file:
+To enable AI features, set your Google Gemini API key in the `.env` file:
 
 ```bash
-OPENAI_API_KEY=your-api-key-here
+GOOGLE_API_KEY=your-api-key-here
 ```
 
-Note: The core API server (`main.py`) does not require OpenAI—it only uses Google Cloud Firestore for data storage.
+Note: The core API server (`main.py`) does not require Gemini—it only uses Google Cloud Firestore for data storage.
