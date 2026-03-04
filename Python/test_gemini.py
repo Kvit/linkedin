@@ -19,14 +19,49 @@ load_dotenv()
 # Shared config – mirrors analysis.ipynb exactly
 # ---------------------------------------------------------------------------
 
-MODEL = "gemini-2.0-flash"
+MODEL = "gemini-3.1-pro-preview"
 
-ANALYSIS_INSTRUCTIONS = """You are an expert at analyzing LinkedIn profile summaries.
-Analyze the provided profile summary and extract the following information:
+ANALYSIS_INSTRUCTIONS = """You are an expert at analyzing LinkedIn profiles to identify potential buyers for a healthcare RCM (Revenue Cycle Management) technology company.
 
-1. industry - The primary industry the person works in (e.g., "Technology", "Finance", "Healthcare")
-2. function - Their job function/role type (e.g., "Engineering", "Sales", "Marketing", "Operations")
-3. seniority - Their seniority level (e.g., "Entry", "Mid", "Senior", "Executive", "C-Level")"""
+Our product, Recovr by Pinnacle Services, is AI-powered claim denial recovery software sold to:
+- Pathology Practices
+- Medical Diagnostic Laboratories  
+- Revenue cycle management (RCM) firms and billing companies
+
+Analyze the provided profile summary and classify using EXACTLY these controlled values:
+
+## industry — Use one of:
+- "RCM" — works at an RCM firm, billing company, or billing department
+- "Pathology" — works in lab, pathology, or diagnostic services
+- "Medical Lab" — works at a physician practice, clinic, or medical group
+- "Hospital" — works at a hospital or integrated health system
+- "Health IT" — works at a healthcare software or health tech vendor
+- "Health Insurance Payer" — works on the payer or insurance side
+- "Pharma" — pharmaceutical, biotech, or medical device company
+- "Other Healthcare" — healthcare adjacent but none of the above
+- "Non-Healthcare" — not in healthcare at all
+
+## function — Use one of:
+- "Operations" — operations, revenue cycle, billing, coding, claims, or collections role
+- "Finance" — finance, accounting, or financial leadership role
+- "IT" — information technology, software, or technical role
+- "Clinical" — clinical role such as physician, nurse, or lab technician
+- "Executive" — CEO, COO, CFO, or other executive role
+- "Consulting" — works at a consulting firm or in a consulting role
+- "Owner" — business owner, founder, or partner
+- "Sales & Marketing" — sales, marketing, business development, or customer success role
+- "Other" — none of the above or cannot determine from summary
+
+## seniority — Use one of:
+- "Executive" — CEO, CFO, COO, CTO, CMO, CIO, CRO
+- "VP" — Vice President level
+- "Director" — Director level
+- "Manager" — Manager or Supervisor level
+- "Staff" — staff-level, no direct reports
+- "Owner / Partner" — business owner, partner, or founder
+- "Unknown" — cannot determine from summary
+
+If the summary is too short or vague to classify, use your best judgment from whatever context is available. Never return empty strings — use "Unknown" or "Other" when uncertain."""
 
 
 class ProfileAnalysis(BaseModel):
@@ -83,7 +118,7 @@ def structured_config():
     return types.GenerateContentConfig(
         system_instruction=ANALYSIS_INSTRUCTIONS,
         response_mime_type="application/json",
-        response_json_schema=ProfileAnalysis,
+        response_json_schema=ProfileAnalysis.model_json_schema(),
     )
 
 
