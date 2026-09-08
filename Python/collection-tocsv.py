@@ -38,6 +38,8 @@ def collection_to_csv(col, file):
     # save profile urls to txt
     df["profile_url"].to_csv(file + ".txt", sep="\t", index=False, header=False)
 
+    print(f"Data saved to {file}.csv and {file}.txt")
+
 
 # test function
 if __name__ == "__main__":
