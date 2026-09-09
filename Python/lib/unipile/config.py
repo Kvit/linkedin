@@ -17,12 +17,7 @@ from .errors import ConfigError
 
 DEFAULT_PROFILE_SECTIONS = [
     "about",
-    "experience",
-    "education",
-    "skills",
-    "certifications",
-    "languages",
-    "projects",
+    "experience"
 ]
 
 
