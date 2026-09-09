@@ -13,6 +13,7 @@ import pytest
 import respx
 
 from lib.unipile.budget import SendBudget
+from lib.unipile.pacing import HumanCadence
 from lib.unipile.errors import BudgetExhausted, ProfileIncomplete, ThrottleLockout
 from lib.unipile.models import Attendee, Chat, Message, Profile, Relation
 from lib.unipile.resources.accounts import AccountsResource
@@ -32,7 +33,11 @@ class RecordingBudget(SendBudget):
         super().__init__(
             account_id=ACCOUNT,
             limits=limits or {"invite": 5, "message": 5, "profile": 5},
-            sleep=lambda _s: None,
+            cadence=HumanCadence(
+                0.0, 0.0, long_pause_every=0, long_pause_min=0.0, long_pause_max=0.0
+            ),
+            usage_warn_pct=75.0,
+            usage_halt_pct=90.0,
             **kwargs,
         )
         self.calls: list[str] = []
@@ -76,7 +81,13 @@ def transport():
 
 @pytest.fixture
 def users(transport, budget):
-    return UsersResource(transport, account_id=lambda: ACCOUNT, budget=budget)
+    return UsersResource(
+        transport,
+        account_id=lambda: ACCOUNT,
+        budget=budget,
+        throttle_retries=2,
+        max_consecutive_throttled=5,
+    )
 
 
 @pytest.fixture
@@ -150,7 +161,11 @@ def test_a_throttled_profile_is_still_recorded(transport, budget, throttled_prof
         return_value=httpx.Response(200, json=throttled_profile_body)
     )
     users = UsersResource(
-        transport, account_id=lambda: ACCOUNT, budget=budget, throttle_retries=0
+        transport,
+        account_id=lambda: ACCOUNT,
+        budget=budget,
+        throttle_retries=0,
+        max_consecutive_throttled=5,
     )
 
     profile = users.get_profile("x")
@@ -269,7 +284,11 @@ def test_retries_can_be_switched_off(transport, budget, throttled_profile_body):
         return_value=httpx.Response(200, json=throttled_profile_body)
     )
     users = UsersResource(
-        transport, account_id=lambda: ACCOUNT, budget=budget, throttle_retries=0
+        transport,
+        account_id=lambda: ACCOUNT,
+        budget=budget,
+        throttle_retries=0,
+        max_consecutive_throttled=5,
     )
 
     users.get_profile("x")

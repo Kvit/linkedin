@@ -21,7 +21,6 @@ is logged, loudly, the first time it happens.
 """
 
 import logging
-import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -57,6 +56,12 @@ class SendBudget:
     it resolves one from the API, and a placeholder would mean the first check of
     every client instance ran against an empty counter -- one silent over-send
     per process.
+
+    ``cadence`` and the two usage thresholds are required, and there are no
+    pacing bounds to pass here: this module must not import ``config``, so any
+    default would be a second copy of a value ``UnipileSettings`` owns.
+    :class:`~lib.unipile.client.UnipileClient` is the one place that reads
+    settings and injects them.
     """
 
     def __init__(
@@ -64,13 +69,10 @@ class SendBudget:
         account_id: str | Callable[[], str],
         limits: dict[str, int],
         *,
+        cadence: HumanCadence,
+        usage_warn_pct: float,
+        usage_halt_pct: float,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
-        sleep: Callable[[float], None] = time.sleep,
-        min_delay: float = 20.0,
-        max_delay: float = 90.0,
-        cadence: HumanCadence | None = None,
-        usage_warn_pct: float = 75.0,
-        usage_halt_pct: float = 90.0,
     ) -> None:
         self._account_id = account_id
         #: Counters per account, keyed the same way the resolved account id is,
@@ -81,7 +83,7 @@ class SendBudget:
         self._warned_unreconciled = False
         self._limits = dict(limits)
         self._clock = clock
-        self._cadence = cadence or HumanCadence(min_delay, max_delay, sleep=sleep)
+        self._cadence = cadence
         self._usage_warn_pct = usage_warn_pct
         self._usage_halt_pct = usage_halt_pct
 

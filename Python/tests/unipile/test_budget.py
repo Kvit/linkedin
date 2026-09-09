@@ -19,12 +19,34 @@ ACCOUNT = "ZIGT4FVWS4CCJze_MuVHCg"
 LIMITS = {"invite": 2, "message": 3, "profile": 5}
 
 
+def cadence(**overrides):
+    """A cadence for tests, with every bound named.
+
+    `SendBudget` and `HumanCadence` carry no defaults of their own -- settings
+    are the only source -- so the values a test wants are stated here rather
+    than inherited from a signature.
+    """
+    return HumanCadence(
+        **{
+            "min_delay": 4.0,
+            "max_delay": 12.0,
+            "long_pause_every": 0,
+            "long_pause_min": 120.0,
+            "long_pause_max": 300.0,
+            "sleep": lambda _seconds: None,
+            **overrides,
+        }
+    )
+
+
 def make(clock=None):
     return SendBudget(
         account_id=ACCOUNT,
         limits=LIMITS,
         clock=clock or (lambda: datetime(2026, 9, 8, 12, 0, tzinfo=UTC)),
-        sleep=lambda _seconds: None,
+        cadence=cadence(),
+        usage_warn_pct=75.0,
+        usage_halt_pct=90.0,
     )
 
 
@@ -124,7 +146,9 @@ def test_counters_follow_the_account_the_client_resolves_to():
         account_id=lambda: account,
         limits=LIMITS,
         clock=lambda: datetime(2026, 9, 8, 12, 0, tzinfo=UTC),
-        sleep=lambda _s: None,
+        cadence=cadence(),
+        usage_warn_pct=75.0,
+        usage_halt_pct=90.0,
     )
     budget.record("message")
 
@@ -139,9 +163,9 @@ def paced(slept, **cadence_kwargs):
         account_id=ACCOUNT,
         limits=LIMITS,
         clock=lambda: datetime(2026, 9, 8, 12, 0, tzinfo=UTC),
-        cadence=HumanCadence(
-            4.0, 12.0, rng=random.Random(7), sleep=slept.append, **cadence_kwargs
-        ),
+        cadence=cadence(rng=random.Random(7), sleep=slept.append, **cadence_kwargs),
+        usage_warn_pct=75.0,
+        usage_halt_pct=90.0,
     )
 
 

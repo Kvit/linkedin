@@ -38,9 +38,12 @@ class UsersResource:
         transport: Transport,
         account_id: Callable[[], str],
         budget: SendBudget,
+        *,
+        throttle_retries: int,
+        max_consecutive_throttled: int,
+        # Not a settings default: ``None`` means "ask for no sections at all",
+        # which is a distinct state from the ``profile_sections`` default.
         default_sections: list[str] | None = None,
-        throttle_retries: int = 2,
-        max_consecutive_throttled: int = 5,
     ) -> None:
         self._transport = transport
         self._account_id = account_id

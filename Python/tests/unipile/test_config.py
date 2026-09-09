@@ -149,5 +149,5 @@ def test_pacing_defaults_are_slower_than_a_script(monkeypatch):
     settings = UnipileSettings.from_env(env_file=None)
 
     assert settings.min_delay_seconds >= 15.0
-    assert settings.max_delay_seconds >= 60.0
+    assert settings.max_delay_seconds >= 40.0
     assert settings.long_pause_every > 0

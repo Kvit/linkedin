@@ -16,6 +16,7 @@ import pytest
 
 from lib.unipile import UnipileClient
 from lib.unipile.compat import SUMMARY_KEYS, to_lh_document
+from lib.unipile.pacing import HumanCadence
 
 pytestmark = pytest.mark.live
 
@@ -26,8 +27,14 @@ def client():
     live.budget = type(live.budget)(
         account_id=live.settings.account_id or "live",
         limits={"invite": 0, "message": 0, "profile": 25},
-        min_delay=0.0,
-        max_delay=0.0,
+        # No pacing at all in the live suite. Naming only the gap bounds used to
+        # leave `long_pause_every` on a signature default, so roughly one call
+        # in ten still slept for minutes.
+        cadence=HumanCadence(
+            0.0, 0.0, long_pause_every=0, long_pause_min=0.0, long_pause_max=0.0
+        ),
+        usage_warn_pct=live.settings.usage_warn_pct,
+        usage_halt_pct=live.settings.usage_halt_pct,
     )
     live.users._budget = live.budget
     live.messaging._budget = live.budget

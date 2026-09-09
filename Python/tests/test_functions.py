@@ -23,8 +23,9 @@ from functions import (
     member_id_from_urn,
     needs_backfill,
     plan_forward_writes,
+    select_intro_candidates,
 )
-from lib.unipile.models import Message
+from lib.unipile.models import Message, Relation
 
 
 def test_join_keys_preserves_input_order():
@@ -491,3 +492,275 @@ def test_messages_with_no_contact_reach_no_contact_document():
     ])
 
     assert stats == {}
+
+
+# --- select_intro_candidates ---------------------------------------------------
+#
+# The intro campaign's whole safety story lives in this function, so each guard
+# gets its own test. Getting one wrong does not raise -- it sends a stranger a
+# second copy of "Thanks for connecting", which cannot be taken back.
+
+
+def _relation(slug, provider_id, connected=None, first="Test", last="Person"):
+    """A first-degree connection as `/users/relations` returns one.
+
+    `member_id` is the `ACoAA...` provider hash rather than the numeric member
+    id -- `Relation.provider_id` aliases it, and it is what the send endpoints
+    take.
+    """
+    return Relation(
+        public_identifier=slug,
+        member_id=provider_id,
+        first_name=first,
+        last_name=last,
+        headline="Director of Revenue Cycle",
+        created_at=connected,
+    )
+
+
+TARGETS = {"RCM", "Pathology", "Medical Lab"}
+
+
+def test_a_connection_with_no_classification_is_never_messaged():
+    """~2.1k documents are keyed by numeric member id and carry neither a
+    public-id nor an li-hash-id, so they cannot be joined to a relation at all.
+
+    Silence is the safe direction: an unjoined contact is one whose industry we
+    cannot confirm, and guessing would put the pitch in front of a hospital.
+    """
+    candidates, skipped = select_intro_candidates(
+        [_relation("stranger", "ACoAA-stranger")], {}, {}, industries=TARGETS
+    )
+
+    assert candidates == []
+    assert skipped["unclassified"] == 1
+
+
+def test_only_the_target_industries_are_selected():
+    relations = [
+        _relation("rcm-person", "ACoAA-1"),
+        _relation("hospital-person", "ACoAA-2"),
+    ]
+    contacts = {
+        "rcm-person": {"industry": "RCM"},
+        "hospital-person": {"industry": "Hospital"},
+    }
+
+    candidates, skipped = select_intro_candidates(
+        relations, contacts, {}, industries=TARGETS
+    )
+
+    assert [c["doc_id"] for c in candidates] == ["rcm-person"]
+    assert skipped["off_target"] == 1
+
+
+def test_a_missing_sent_total_means_never_messaged_not_no_data():
+    """4,906 of the 4,912 never-messaged targets have no `sent_total` field.
+
+    `refresh_contact_stats` only writes the field for contacts who appear in the
+    `messages` collection, so treating absence as unknown-and-skip would empty
+    the campaign; treating it as "messaged" would empty it too.
+    """
+    candidates, _ = select_intro_candidates(
+        [_relation("never-written-to", "ACoAA-1")],
+        {"never-written-to": {"industry": "RCM"}},
+        {},
+        industries=TARGETS,
+    )
+
+    assert [c["doc_id"] for c in candidates] == ["never-written-to"]
+
+
+def test_a_contact_we_have_already_written_to_is_skipped():
+    candidates, skipped = select_intro_candidates(
+        [_relation("in-conversation", "ACoAA-1")],
+        {"in-conversation": {"industry": "RCM", "sent_total": 3}},
+        {},
+        industries=TARGETS,
+    )
+
+    assert candidates == []
+    assert skipped["already_messaged"] == 1
+
+
+def test_an_inbound_only_contact_still_counts_as_never_messaged():
+    """`sent_total` of 0 is a measured zero: they wrote to us and we never
+    answered. That is a target, not a contact to protect."""
+    candidates, _ = select_intro_candidates(
+        [_relation("wrote-to-us", "ACoAA-1")],
+        {"wrote-to-us": {"industry": "Pathology", "sent_total": 0, "replied_total": 0}},
+        {},
+        industries=TARGETS,
+    )
+
+    assert [c["doc_id"] for c in candidates] == ["wrote-to-us"]
+
+
+def test_an_open_conversation_is_skipped_even_when_firestore_says_nothing():
+    """The chat map is read live from LinkedIn; `sent_total` is only as fresh as
+    the last messages-sync run, and is absent entirely below its `--since` floor.
+
+    So the live signal has to be the one that decides. This is also the case
+    where a mistake reads worst: "Thanks for connecting" landing underneath a
+    question of theirs we never answered.
+    """
+    candidates, skipped = select_intro_candidates(
+        [_relation("has-a-chat", "ACoAA-1")],
+        {"has-a-chat": {"industry": "RCM"}},
+        {"ACoAA-1": "chat-42"},
+        industries=TARGETS,
+    )
+
+    assert candidates == []
+    assert skipped["existing_chat"] == 1
+
+
+def test_an_open_conversation_carries_its_chat_id_when_it_is_not_skipped():
+    """Sending into an existing chat needs the id: `send_to` would otherwise
+    re-walk every conversation on the account to rediscover it."""
+    candidates, _ = select_intro_candidates(
+        [_relation("has-a-chat", "ACoAA-1")],
+        {"has-a-chat": {"industry": "RCM"}},
+        {"ACoAA-1": "chat-42"},
+        industries=TARGETS,
+        skip_existing_chats=False,
+    )
+
+    assert [c["chat_id"] for c in candidates] == ["chat-42"]
+
+
+def test_a_contact_this_campaign_already_wrote_to_is_skipped():
+    """`intro_sent_at` is written the moment a send succeeds, because
+    `sent_total` will not catch up until the next messages-sync -- and a re-run
+    an hour later must not send a second copy.
+
+    It is a separate field on purpose: `refresh_contact_stats` deletes
+    `sent_total` from any contact whose messages it cannot find.
+    """
+    candidates, skipped = select_intro_candidates(
+        [_relation("intro-done", "ACoAA-1")],
+        {"intro-done": {"industry": "RCM", "intro_sent_at": _day(1)}},
+        {},
+        industries=TARGETS,
+    )
+
+    assert candidates == []
+    assert skipped["intro_already_sent"] == 1
+
+
+def test_the_newest_connections_are_messaged_first():
+    """The template opens with "Thanks for connecting", so it ages badly. With
+    thousands of candidates and 50 sends a day, order decides who ever gets it.
+
+    A relation with no `created_at` sorts last rather than first: unknown is not
+    evidence of recency.
+    """
+    relations = [
+        _relation("older", "ACoAA-1", connected=_day(1)),
+        _relation("undated", "ACoAA-2", connected=None),
+        _relation("newest", "ACoAA-3", connected=_day(9)),
+    ]
+    contacts = {slug: {"industry": "RCM"} for slug in ("older", "undated", "newest")}
+
+    candidates, _ = select_intro_candidates(
+        relations, contacts, {}, industries=TARGETS
+    )
+
+    assert [c["doc_id"] for c in candidates] == ["newest", "older", "undated"]
+
+
+def test_seniority_narrows_only_when_it_is_asked_to():
+    relations = [_relation("boss", "ACoAA-1"), _relation("staffer", "ACoAA-2")]
+    contacts = {
+        "boss": {"industry": "RCM", "seniority": "Director"},
+        "staffer": {"industry": "RCM", "seniority": "Staff"},
+    }
+
+    everyone, _ = select_intro_candidates(relations, contacts, {}, industries=TARGETS)
+    leaders, skipped = select_intro_candidates(
+        relations, contacts, {}, industries=TARGETS, seniorities={"Director"}
+    )
+
+    assert len(everyone) == 2
+    assert [c["doc_id"] for c in leaders] == ["boss"]
+    assert skipped["off_target"] == 1
+
+
+def test_an_unclassified_contact_is_not_reported_as_off_target():
+    """14,636 of the 28,318 documents have no industry at all.
+
+    Lumping them in with Hospital would hide a different remedy behind the same
+    number: an off-target contact is a dead end, while an unclassified one
+    becomes a candidate as soon as analysis.ipynb runs.
+    """
+    candidates, skipped = select_intro_candidates(
+        [_relation("not-yet-classified", "ACoAA-1")],
+        {"not-yet-classified": {"industry": ""}},
+        {},
+        industries=TARGETS,
+    )
+
+    assert candidates == []
+    assert skipped["unclassified"] == 1
+    assert skipped["off_target"] == 0
+
+
+def test_a_contact_marked_exclude_is_never_messaged():
+    """`handling` is set by hand, so it outranks every automatic signal."""
+    candidates, skipped = select_intro_candidates(
+        [_relation("hands-off", "ACoAA-1")],
+        {"hands-off": {"industry": "RCM", "handling": "exclude"}},
+        {},
+        industries=TARGETS,
+    )
+
+    assert candidates == []
+    assert skipped["handling"] == 1
+
+
+def test_a_contact_marked_manual_is_never_messaged():
+    """"manual" means someone intends to write to them personally. A templated
+    "Thanks for connecting" arriving first is exactly what it is meant to stop."""
+    candidates, skipped = select_intro_candidates(
+        [_relation("write-by-hand", "ACoAA-1")],
+        {"write-by-hand": {"industry": "RCM", "handling": "manual"}},
+        {},
+        industries=TARGETS,
+    )
+
+    assert candidates == []
+    assert skipped["handling"] == 1
+
+
+def test_other_handling_values_do_not_hold_a_contact_back():
+    """The field is absent on 28,233 of 28,318 documents, so only the two values
+    that mean "do not send" may filter -- anything else must pass through."""
+    relations = [_relation("no-field", "ACoAA-1"), _relation("some-other", "ACoAA-2")]
+    contacts = {
+        "no-field": {"industry": "RCM"},
+        "some-other": {"industry": "RCM", "handling": "auto"},
+    }
+
+    candidates, skipped = select_intro_candidates(
+        relations, contacts, {}, industries=TARGETS
+    )
+
+    assert [c["doc_id"] for c in candidates] == ["no-field", "some-other"]
+    assert skipped["handling"] == 0
+
+
+def test_handling_is_matched_regardless_of_case_or_padding():
+    """A hand-maintained field picks up stray capitals and whitespace, and a
+    near-miss here fails open -- it sends the message anyway."""
+    relations = [_relation("shouty", "ACoAA-1"), _relation("padded", "ACoAA-2")]
+    contacts = {
+        "shouty": {"industry": "RCM", "handling": "Exclude"},
+        "padded": {"industry": "RCM", "handling": " manual "},
+    }
+
+    candidates, skipped = select_intro_candidates(
+        relations, contacts, {}, industries=TARGETS
+    )
+
+    assert candidates == []
+    assert skipped["handling"] == 2

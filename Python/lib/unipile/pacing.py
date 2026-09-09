@@ -36,6 +36,11 @@ class HumanCadence:
     """Randomised pauses between rate-limited calls.
 
     ``wait`` is the whole interface: it sleeps and returns how long it slept.
+
+    Every bound is required. This module sits below ``config`` and must not read
+    it, but a default here would be a second copy of a number ``UnipileSettings``
+    already owns -- and the two drifted apart once already. ``rng`` and ``sleep``
+    keep their defaults: they are test seams, not policy.
     """
 
     #: Ceiling on the backoff multiplier, so a long throttled stretch cannot
@@ -44,12 +49,12 @@ class HumanCadence:
 
     def __init__(
         self,
-        min_delay: float = 20.0,
-        max_delay: float = 90.0,
+        min_delay: float,
+        max_delay: float,
         *,
-        long_pause_every: int = 20,
-        long_pause_min: float = 180.0,
-        long_pause_max: float = 600.0,
+        long_pause_every: int,
+        long_pause_min: float,
+        long_pause_max: float,
         rng: random.Random | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:

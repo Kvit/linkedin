@@ -8,6 +8,20 @@ from datetime import UTC, datetime, timedelta
 
 from google.cloud.firestore_v1.base_query import FieldFilter
 
+SKIP_REASONS = (
+    "unclassified",
+    "off_target",
+    "handling",
+    "already_messaged",
+    "intro_already_sent",
+    "existing_chat",
+)
+
+#: Values of the hand-maintained ``handling`` field that hold a contact back.
+#: "exclude" is a decision never to write to them; "manual" reserves them for a
+#: personal message, which a templated intro arriving first would pre-empt.
+HANDLING_HOLDS = frozenset({"exclude", "manual"})
+
 
 def get_linkedin_id(profile) -> str:
     """
@@ -401,3 +415,145 @@ if __name__ == "__main__" and os.path.exists("profile.json"):
     # summary function
     summary = join_keys(profile, ["currentPosition", "educations", "positions"])
     print(summary)
+
+
+def select_intro_candidates(
+    relations,
+    contacts,
+    chat_ids,
+    *,
+    industries,
+    seniorities=None,
+    holds=HANDLING_HOLDS,
+    skip_existing_chats=True,
+) -> tuple[list[dict], dict[str, int]]:
+    """Who should receive the intro message, newest connection first.
+
+    Driven from ``relations`` rather than from ``analysis`` because that is the
+    only list that is both current and complete. ``memberDistance`` on a stored
+    contact is whatever it was when the profile was scraped and is never
+    refreshed: 32 of the first run's 173 candidates -- 18% -- were stored as
+    second-degree despite being connections today. A relation also carries the
+    ``ACoAA`` provider id the send endpoints take, which ``analysis`` does not
+    hold at all.
+
+    Three separate guards stand between a target and a duplicate message, and
+    they are not redundant -- each covers a window the others cannot see:
+
+    ``chat_ids``
+        Read live from LinkedIn, so it cannot go stale. It is also the only
+        guard that catches an inbound-only conversation, where the intro would
+        land underneath a question of theirs we never answered.
+    ``sent_total``
+        Only as fresh as the last ``messages-sync.py`` run, and absent entirely
+        for anyone messaged below its ``--since`` floor. It narrows the list; it
+        cannot protect it.
+    ``intro_sent_at``
+        Written by this campaign the moment a send succeeds, because
+        ``sent_total`` will not catch up until the next sync -- and a re-run an
+        hour later must not send a second copy.
+
+    Args:
+        relations: First-degree connections, each exposing ``public_identifier``,
+            ``provider_id``, the name fields and ``created_at``.
+        contacts: ``doc_id`` to the stored ``analysis`` body, holding at least
+            ``industry`` and whichever of ``seniority``, ``handling``,
+            ``sent_total`` and ``intro_sent_at`` exist. A relation missing here, or present with an
+            empty ``industry``, counts as unclassified rather than off-target:
+            both are contacts whose industry we cannot confirm, and guessing
+            puts the pitch in front of a hospital.
+        chat_ids: ``provider_id`` to ``chat_id`` for every open conversation.
+        industries: The target industry labels.
+        holds: ``handling`` values that hold a contact back, matched after
+            trimming and lowercasing. Defaults to :data:`HANDLING_HOLDS`.
+        seniorities: Target seniority labels, or None to accept every level.
+        skip_existing_chats: Drop anyone we already have a conversation with.
+
+    Returns:
+        tuple: The candidates, ordered newest connection first, and a tally of
+        why the rest were skipped. Every reason key is present even at zero, so
+        a printed summary has the same shape on every run.
+    """
+    skipped = dict.fromkeys(SKIP_REASONS, 0)
+    candidates = []
+
+    for relation in relations:
+        slug = relation.public_identifier
+        provider_id = relation.provider_id
+        contact = contacts.get(slug)
+
+        if contact is None:
+            skipped["unclassified"] += 1
+            continue
+
+        industry = contact.get("industry") or ""
+        seniority = contact.get("seniority") or ""
+
+        # Half the collection has no industry yet. Counting that as off-target
+        # would hide a different remedy behind the same number: an off-target
+        # contact is a dead end, an unclassified one becomes a candidate the
+        # moment analysis.ipynb runs.
+        if not industry:
+            skipped["unclassified"] += 1
+            continue
+        if industry not in industries:
+            skipped["off_target"] += 1
+            continue
+        if seniorities is not None and seniority not in seniorities:
+            skipped["off_target"] += 1
+            continue
+
+        # Set by hand on 85 of 28,318 documents, so it is the most deliberate
+        # signal in the collection and outranks every automatic one. Normalised
+        # because a hand-maintained field collects stray capitals and padding,
+        # and a near-miss here fails open -- it sends the message anyway.
+        if str(contact.get("handling") or "").strip().lower() in holds:
+            skipped["handling"] += 1
+            continue
+
+        if contact.get("intro_sent_at"):
+            skipped["intro_already_sent"] += 1
+            continue
+
+        # Truthiness, not `is not None`: the field is absent for the 4,906
+        # contacts never written to, and a measured 0 means they wrote to us and
+        # we never answered -- a target either way.
+        if contact.get("sent_total"):
+            skipped["already_messaged"] += 1
+            continue
+
+        chat_id = chat_ids.get(provider_id)
+        if chat_id and skip_existing_chats:
+            skipped["existing_chat"] += 1
+            continue
+
+        candidates.append(
+            {
+                "doc_id": slug,
+                "provider_id": provider_id,
+                "chat_id": chat_id,
+                "name": f"{relation.first_name or ''} {relation.last_name or ''}".strip(),
+                "headline": relation.headline or "",
+                "industry": industry,
+                "seniority": seniority,
+                "connected_at": relation.created_at,
+                "profile_url": relation.public_profile_url
+                or f"https://www.linkedin.com/in/{slug}",
+            }
+        )
+
+    return sorted(candidates, key=_newest_connection_first), skipped
+
+
+def _newest_connection_first(candidate: dict) -> tuple[int, float]:
+    """Sort newest first, undated last.
+
+    The template opens with "Thanks for connecting", so it ages badly, and at 50
+    sends a day against thousands of candidates the order decides who ever gets
+    it. A relation with no ``created_at`` sorts last rather than first: unknown
+    is not evidence of recency.
+    """
+    connected = candidate["connected_at"]
+    if connected is None:
+        return (1, 0.0)
+    return (0, -connected.timestamp())

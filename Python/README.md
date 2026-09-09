@@ -58,6 +58,8 @@ analysis.csv  /  analysis.txt
 | `messages-sync.py` | Incrementally sync LinkedIn messages into the `messages` collection, joined to contacts |
 | `analysis.ipynb` | Classify profiles with Gemini, including re-classifying changed summaries |
 | `new-contacts.ipynb` | Pull new connections through Unipile, store them, then classify the unclassified backlog |
+| `send-intros.ipynb` | Send `templates/intro.md` to target-industry connections we have never messaged |
+| `templates/intro.md` | The intro message body, sent verbatim |
 | `lib/unipile/` | Unipile API client for LinkedIn contacts and messaging |
 | `tests/` | Test suite (`pytest`; `pytest -m live` hits the real API, read-only) |
 | `Dockerfile.deploy` | Docker configuration for cloud deployment |
@@ -117,17 +119,17 @@ a warning the first time that happens.
 
 **Pacing** — every budgeted call waits first. The gap is drawn fresh each time
 from a distribution skewed toward the short end, so the mean sits near a third
-of the way up the range (~40s for 20-90), not at the midpoint.
+of the way up the range (~26s for 20-40), not at the midpoint.
 
 | Variable | Default | What it does |
 |----------|---------|--------------|
 | `UNIPILE_MIN_DELAY_SECONDS` | `20` | Shortest gap between calls. Raising it is the most effective way to look less automated, and the most expensive in wall-clock time. |
-| `UNIPILE_MAX_DELAY_SECONDS` | `90` | Longest ordinary gap. |
-| `UNIPILE_LONG_PAUSE_EVERY` | `20` | Average number of calls between long breaks. Each call rolls independently, so breaks do not fall on a fixed stride. `0` disables them. |
-| `UNIPILE_LONG_PAUSE_MIN_SECONDS` | `180` | Shortest long break. |
-| `UNIPILE_LONG_PAUSE_MAX_SECONDS` | `600` | Longest long break. |
+| `UNIPILE_MAX_DELAY_SECONDS` | `40` | Longest ordinary gap. |
+| `UNIPILE_LONG_PAUSE_EVERY` | `10` | Average number of calls between long breaks. Each call rolls independently, so breaks do not fall on a fixed stride. `0` disables them. |
+| `UNIPILE_LONG_PAUSE_MIN_SECONDS` | `120` | Shortest long break. |
+| `UNIPILE_LONG_PAUSE_MAX_SECONDS` | `300` | Longest long break. |
 
-At these defaults a full 250-profile day takes roughly four hours before any
+At these defaults a full 250-profile day takes roughly three hours before any
 retries. That is the intended cost.
 
 **Throttle recovery** — throttling arrives as HTTP 200 with the requested
@@ -315,6 +317,71 @@ demonstrably read, since they replied to them -- so whether someone opened a
 message cannot be known from this data. A reply is the only evidence of
 engagement it holds.
 
+## Intro Campaign (`send-intros.ipynb`)
+
+Sends the message in `templates/intro.md`, unchanged, to every first-degree
+connection classified into a target industry that no message has ever gone to.
+Open the notebook and run it top to bottom; `DRY_RUN = True` is the default.
+
+Phase A0 runs `messages-sync.py` as a subprocess before anything reads
+`analysis`, so `sent_total` reflects today rather than whenever that script was
+last run by hand. It writes to Firestore even under `DRY_RUN` -- it mirrors your
+own mailbox rather than acting on LinkedIn, and a dry run built on a stale
+`sent_total` would name the wrong candidates, which is the one thing a dry run
+exists to get right. A non-zero exit stops the notebook instead of quietly
+selecting from old data. `SYNC_MESSAGES_FIRST = False` skips it.
+
+Candidate selection is driven from `GET /users/relations` rather than from
+Firestore. `memberDistance` on a stored contact is whatever it was when the
+profile was scraped and is never refreshed: on the first real run, 32 of 173
+candidates -- 18% -- were stored as second-degree despite being connections
+today, so a Firestore-side distance filter would silently drop nearly a fifth of
+the campaign. The relation list is also the only place the `ACoAA` provider id
+the send endpoints take can be had; `analysis` does not hold it.
+
+### The `handling` override
+
+A contact whose `handling` field in `analysis` is `exclude` or `manual` is never
+messaged, whatever their industry says. `exclude` is a decision never to write to
+them; `manual` reserves them for a personal message that a templated intro
+arriving first would pre-empt. The field is set by hand -- 85 of 28,318
+documents carry one -- which makes it the most deliberate signal in the
+collection, so it outranks every automatic one.
+
+Matched after trimming and lowercasing, because a hand-maintained field collects
+stray capitals and padding and a near-miss here fails open: it sends the message
+anyway. Edit `HANDLING_HOLDS` in the notebook's configuration cell to change
+which values hold a contact back.
+
+### Three guards against a duplicate message
+
+| Guard | Source | Catches |
+|-------|--------|---------|
+| an open conversation | LinkedIn, live | anything, including a chat *they* opened and we never answered |
+| `sent_total` | `analysis`, refreshed by Phase A0 | contacts messaged before this campaign existed |
+| `intro_sent_at` | `analysis`, written by the notebook | a re-run before the next message sync |
+
+They are not redundant. `sent_total` is **absent**, not zero, for someone never
+written to -- 4,906 of the 4,912 -- and absent entirely for anyone messaged
+below the `--since` floor of the last sync, so it narrows the list rather than
+protecting it. The live chat map is what protects it. `intro_sent_at` is a
+separate field because `refresh_contact_stats` deletes `sent_total` from any
+contact whose messages it cannot find.
+
+`select_intro_candidates` in `functions.py` holds the whole filter and is
+tested; the notebook only orchestrates.
+
+### Pacing
+
+Sends go through `send_message` / `start_chat`, which enforce the daily cap and
+wait one `HumanCadence` interval first -- there is no path from the notebook
+that skips them. Gaps are 20-40s drawn from a right-skewed distribution, with a
+random 2-5 minute break averaging one every 10 sends, because LinkedIn watches
+the rhythm of actions and not only their count. A full 50-message day is
+therefore around 40 minutes of wall clock. `RateLimited` or `AccountRestricted` stops
+the run; re-running later resumes, and Phase C picks up the conversations the
+previous run opened.
+
 ## AI Classification (`analysis.ipynb`)
 
 AI classification is **not automatic**. You run this notebook manually whenever you want to process new profiles.
@@ -395,10 +462,10 @@ and `analysis.ipynb` work on both sources unchanged.
 
 LinkedIn watches the *rhythm* of calls, not just their number, so the client
 waits a randomised, browsing-like interval before every profile fetch, message
-and invitation: mostly 20-90s, skewed short, with a 3-10 minute break roughly
-every 20 calls. All of it is tunable in `.env` (`UNIPILE_MIN_DELAY_SECONDS`,
+and invitation: mostly 20-40s, skewed short, with a 2-5 minute break roughly
+every 10 calls. All of it is tunable in `.env` (`UNIPILE_MIN_DELAY_SECONDS`,
 `UNIPILE_LONG_PAUSE_EVERY`, ...). At that pace a full 250-profile day takes
-several hours, which is the point.
+about three hours, which is the point.
 
 Throttling does not arrive as an error. LinkedIn returns HTTP 200 with the
 withheld sections empty, named in `throttled_sections`. When that happens the
