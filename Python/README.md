@@ -55,6 +55,7 @@ analysis.csv  /  analysis.txt
 | `main.py` | FastAPI server with `/add-profile/` and `/echo/` endpoints |
 | `functions.py` | Helper functions for profile processing (ID extraction, text joining) |
 | `collection-tocsv.py` | Export Firestore collection to CSV and TXT files |
+| `messages-sync.py` | Incrementally sync LinkedIn messages into the `messages` collection, joined to contacts |
 | `analysis.ipynb` | Classify profiles with Gemini, including re-classifying changed summaries |
 | `new-contacts.ipynb` | Pull new connections through Unipile, store them, then classify the unclassified backlog |
 | `lib/unipile/` | Unipile API client for LinkedIn contacts and messaging |
@@ -236,6 +237,45 @@ python collection-tocsv.py
 ```
 
 This generates `analysis.csv` and `analysis.txt` from the `analysis` Firestore collection.
+
+## Message Sync (`messages-sync.py`)
+
+Pulls LinkedIn messages into the `messages` Firestore collection, resolving each
+one to a contact in `extracted` / `analysis` so conversations and classifications
+can be analysed together.
+
+```bash
+uv run python messages-sync.py
+```
+
+Only messages Firestore does not already hold are fetched. A steady-state run
+costs about three requests and under two seconds; a first run backfills to the
+floor set by `--since` in roughly fifteen pages.
+
+| Flag | Effect |
+|------|--------|
+| `--since YYYY-MM-DD` | Oldest message to fetch. Default `2024-01-01`. Lowering it later resumes the backfill automatically; raising it discards nothing. |
+| `--dry-run` | Read everything, write nothing. |
+| `--max-pages N` | Stop after N pages per pass. Re-run to continue. |
+| `--rescan-days N` | Also re-read the last N days, refreshing edits and deletions. Default `0`. |
+| `--no-contact-join` | Skip contact resolution; store the raw provider and member ids only. |
+| `--verify` | Compare the stored range against the provider and report any gap. |
+
+### How it resumes
+
+`messages` always holds a contiguous range of history. Both watermarks are
+derived from the collection on every run rather than stored beside it, so there
+is no sync state to corrupt or reset -- an interruption from a dropped
+connection, a rate limit or `--max-pages` is repaired by running the script
+again. New messages are written oldest-first so that a partial write leaves a
+shorter contiguous range rather than a gap.
+
+### Known limits
+
+A message edited, deleted or marked seen *after* it was stored is not re-read,
+so its stored copy keeps the state it had at sync time. Use `--rescan-days` to
+refresh a recent window. Attachments are stored as metadata only; documents
+carrying any are flagged `attachments_fetched: False` for a later pass.
 
 ## AI Classification (`analysis.ipynb`)
 

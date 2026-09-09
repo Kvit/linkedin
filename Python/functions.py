@@ -4,6 +4,7 @@ This module contains common functions used throughout the application.
 
 import json  # for testing purposes
 import os  # for testing purposes
+from datetime import UTC, datetime, timedelta
 
 from google.cloud.firestore_v1.base_query import FieldFilter
 
@@ -162,6 +163,145 @@ def count_created_since(collection_ref, cutoff, field="created_at") -> int:
     result = query.count(alias="n").get()
 
     return int(result[0][0].value)
+
+
+def member_id_from_urn(urn: str | None) -> str | None:
+    """The numeric member id inside ``urn:li:member:<N>``.
+
+    LinkedIn identifies a person two ways and the contact store is split across
+    both: the newer documents carry the ``ACoAA...`` provider hash, while the
+    ~28k imported from LinkedIn Helper carry this member id. A message-to-contact
+    join that knows only one of them misses whole eras of the collection.
+
+    Args:
+        urn: A member URN, a bare numeric id, or None.
+
+    Returns:
+        str | None: The trailing id, or None when there is nothing to read.
+    """
+    if not urn:
+        return None
+    return str(urn).rsplit(":", 1)[-1] or None
+
+
+def index_external_ids(documents) -> dict[tuple[str, str], str]:
+    """Map ``(key_type, external_id) -> document id`` over streamed contacts.
+
+    This is built in Python rather than queried, and that is a correctness
+    requirement rather than an optimisation. Firestore's ``array_contains``
+    matches an array element only in its entirety, and entries imported from
+    LinkedIn Helper carry bookkeeping fields -- ``personId``, ``createdAt``,
+    ``updatedAt``, ``memberId``, ``id``, ``sentAtToPAS``, ``actualAt`` --
+    alongside the two that matter. Filtering on ``{"type": ..., "externalId":
+    ...}`` therefore matches only the handful of documents written in the newer,
+    thinner shape, and silently resolves about a tenth of the collection.
+
+    The first document to claim a key keeps it, so a duplicate contact cannot
+    displace the original mapping partway through a stream.
+
+    Args:
+        documents: Streamed Firestore documents exposing `.id` and `.to_dict()`.
+
+    Returns:
+        dict: Keys are `(type, external_id)` with the id normalised to `str`,
+        because the stored type is not uniform across the two eras and an int
+        key would never match a string lookup.
+    """
+    index: dict[tuple[str, str], str] = {}
+
+    for document in documents:
+        entries = (document.to_dict() or {}).get("externalIds")
+        if not isinstance(entries, list):
+            continue
+
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            key_type = entry.get("type")
+            external_id = entry.get("externalId")
+            if not key_type or external_id is None or external_id == "":
+                continue
+            index.setdefault((key_type, str(external_id)), document.id)
+
+    return index
+
+
+def plan_forward_writes(messages: list) -> list:
+    """Order a batch of newly-fetched messages oldest-first, ready to write.
+
+    The API answers newest-first, and writing in that order is the one way an
+    incremental sync can lose data permanently. A store that resumes from the
+    newest timestamp it holds must never hold a message newer than one it is
+    missing: write the newest of a batch first, die, and the high-water mark now
+    sits above messages that were never written. The next run's forward pass
+    starts above them and its backward pass starts below them, so nothing goes
+    looking for them again.
+
+    Ascending order makes every prefix of the plan contiguous, so an interruption
+    leaves a shorter range rather than a hole.
+
+    Undated messages sort last. They cannot move a watermark, so they are safe to
+    write only once every dated message is already down.
+    """
+    floor = datetime.min.replace(tzinfo=UTC)
+    return sorted(
+        messages,
+        key=lambda message: (message.timestamp is None, message.timestamp or floor),
+    )
+
+
+def needs_backfill(stored_from, floor) -> bool:
+    """Whether any history older than what is stored still lies above the floor.
+
+    Guards against an inverted window. The backward pass asks the API for
+    ``after=floor, before=stored_from``; raising the floor past the oldest
+    stored message crosses those bounds, and the API answers
+    ``errors/invalid_parameters`` rather than an empty page.
+
+    Raising the floor is not an error -- it narrows future interest without
+    discarding anything already stored -- so this reports that there is simply
+    no backfill left to do.
+
+    Args:
+        stored_from: The oldest timestamp held, or None for an empty collection.
+        floor: The oldest timestamp the caller is interested in.
+
+    Returns:
+        bool: True while stored history stops short of the floor.
+    """
+    if stored_from is None:
+        return True
+    return stored_from > floor
+
+
+def boundary_window(watermark, direction: str):
+    """Widen an exclusive bound by a millisecond so a timestamp tie is not lost.
+
+    ``before`` and ``after`` on the messages endpoint are exclusive, so asking
+    for exactly the stored watermark silently drops any other message sharing
+    that millisecond. Two such messages normally arrive in the same page and are
+    written together -- but when the tie straddles a page boundary and the run
+    dies in between, the survivor is excluded from every later walk.
+
+    One millisecond of deliberate overlap closes that hole. It costs one
+    idempotent rewrite per run, which is why the caller excludes the boundary
+    ids by hand before deciding whether a delta is empty.
+
+    Args:
+        watermark: The stored bound, or None for an unbounded first run.
+        direction: "forward" to widen an `after` bound (older by 1ms), or
+            "backward" to widen a `before` bound (newer by 1ms).
+
+    Returns:
+        The widened bound, or None when there was no watermark to widen.
+    """
+    if watermark is None:
+        return None
+    if direction not in ("forward", "backward"):
+        raise ValueError(f"direction must be 'forward' or 'backward', got {direction!r}")
+
+    step = timedelta(milliseconds=1)
+    return watermark - step if direction == "forward" else watermark + step
 
 
 # test

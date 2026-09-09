@@ -241,10 +241,32 @@ class Chat(UnipileModel):
 
 
 class Message(UnipileModel):
+    """One message from ``/messages`` or ``/chats/{id}/messages``.
+
+    The flag fields are 0/1 integers rather than booleans -- that is how the API
+    sends them, and coercing to ``bool`` here would misrepresent a payload that
+    also uses ``null`` for "not applicable".
+    """
+
     id: str
     chat_id: str | None = None
+    account_id: str | None = None
     text: str | None = None
+    subject: str | None = None
+    sender_id: str | None = None
+    sender_attendee_id: str | None = None
+    message_type: str | None = None
     is_sender: int | None = None
+    deleted: int | None = None
+    edited: int | None = None
+    seen: int | None = None
+    hidden: int | None = None
+    is_event: int | None = None
+    #: Nine provider-specific shapes (img, file, linkedin_post, contact_card,
+    #: ...) across half a percent of messages. Modelling the union would buy
+    #: nothing a caller storing the array verbatim can use, so it stays raw --
+    #: but it is declared, so it defaults to empty rather than being absent.
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
     timestamp: datetime | None = None
 
     _ts = field_validator("timestamp", mode="before")(_parse_timestamp)
@@ -254,6 +276,16 @@ class Attendee(UnipileModel):
     id: str
     provider_id: str | None = None
     name: str | None = None
+    #: ``urn:li:member:<N>``. The API nests it under ``specifics``, and it is
+    #: the only identity that reaches the legacy half of the contact store: of
+    #: 28,328 stored profiles, 2,092 carry a member id and no provider hash. A
+    #: top-level value is accepted too so hand-built payloads keep working.
+    member_urn: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            AliasPath("specifics", "member_urn"), "member_urn"
+        ),
+    )
 
 
 class SentInvitation(UnipileModel):

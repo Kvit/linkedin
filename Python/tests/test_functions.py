@@ -10,10 +10,20 @@ query it builds is worth pinning: a wrong operator would silently report zero
 contacts saved and hand back a full allowance.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from functions import count_created_since, get_member_distance, join_keys
+from functions import (
+    boundary_window,
+    count_created_since,
+    get_member_distance,
+    index_external_ids,
+    join_keys,
+    member_id_from_urn,
+    needs_backfill,
+    plan_forward_writes,
+)
+from lib.unipile.models import Message
 
 
 def test_join_keys_preserves_input_order():
@@ -116,3 +126,194 @@ def test_count_created_since_accepts_a_different_timestamp_field():
     count_created_since(collection, datetime(2026, 9, 8, tzinfo=UTC), field="sent_at")
 
     assert collection.filter.field_path == "sent_at"
+
+
+# --- message sync helpers -----------------------------------------------------
+
+
+class _FakeDoc:
+    """A streamed Firestore document: an id and a body, nothing else."""
+
+    def __init__(self, doc_id: str, body: dict) -> None:
+        self.id = doc_id
+        self._body = body
+
+    def to_dict(self):
+        return self._body
+
+
+def _external(doc_id, *entries):
+    return _FakeDoc(doc_id, {"externalIds": list(entries)})
+
+
+def test_member_id_from_urn_extracts_the_trailing_number():
+    assert member_id_from_urn("urn:li:member:12345") == "12345"
+
+
+def test_member_id_from_urn_accepts_a_bare_number_and_rejects_nothing_useful():
+    assert member_id_from_urn("12345") == "12345"
+    assert member_id_from_urn(None) is None
+    assert member_id_from_urn("") is None
+
+
+def test_index_external_ids_maps_both_key_types_to_the_document():
+    index = index_external_ids([
+        _external("some-slug",
+                  {"type": "public-id", "externalId": "some-slug"},
+                  {"type": "li-hash-id", "externalId": "ACoAA-hash"},
+                  {"type": "member-id", "externalId": "12345"}),
+    ])
+
+    assert index[("li-hash-id", "ACoAA-hash")] == "some-slug"
+    assert index[("member-id", "12345")] == "some-slug"
+
+
+def test_index_external_ids_finds_documents_carrying_only_one_key_type():
+    """Neither key alone is sufficient across the two eras of stored contacts:
+    2,092 documents carry a member id and no hash, 260 the reverse."""
+    index = index_external_ids([
+        _external("legacy-only", {"type": "member-id", "externalId": "111"}),
+        _external("modern-only", {"type": "li-hash-id", "externalId": "ACoAA-222"}),
+    ])
+
+    assert index[("member-id", "111")] == "legacy-only"
+    assert index[("li-hash-id", "ACoAA-222")] == "modern-only"
+
+
+def test_index_external_ids_ignores_the_extra_keys_legacy_entries_carry():
+    """This is why the index is built in Python and not by a Firestore query.
+
+    `array_contains` matches a map only in its entirety, and legacy entries
+    carry bookkeeping fields alongside the two that matter. A query filtering on
+    {"type": ..., "externalId": ...} therefore misses every legacy document --
+    which is most of them.
+    """
+    index = index_external_ids([
+        _external("legacy", {
+            "type": "li-hash-id",
+            "externalId": "ACoAA-hash",
+            "personId": 1,
+            "id": 564,
+            "hash": "ACoAA-hash",
+            "createdAt": "2020-11-17T22:28:42.704Z",
+            "updatedAt": "2022-08-23T13:39:05.219Z",
+            "sentAtToPAS": "2024-03-28T12:15:27.605Z",
+            "actualAt": "2022-08-23T13:39:05.219Z",
+        }),
+    ])
+
+    assert index[("li-hash-id", "ACoAA-hash")] == "legacy"
+
+
+def test_index_external_ids_normalises_the_external_id_to_a_string():
+    """The stored type is not uniform across eras; an int key would never match."""
+    index = index_external_ids([
+        _external("numeric", {"type": "member-id", "externalId": 12345}),
+    ])
+
+    assert index[("member-id", "12345")] == "numeric"
+
+
+def test_index_external_ids_skips_entries_with_no_usable_id():
+    index = index_external_ids([
+        _FakeDoc("empty", {}),
+        _FakeDoc("null-array", {"externalIds": None}),
+        _external("no-id", {"type": "member-id", "externalId": None}),
+        _external("not-a-map", "junk"),
+    ])
+
+    assert index == {}
+
+
+# --- forward write ordering ---------------------------------------------------
+
+
+def _msg(mid, ts):
+    return Message.model_validate({"id": mid, "timestamp": ts})
+
+
+def test_plan_forward_writes_orders_the_delta_oldest_first():
+    """The API answers newest-first; a durable store must be filled the other way."""
+    api_order = [_msg("E", "2026-09-05T00:00:00.000Z"),
+                 _msg("D", "2026-09-04T00:00:00.000Z"),
+                 _msg("C", "2026-09-03T00:00:00.000Z")]
+
+    assert [m.id for m in plan_forward_writes(api_order)] == ["C", "D", "E"]
+
+
+def test_a_forward_write_interrupted_midway_leaves_no_gap():
+    """The regression test for the bug this ordering exists to prevent.
+
+    Writing newest-first and then dying raises the stored high-water mark past
+    messages that were never written: the next run's forward pass starts above
+    them and its backward pass starts below them, so nothing ever fetches them
+    again. Ascending order means every prefix of the plan is contiguous -- an
+    interruption leaves a shorter range, not a hole.
+    """
+    planned = plan_forward_writes([
+        _msg("E", "2026-09-05T00:00:00.000Z"),
+        _msg("D", "2026-09-04T00:00:00.000Z"),
+        _msg("C", "2026-09-03T00:00:00.000Z"),
+    ])
+
+    for cut in range(1, len(planned)):
+        written, unwritten = planned[:cut], planned[cut:]
+        highest_written = max(m.timestamp for m in written)
+        lowest_unwritten = min(m.timestamp for m in unwritten)
+        assert highest_written < lowest_unwritten, (
+            f"writing the first {cut} would strand {[m.id for m in unwritten]}"
+        )
+
+
+def test_plan_forward_writes_puts_undated_messages_last():
+    """An undated message cannot move a watermark, so it is written only once
+    every dated message is safely down."""
+    planned = plan_forward_writes([
+        _msg("undated", None),
+        _msg("dated", "2026-09-03T00:00:00.000Z"),
+    ])
+
+    assert [m.id for m in planned] == ["dated", "undated"]
+
+
+# --- exclusive-bound nudging --------------------------------------------------
+
+
+def test_boundary_window_widens_an_after_bound_backwards_by_one_millisecond():
+    """`after` is exclusive, so asking for exactly the watermark would drop any
+    other message sharing that millisecond."""
+    watermark = datetime(2026, 9, 4, 12, 46, 3, 616000, tzinfo=UTC)
+
+    assert boundary_window(watermark, "forward") == watermark - timedelta(milliseconds=1)
+
+
+def test_boundary_window_widens_a_before_bound_forwards_by_one_millisecond():
+    watermark = datetime(2024, 1, 1, 19, 40, 55, 935000, tzinfo=UTC)
+
+    assert boundary_window(watermark, "backward") == watermark + timedelta(milliseconds=1)
+
+
+def test_boundary_window_passes_through_a_missing_watermark():
+    """An empty collection has no bound to widen -- the first run is unbounded."""
+    assert boundary_window(None, "forward") is None
+    assert boundary_window(None, "backward") is None
+
+
+def test_backfill_is_needed_while_stored_history_stops_short_of_the_floor():
+    floor = datetime(2024, 1, 1, tzinfo=UTC)
+
+    assert needs_backfill(None, floor) is True, "an empty collection must backfill"
+    assert needs_backfill(datetime(2026, 3, 10, tzinfo=UTC), floor) is True
+
+
+def test_backfill_stops_once_stored_history_reaches_the_floor():
+    """Raising the floor above what is stored must not invert the window.
+
+    The backward pass asks for (after=floor, before=min_ts). If the floor is
+    raised past min_ts those bounds cross, and the API rejects the request with
+    `errors/invalid_parameters` rather than returning nothing.
+    """
+    stored_from = datetime(2024, 1, 1, 19, 40, tzinfo=UTC)
+
+    assert needs_backfill(stored_from, datetime(2026, 9, 1, tzinfo=UTC)) is False
+    assert needs_backfill(stored_from, stored_from) is False

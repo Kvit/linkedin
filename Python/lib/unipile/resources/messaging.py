@@ -10,6 +10,22 @@ from ..pagination import iter_account_scoped
 from ..transport import Transport
 
 
+def _api_timestamp(value: datetime) -> str:
+    """Encode a datetime for the ``before``/``after`` filters on ``/messages``.
+
+    The API validates against a regex demanding exactly three fractional digits
+    and a literal ``Z``. ``datetime.isoformat()`` produces six digits and
+    ``+00:00``, and is rejected -- so the string is built by hand rather than
+    delegated, and the public methods take a ``datetime`` so no caller ever has
+    the chance to pass the wrong shape.
+
+    Sub-millisecond precision is truncated, never rounded: rounding an ``after``
+    bound upward would step past a message and drop it from every future walk.
+    """
+    value = value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+    return value.strftime("%Y-%m-%dT%H:%M:%S.") + f"{value.microsecond // 1000:03d}Z"
+
+
 class MessagingResource:
     """Everything under `/chats`, `/messages` and `/chat_attendees`."""
 
@@ -44,6 +60,50 @@ class MessagingResource:
 
     def iter_attendees(self, chat_id: str, *, page_size: int = 100) -> Iterator[Attendee]:
         return self._list(f"/api/v1/chats/{chat_id}/attendees", Attendee, page_size)
+
+    def iter_all_messages(
+        self,
+        *,
+        before: datetime | None = None,
+        after: datetime | None = None,
+        sender_id: str | None = None,
+        page_size: int = 100,
+    ) -> Iterator[Message]:
+        """Every message on the account, newest first, across all conversations.
+
+        `iter_messages` walks one chat; this walks the mailbox. Finding a handful
+        of new messages the other way costs one request per conversation, which
+        on this account is three thousand of them.
+
+        `before` and `after` are **exclusive** bounds and may be combined to ask
+        for a window -- which is what lets a backfill terminate by running out of
+        window rather than by paging to exhaustion. Both are taken as `datetime`
+        because the API's accepted format is narrow enough that hand-built
+        strings are the likeliest way to break this call.
+
+        Ordering is strictly timestamp-descending. A caller writing these to a
+        durable store must reverse the order first: writing newest-first and
+        being interrupted raises the stored high-water mark past messages that
+        were never written, and nothing afterwards goes looking for them.
+        """
+        return self._list(
+            "/api/v1/messages",
+            Message,
+            page_size,
+            before=_api_timestamp(before) if before is not None else None,
+            after=_api_timestamp(after) if after is not None else None,
+            sender_id=sender_id,
+        )
+
+    def iter_all_attendees(self, *, page_size: int = 100) -> Iterator[Attendee]:
+        """Every attendee on the account, across all conversations.
+
+        The per-chat route answers "who is in this conversation"; this answers
+        "who have I ever spoken to", which is the table a bulk join needs. Three
+        thousand attendees arrive in thirteen pages instead of three thousand
+        requests.
+        """
+        return self._list("/api/v1/chat_attendees", Attendee, page_size)
 
     def count_messages_sent_since(self, cutoff: datetime) -> int:
         """How many messages this account sent at or after ``cutoff``.

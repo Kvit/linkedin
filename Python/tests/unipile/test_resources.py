@@ -5,7 +5,8 @@ The ordering tests matter most. Every write must run check -> throttle -> send
 before sending charges the budget for calls that failed.
 """
 
-from datetime import UTC, datetime
+import re
+from datetime import UTC, datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -13,7 +14,7 @@ import respx
 
 from lib.unipile.budget import SendBudget
 from lib.unipile.errors import BudgetExhausted, ProfileIncomplete, ThrottleLockout
-from lib.unipile.models import Chat, Profile, Relation
+from lib.unipile.models import Attendee, Chat, Message, Profile, Relation
 from lib.unipile.resources.accounts import AccountsResource
 from lib.unipile.resources.messaging import MessagingResource
 from lib.unipile.resources.search import SearchResource
@@ -796,3 +797,202 @@ def test_unread_is_omitted_when_not_requested(messaging, chats_body):
     list(messaging.iter_chats())
 
     assert "unread" not in route.calls[0].request.url.params
+
+
+# --- account-wide messaging reads ---------------------------------------------
+#
+# `before`/`after` are validated by the API against a regex demanding exactly
+# three fractional digits and a literal Z. `datetime.isoformat()` produces six
+# digits and `+00:00` and is rejected, so these tests assert on the *request
+# params* rather than on the parsed result: a live rejection is invisible to a
+# test that only checks what came back.
+
+API_TIMESTAMP = re.compile(r"^[1-2]\d{3}-[0-1]\d-[0-3]\dT\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+
+
+def _message_page(*specs, cursor=None):
+    """A page of ``/messages``: (id, chat_id, is_sender, timestamp) tuples."""
+    return {
+        "object": "MessageList",
+        "items": [
+            {
+                "object": "Message",
+                "id": mid,
+                "chat_id": chat_id,
+                "is_sender": sender,
+                "timestamp": ts,
+            }
+            for mid, chat_id, sender, ts in specs
+        ],
+        "cursor": cursor,
+    }
+
+
+@respx.mock
+def test_iter_all_messages_encodes_the_timestamp_the_api_demands(messaging):
+    route = respx.get(f"{BASE}/api/v1/messages").mock(
+        return_value=httpx.Response(200, json=_message_page())
+    )
+
+    list(messaging.iter_all_messages(
+        after=datetime(2026, 9, 4, 12, 46, 4, 123456, tzinfo=UTC)))
+
+    sent = route.calls[0].request.url.params["after"]
+    assert sent == "2026-09-04T12:46:04.123Z"
+    assert API_TIMESTAMP.fullmatch(sent)
+
+
+@respx.mock
+def test_iter_all_messages_truncates_microseconds_rather_than_rounding(messaging):
+    """Rounding up would step `after` past a message and skip it for good."""
+    route = respx.get(f"{BASE}/api/v1/messages").mock(
+        return_value=httpx.Response(200, json=_message_page())
+    )
+
+    list(messaging.iter_all_messages(
+        after=datetime(2026, 9, 4, 12, 46, 4, 999999, tzinfo=UTC)))
+
+    assert route.calls[0].request.url.params["after"] == "2026-09-04T12:46:04.999Z"
+
+
+@respx.mock
+def test_iter_all_messages_converts_a_non_utc_datetime(messaging):
+    route = respx.get(f"{BASE}/api/v1/messages").mock(
+        return_value=httpx.Response(200, json=_message_page())
+    )
+    berlin = timezone(timedelta(hours=2))
+
+    list(messaging.iter_all_messages(
+        after=datetime(2026, 9, 4, 14, 0, 0, 0, tzinfo=berlin)))
+
+    assert route.calls[0].request.url.params["after"] == "2026-09-04T12:00:00.000Z"
+
+
+@respx.mock
+def test_iter_all_messages_treats_a_naive_datetime_as_utc(messaging):
+    route = respx.get(f"{BASE}/api/v1/messages").mock(
+        return_value=httpx.Response(200, json=_message_page())
+    )
+
+    list(messaging.iter_all_messages(after=datetime(2026, 9, 4, 12, 0, 0)))
+
+    assert route.calls[0].request.url.params["after"] == "2026-09-04T12:00:00.000Z"
+
+
+@respx.mock
+def test_iter_all_messages_omits_bounds_that_were_not_given(messaging):
+    route = respx.get(f"{BASE}/api/v1/messages").mock(
+        return_value=httpx.Response(200, json=_message_page())
+    )
+
+    list(messaging.iter_all_messages())
+
+    params = route.calls[0].request.url.params
+    assert "before" not in params
+    assert "after" not in params
+    assert "sender_id" not in params
+    assert params["account_id"] == ACCOUNT
+
+
+@respx.mock
+def test_iter_all_messages_sends_both_bounds_to_window_a_backfill(messaging):
+    """The backfill terminates by asking for a window, not by paging to empty."""
+    route = respx.get(f"{BASE}/api/v1/messages").mock(
+        return_value=httpx.Response(200, json=_message_page())
+    )
+
+    list(messaging.iter_all_messages(
+        before=datetime(2026, 9, 4, 0, 0, tzinfo=UTC),
+        after=datetime(2024, 1, 1, 0, 0, tzinfo=UTC),
+    ))
+
+    params = route.calls[0].request.url.params
+    assert params["before"] == "2026-09-04T00:00:00.000Z"
+    assert params["after"] == "2024-01-01T00:00:00.000Z"
+
+
+@respx.mock
+def test_iter_all_messages_walks_every_page(messaging):
+    route = respx.get(f"{BASE}/api/v1/messages").mock(
+        side_effect=[
+            httpx.Response(200, json=_message_page(
+                ("m2", "c1", 1, "2026-09-04T12:00:00.000Z"), cursor="CUR")),
+            httpx.Response(200, json=_message_page(
+                ("m1", "c1", 0, "2026-09-03T12:00:00.000Z"))),
+        ]
+    )
+
+    messages = list(messaging.iter_all_messages(page_size=250))
+
+    assert [m.id for m in messages] == ["m2", "m1"]
+    assert isinstance(messages[0], Message)
+    assert route.calls[1].request.url.params["cursor"] == "CUR"
+    assert route.calls[1].request.url.params["limit"] == "250"
+
+
+@respx.mock
+def test_iter_all_messages_is_not_charged_to_the_budget(messaging, budget):
+    """Reads here are unbudgeted; a sync must not consume the daily send quota."""
+    respx.get(f"{BASE}/api/v1/messages").mock(
+        return_value=httpx.Response(200, json=_message_page(
+            ("m1", "c1", 1, "2026-09-04T12:00:00.000Z")))
+    )
+
+    list(messaging.iter_all_messages())
+
+    assert budget.calls == []
+
+
+@respx.mock
+def test_iter_all_attendees_uses_the_account_wide_route(messaging):
+    """Not ``/chats/{id}/attendees`` -- that would be one request per chat."""
+    route = respx.get(f"{BASE}/api/v1/chat_attendees").mock(
+        return_value=httpx.Response(200, json={
+            "object": "ChatAttendeeList",
+            "items": [{
+                "object": "ChatAttendee",
+                "id": "att1",
+                "provider_id": "ACoAA-someone",
+                "name": "Ray Osborne",
+                "is_self": 0,
+                "specifics": {"provider": "LINKEDIN",
+                              "member_urn": "urn:li:member:25323083"},
+            }],
+            "cursor": None,
+        })
+    )
+
+    attendees = list(messaging.iter_all_attendees())
+
+    assert route.calls[0].request.url.path == "/api/v1/chat_attendees"
+    assert isinstance(attendees[0], Attendee)
+    assert attendees[0].provider_id == "ACoAA-someone"
+
+
+def test_attendee_reads_the_member_urn_nested_under_specifics():
+    """The join to `extracted` needs the member id, and it arrives nested."""
+    attendee = Attendee.model_validate({
+        "id": "att1",
+        "provider_id": "ACoAA-someone",
+        "specifics": {"provider": "LINKEDIN", "member_urn": "urn:li:member:12345"},
+    })
+
+    assert attendee.member_urn == "urn:li:member:12345"
+
+
+def test_message_defaults_attachments_when_the_payload_omits_them():
+    """A declared field with a default, not an `extra` -- the sync indexes
+    `attachments` on every message, and `extra="allow"` supplies no default."""
+    message = Message.model_validate({"object": "Message", "id": "m1"})
+
+    assert message.attachments == []
+
+
+def test_message_declares_the_fields_the_sync_reads():
+    """Typed, not merely tolerated: declared fields are validated and coerced,
+    and the sync's contact join depends on `sender_id` being one of them."""
+    declared = set(Message.model_fields)
+
+    assert {"sender_id", "sender_attendee_id", "message_type", "account_id",
+            "subject", "deleted", "edited", "seen", "hidden", "is_event",
+            "attachments"} <= declared
