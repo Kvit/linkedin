@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from ..budget import SendBudget
@@ -18,6 +19,11 @@ from ..transport import Transport
 
 #: LinkedIn truncates invitation notes; the API rejects anything longer.
 MAX_INVITATION_NOTE = 300
+
+#: The finest interval ``/users/invite/sent`` distinguishes. It dates
+#: invitations in words ("Sent today", "Sent 1 day ago"), so no timestamp
+#: derived from it is meaningful below a day.
+_RELATIVE_DATE_GRANULARITY = timedelta(days=1)
 
 InvitationAction = Literal["accept", "decline"]
 
@@ -189,6 +195,40 @@ class UsersResource:
 
     def iter_invitations_received(self, *, page_size: int = 100) -> Iterator[ReceivedInvitation]:
         return self._list("/api/v1/users/invite/received", ReceivedInvitation, page_size)
+
+    def count_invitations_since(self, cutoff: datetime) -> int:
+        """How many invitations were sent at or after ``cutoff``.
+
+        Feeds ``SendBudget.reconcile`` so the cap follows a rolling window of
+        real sends instead of a local counter that empties at UTC midnight.
+
+        **The timestamps are coarse.** LinkedIn returns a relative string --
+        "Sent today", "Sent 1 day ago", "Sent 3 weeks ago" -- and
+        ``parsed_datetime`` is that string resolved against the clock at the
+        moment of the request, not the moment the invitation went out. Everything
+        sent today is therefore stamped *now*, and everything sent yesterday
+        lands exactly on a 24h boundary, where a few microseconds of jitter
+        decides whether it is counted. Comparing it to an exact cutoff gives a
+        different answer on every call.
+
+        So the cutoff is widened by one day, the granularity of the underlying
+        string. For a 24h window that counts today's and yesterday's invitations
+        and stops there: a stable answer, and one that overstates rather than
+        understates what was sent. Overstating spends the cap sooner, which is
+        the safe direction for a limit that exists to avoid a restriction.
+
+        It still undercounts in one way that cannot be fixed here: the endpoint
+        lists invitations still *pending*, so one accepted or withdrawn inside
+        the window has already dropped out of it.
+        """
+        cutoff = cutoff if cutoff.tzinfo else cutoff.replace(tzinfo=UTC)
+        cutoff -= _RELATIVE_DATE_GRANULARITY
+        return sum(
+            1
+            for invitation in self.iter_invitations_sent()
+            if invitation.parsed_datetime is not None
+            and invitation.parsed_datetime >= cutoff
+        )
 
     def send_invitation(
         self,

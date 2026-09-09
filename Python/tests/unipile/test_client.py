@@ -18,21 +18,28 @@ ACCOUNTS_BODY = {
 
 
 def settings(**overrides) -> UnipileSettings:
+    """Client settings with the long break switched off.
+
+    `HumanCadence` draws its breaks at random -- roughly one call in
+    `long_pause_every` -- and these tests sleep for real, so leaving it on gives
+    any budgeted call a 1-in-10 chance of pausing the suite for two to five
+    minutes. Tests about pacing itself inject a fake clock instead.
+    """
     return UnipileSettings(
         _env_file=None,
         api_key="k-123",
         dns=BASE_HOST,
-        **overrides,
+        **{"long_pause_every": 0, **overrides},
     )
 
 
 @respx.mock
-def test_requests_carry_the_api_key_and_resolved_base_url(tmp_path):
+def test_requests_carry_the_api_key_and_resolved_base_url():
     route = respx.get(f"{BASE}/api/v1/accounts").mock(
         return_value=httpx.Response(200, json=ACCOUNTS_BODY)
     )
 
-    with UnipileClient(settings(budget_state_path=tmp_path / "b.json")) as client:
+    with UnipileClient(settings()) as client:
         client.accounts.list()
 
     request = route.calls[0].request
@@ -41,13 +48,13 @@ def test_requests_carry_the_api_key_and_resolved_base_url(tmp_path):
 
 
 @respx.mock
-def test_account_id_comes_from_settings_without_a_lookup(tmp_path):
+def test_account_id_comes_from_settings_without_a_lookup():
     route = respx.get(f"{BASE}/api/v1/accounts").mock(
         return_value=httpx.Response(200, json=ACCOUNTS_BODY)
     )
 
     with UnipileClient(
-        settings(account_id="ACC-FROM-ENV", budget_state_path=tmp_path / "b.json")
+        settings(account_id="ACC-FROM-ENV")
     ) as client:
         assert client.account_id == "ACC-FROM-ENV"
 
@@ -55,12 +62,12 @@ def test_account_id_comes_from_settings_without_a_lookup(tmp_path):
 
 
 @respx.mock
-def test_account_id_is_resolved_once_and_cached(tmp_path):
+def test_account_id_is_resolved_once_and_cached():
     route = respx.get(f"{BASE}/api/v1/accounts").mock(
         return_value=httpx.Response(200, json=ACCOUNTS_BODY)
     )
 
-    with UnipileClient(settings(budget_state_path=tmp_path / "b.json")) as client:
+    with UnipileClient(settings()) as client:
         assert client.account_id == "ACC-RESOLVED"
         assert client.account_id == "ACC-RESOLVED"
 
@@ -68,20 +75,20 @@ def test_account_id_is_resolved_once_and_cached(tmp_path):
 
 
 @respx.mock
-def test_no_connected_account_is_a_clear_error(tmp_path):
+def test_no_connected_account_is_a_clear_error():
     respx.get(f"{BASE}/api/v1/accounts").mock(
         return_value=httpx.Response(200, json={"items": [], "cursor": None})
     )
 
     from lib.unipile.errors import ConfigError
 
-    with UnipileClient(settings(budget_state_path=tmp_path / "b.json")) as client:
+    with UnipileClient(settings()) as client:
         with pytest.raises(ConfigError):
             _ = client.account_id
 
 
 @respx.mock
-def test_profile_fetches_use_the_configured_default_sections(tmp_path, profile_body):
+def test_profile_fetches_use_the_configured_default_sections(profile_body):
     respx.get(f"{BASE}/api/v1/accounts").mock(
         return_value=httpx.Response(200, json=ACCOUNTS_BODY)
     )
@@ -92,7 +99,6 @@ def test_profile_fetches_use_the_configured_default_sections(tmp_path, profile_b
     with UnipileClient(
         settings(
             profile_sections=["about", "experience"],
-            budget_state_path=tmp_path / "b.json",
             min_delay_seconds=0,
             max_delay_seconds=0,
         )
@@ -105,8 +111,8 @@ def test_profile_fetches_use_the_configured_default_sections(tmp_path, profile_b
     ]
 
 
-def test_closing_the_client_closes_the_http_connection(tmp_path):
-    client = UnipileClient(settings(budget_state_path=tmp_path / "b.json"))
+def test_closing_the_client_closes_the_http_connection():
+    client = UnipileClient(settings())
 
     client.close()
 
@@ -114,50 +120,42 @@ def test_closing_the_client_closes_the_http_connection(tmp_path):
 
 
 @respx.mock
-def test_budget_is_rekeyed_once_the_account_is_resolved(tmp_path, profile_body):
+def test_budget_is_rekeyed_once_the_account_is_resolved(profile_body):
     """Counters must land under the real account, not the placeholder.
 
     Without this, a tenant that does not set UNIPILE_ACCOUNT_ID would keep every
     counter under "pending" and never reconcile against real send history.
     """
-    import json
-
     respx.get(f"{BASE}/api/v1/accounts").mock(
         return_value=httpx.Response(200, json=ACCOUNTS_BODY)
     )
     respx.get(f"{BASE}/api/v1/users/khvatkov").mock(
         return_value=httpx.Response(200, json=profile_body)
     )
-    state = tmp_path / "b.json"
-
     with UnipileClient(
-        settings(budget_state_path=state, min_delay_seconds=0, max_delay_seconds=0)
+        settings(min_delay_seconds=0, max_delay_seconds=0)
     ) as client:
         client.users.get_profile("khvatkov")
 
-    counters = json.loads(state.read_text())
-    by_account = next(iter(counters.values()))
-    assert "ACC-RESOLVED" in by_account
-    assert "pending" not in by_account
+        # `used` reads the counter for whatever account_id resolves to now. A
+        # fetch charged to a "pending" placeholder would leave this at zero.
+        assert client.budget.account_id == "ACC-RESOLVED"
+        assert client.budget.used("profile") == 1
 
 
 @respx.mock
-def test_an_exhausted_budget_blocks_the_first_send_of_a_new_client(tmp_path):
+def test_an_exhausted_budget_blocks_the_first_send_of_a_new_client():
     """The budget must be keyed to the real account before the first check.
 
     Previously the client started on a "pending" placeholder and only rekeyed
     after resolution, so the first operation of every client instance was
     checked against an empty counter -- one silent over-send per process, which
     for daily scripts and notebook restarts means one per run.
+
+    The recount that seeds the budget is keyed to the resolved account, so it
+    only protects the first send if resolution happens first.
     """
-    import json
-    from datetime import UTC, datetime
-
     from lib.unipile.errors import BudgetExhausted
-
-    today = datetime.now(UTC).date().isoformat()
-    state = tmp_path / "b.json"
-    state.write_text(json.dumps({today: {"ACC-RESOLVED": {"invite": 1}}}))
 
     respx.get(f"{BASE}/api/v1/accounts").mock(
         return_value=httpx.Response(200, json=ACCOUNTS_BODY)
@@ -168,12 +166,14 @@ def test_an_exhausted_budget_blocks_the_first_send_of_a_new_client(tmp_path):
 
     with UnipileClient(
         settings(
-            budget_state_path=state,
             max_invites_per_day=1,
             min_delay_seconds=0,
             max_delay_seconds=0,
         )
     ) as client:
+        # What Phase A2 does at the start of a run: today's cap is already spent.
+        client.budget.reconcile(invite=1)
+
         with pytest.raises(BudgetExhausted):
             client.users.send_invitation("ACoAA-target")
 

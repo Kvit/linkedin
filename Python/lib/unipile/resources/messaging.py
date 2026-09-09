@@ -1,6 +1,7 @@
 """Chats, messages and attendees."""
 
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from typing import Any
 
 from ..budget import SendBudget
@@ -43,6 +44,31 @@ class MessagingResource:
 
     def iter_attendees(self, chat_id: str, *, page_size: int = 100) -> Iterator[Attendee]:
         return self._list(f"/api/v1/chats/{chat_id}/attendees", Attendee, page_size)
+
+    def count_messages_sent_since(self, cutoff: datetime) -> int:
+        """How many messages this account sent at or after ``cutoff``.
+
+        Feeds ``SendBudget.reconcile`` so the cap follows a rolling window of
+        real sends instead of a local counter that empties at UTC midnight.
+
+        `iter_chats` returns conversations newest first, so the walk stops at the
+        first chat whose last activity predates the cutoff rather than paging the
+        whole inbox. A quiet account costs a single request; only conversations
+        touched inside the window are opened.
+        """
+        cutoff = cutoff if cutoff.tzinfo else cutoff.replace(tzinfo=UTC)
+        total = 0
+        for chat in self.iter_chats():
+            if chat.timestamp is not None and chat.timestamp < cutoff:
+                break
+            total += sum(
+                1
+                for message in self.iter_messages(chat.id)
+                if message.is_sender
+                and message.timestamp is not None
+                and message.timestamp >= cutoff
+            )
+        return total
 
     def find_chat_with(self, provider_id: str) -> Chat | None:
         """The existing one-to-one chat with a contact, if there is one.

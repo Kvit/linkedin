@@ -18,12 +18,9 @@ pytestmark = pytest.mark.live
 
 
 @pytest.fixture(scope="module")
-def client(tmp_path_factory):
-    settings_path = tmp_path_factory.mktemp("live") / "budget.json"
+def client():
     live = UnipileClient.from_env()
-    live.settings.budget_state_path = settings_path
     live.budget = type(live.budget)(
-        path=settings_path,
         account_id=live.settings.account_id or "live",
         limits={"invite": 0, "message": 0, "profile": 25},
         min_delay=0.0,

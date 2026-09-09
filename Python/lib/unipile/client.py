@@ -43,7 +43,6 @@ class UnipileClient:
         self._account_id: str | None = settings.account_id
 
         budget = SendBudget(
-            path=settings.budget_state_path,
             # A callable, so the account resolves before the very first budget
             # check rather than after it. A placeholder here meant the opening
             # operation of every client instance was checked against an empty

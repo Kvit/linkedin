@@ -93,8 +93,20 @@ Every variable below is optional and shown with its default. Defaults live in
 [`lib/unipile/config.py`](lib/unipile/config.py); the pacing mechanism is in
 [`lib/unipile/pacing.py`](lib/unipile/pacing.py).
 
-**Daily caps** — per UTC day, per account, persisted to disk so a kernel restart
-does not hand back a fresh allowance. Hitting one raises `BudgetExhausted`.
+**Daily caps** — per account, over a **rolling 24 hours**. Hitting one raises
+`BudgetExhausted`.
+
+Counters are held in memory and seeded by `SendBudget.reconcile`, which
+`new-contacts.ipynb` calls at the start of a run (Phase A2). It counts the last
+24 hours from the stores that outlive the process — `created_at` on the contacts
+saved to Firestore, LinkedIn's own list of sent invitations, the timestamps on
+messages sent — so those stores are the durable state and nothing is written to
+disk. Allowance returns gradually as actions age out, rather than a spent cap
+becoming a full one at midnight, and the count sees invitations sent from
+LinkedIn directly, which a local tally never could.
+
+A process that spends without reconciling first starts from zero; the budget logs
+a warning the first time that happens.
 
 | Variable | Default | What it does |
 |----------|---------|--------------|
@@ -147,7 +159,6 @@ percentage; these act on that reading, independently of the caps above.
 | Variable | Default | What it does |
 |----------|---------|--------------|
 | `UNIPILE_ACCOUNT_ID` | resolved from `GET /accounts` | Pin a specific connected account. |
-| `UNIPILE_BUDGET_STATE_PATH` | `.unipile_budget.json` | Where daily counters live. Local run state, gitignored. |
 | `UNIPILE_PROFILE_SECTIONS` | `about,experience,education,skills,certifications,languages,projects` | Sections to request. Without them the API returns no experience, education, skills or About text at all. Asking for more also gives LinkedIn more to withhold. |
 | `UNIPILE_TIMEOUT_SECONDS` | `30` | HTTP timeout per request. Reads retry 4 times over 2/10/30s on 5xx and network errors; writes are never retried. |
 
@@ -349,8 +360,12 @@ unclassified forever.
 - **Reads retry, writes never.** Invitations and messages are not idempotent, so
   a retry after a timeout would send a second one to a real person.
 - **Budgets are enforced, not advisory.** Every invitation, message and profile
-  fetch is capped per day and delayed by a random interval. Counters live in a
-  file so a notebook restart does not hand back a fresh allowance.
+  fetch is capped over a rolling 24 hours and delayed by a random interval. The
+  counters are counted from Firestore and LinkedIn at the start of each run, so a
+  notebook restart does not hand back a fresh allowance.
+- **The count undercounts profile fetches.** A fetch LinkedIn withheld, or one
+  whose summary was too short to store, cost a read but saved no contact, so no
+  later count can see it. Within a run those fetches are still charged normally.
 - **Incomplete profiles must not be stored.** LinkedIn returns throttled
   sections as empty with HTTP 200. Check `profile.is_complete` before writing,
   or the pipeline caches a classification built from partial data.

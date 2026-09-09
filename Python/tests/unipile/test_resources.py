@@ -5,6 +5,8 @@ The ordering tests matter most. Every write must run check -> throttle -> send
 before sending charges the budget for calls that failed.
 """
 
+from datetime import UTC, datetime
+
 import httpx
 import pytest
 import respx
@@ -25,9 +27,8 @@ ACCOUNT = "ACC1"
 class RecordingBudget(SendBudget):
     """A real budget that also records the order of its calls."""
 
-    def __init__(self, tmp_path, limits=None, **kwargs):
+    def __init__(self, limits=None, **kwargs):
         super().__init__(
-            path=tmp_path / "budget.json",
             account_id=ACCOUNT,
             limits=limits or {"invite": 5, "message": 5, "profile": 5},
             sleep=lambda _s: None,
@@ -58,13 +59,13 @@ class RecordingBudget(SendBudget):
 
 @pytest.fixture
 def budget(tmp_path):
-    return RecordingBudget(tmp_path)
+    return RecordingBudget()
 
 
 @pytest.fixture
 def roomy_budget(tmp_path):
     """Enough daily budget that the lockout, not the cap, is what stops a run."""
-    return RecordingBudget(tmp_path, limits={"invite": 5, "message": 5, "profile": 50})
+    return RecordingBudget(limits={"invite": 5, "message": 5, "profile": 50})
 
 
 @pytest.fixture
@@ -408,6 +409,63 @@ def test_iter_invitations_sent_exposes_the_firestore_keys(users, invitations_sen
     ]
 
 
+def _sent_invitations(*stamps):
+    """An invitations page carrying the given `parsed_datetime` values."""
+    return {
+        "items": [
+            {"object": "InvitationSent", "id": f"inv-{i}", "parsed_datetime": stamp}
+            for i, stamp in enumerate(stamps)
+        ],
+        "cursor": None,
+    }
+
+
+@respx.mock
+def test_count_invitations_since_counts_only_inside_the_window(users):
+    """The rolling-24h budget count: older invitations must not be charged."""
+    respx.get(f"{BASE}/api/v1/users/invite/sent").mock(
+        return_value=httpx.Response(200, json=_sent_invitations(
+            "2026-09-09T12:00:00.000Z",  # today
+            "2026-09-02T10:00:00.000Z",  # a week back
+            None,                        # undated
+        ))
+    )
+
+    cutoff = datetime(2026, 9, 9, 0, 0, tzinfo=UTC)
+
+    assert users.count_invitations_since(cutoff) == 1
+
+
+@respx.mock
+def test_count_invitations_on_the_day_boundary_are_counted_not_coin_flipped(users):
+    """`parsed_datetime` is a relative string ("Sent 1 day ago") resolved
+    against the clock at request time, so yesterday's invitations land exactly
+    on the 24h boundary. Comparing them to an exact cutoff makes the count
+    depend on microseconds; the day of tolerance has to include them."""
+    respx.get(f"{BASE}/api/v1/users/invite/sent").mock(
+        return_value=httpx.Response(200, json=_sent_invitations(
+            "2026-09-09T12:00:00.000Z",           # "Sent today"    -> now
+            "2026-09-08T12:00:00.000Z",           # "Sent 1 day ago" -> now - 1d
+            "2026-09-08T11:59:59.999Z",           # the same, a hair earlier
+            "2026-09-03T12:00:00.000Z",           # "Sent 6 days ago"
+        ))
+    )
+
+    cutoff = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
+
+    assert users.count_invitations_since(cutoff) == 3
+
+
+@respx.mock
+def test_count_invitations_since_accepts_a_naive_cutoff_as_utc(users, invitations_sent_body):
+    """A naive cutoff must not blow up mid-generator on an aware/naive compare."""
+    respx.get(f"{BASE}/api/v1/users/invite/sent").mock(
+        return_value=httpx.Response(200, json=invitations_sent_body)
+    )
+
+    assert users.count_invitations_since(datetime(2026, 9, 8, 0, 0)) == 1
+
+
 @respx.mock
 def test_send_invitation_posts_json_and_charges_the_budget(users, budget):
     route = respx.post(f"{BASE}/api/v1/users/invite").mock(
@@ -486,6 +544,54 @@ def test_find_chat_with_returns_none_when_absent(messaging, chats_body):
         f"{BASE}/api/v1/chats").mock(return_value=httpx.Response(200, json=chats_body))
 
     assert messaging.find_chat_with("ACoAA-nobody") is None
+
+
+def _messages(*specs):
+    """A message page: (id, is_sender, timestamp) triples."""
+    return {
+        "items": [
+            {"object": "Message", "id": mid, "is_sender": sender, "timestamp": ts}
+            for mid, sender, ts in specs
+        ],
+        "cursor": None,
+    }
+
+
+@respx.mock
+def test_count_messages_sent_since_counts_only_our_own_inside_the_window(
+    messaging, chats_body
+):
+    """The rolling-24h budget recount: replies we received are not sends."""
+    respx.get(f"{BASE}/api/v1/chats").mock(
+        return_value=httpx.Response(200, json=chats_body))
+    respx.get(f"{BASE}/api/v1/chats/a7imlprjXGmSmywp0cuzoA/messages").mock(
+        return_value=httpx.Response(200, json=_messages(
+            ("ours-inside", 1, "2026-09-04T12:46:04.000Z"),
+            ("ours-older", 1, "2026-08-01T09:00:00.000Z"),
+            ("theirs-inside", 0, "2026-09-04T12:40:00.000Z"),
+            ("ours-undated", 1, None),
+        ))
+    )
+
+    cutoff = datetime(2026, 9, 4, 0, 0, tzinfo=UTC)
+
+    assert messaging.count_messages_sent_since(cutoff) == 1
+
+
+@respx.mock
+def test_count_messages_sent_since_stops_at_the_first_stale_chat(messaging, chats_body):
+    """Chats come back newest first, so a quiet account costs one request."""
+    chats = respx.get(f"{BASE}/api/v1/chats").mock(
+        return_value=httpx.Response(200, json=chats_body))
+    messages = respx.get(
+        f"{BASE}/api/v1/chats/a7imlprjXGmSmywp0cuzoA/messages").mock(
+        return_value=httpx.Response(200, json=_messages()))
+
+    # Every chat in the fixture last saw activity on 2026-09-04.
+    assert messaging.count_messages_sent_since(
+        datetime(2026, 9, 5, 0, 0, tzinfo=UTC)) == 0
+    assert chats.call_count == 1
+    assert messages.call_count == 0
 
 
 @respx.mock

@@ -5,6 +5,8 @@ This module contains common functions used throughout the application.
 import json  # for testing purposes
 import os  # for testing purposes
 
+from google.cloud.firestore_v1.base_query import FieldFilter
+
 
 def get_linkedin_id(profile) -> str:
     """
@@ -127,6 +129,39 @@ def get_member_distance(data) -> int:
     except Exception as e:
         print(f"Error getting member distance: {e}, data: {data.get('memberDistance')}")
         return 0
+
+
+def count_created_since(collection_ref, cutoff, field="created_at") -> int:
+    """Count documents in a collection whose `field` is at or after `cutoff`.
+
+    This is the durable record of how many contacts were saved in a window, and
+    it is what the notebook feeds to `SendBudget.reconcile` so the daily cap
+    follows a rolling 24 hours rather than the UTC calendar day.
+
+    It runs server-side as an aggregation, so it costs one document read per
+    1000 matches instead of streaming the whole collection.
+
+    Documents written before `created_at` existed carry no such field, and
+    Firestore's inequality filter skips a document that is missing the field
+    entirely -- which is the behaviour we want, since those predate any window
+    we ask about.
+
+    Args:
+        collection_ref: The Firestore CollectionReference to count.
+        cutoff (datetime): Timezone-aware lower bound, inclusive.
+        field (str, optional): Timestamp field to compare. Defaults to "created_at".
+
+    Returns:
+        int: The number of matching documents.
+    """
+
+    query = collection_ref.where(filter=FieldFilter(field, ">=", cutoff))
+
+    # `.get()` on an aggregation returns one result row per aggregation asked
+    # for, wrapped in a list of result sets.
+    result = query.count(alias="n").get()
+
+    return int(result[0][0].value)
 
 
 # test

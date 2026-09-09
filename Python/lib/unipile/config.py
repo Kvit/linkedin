@@ -73,7 +73,6 @@ class UnipileSettings(BaseSettings):
     usage_warn_pct: float = 75.0
     usage_halt_pct: float = 90.0
 
-    budget_state_path: Path = Path(".unipile_budget.json")
     # NoDecode: pydantic-settings would otherwise JSON-decode this at the source
     # level, before any field validator runs, so "a,b,c" would be a parse error.
     profile_sections: Annotated[list[str], NoDecode] = Field(
