@@ -8,8 +8,8 @@ prompt under test is the prompt in production.
 
 Every call runs inside one session fixture, for two reasons: the client's async
 HTTP pool binds to the first event loop it runs on, so one `asyncio.run` per
-client is the rule; and the fourteen assertions then cost seven calls, not
-fourteen.
+client is the rule; and the twenty assertions then cost ten calls, not
+twenty.
 
 Not collected by a bare `uv run pytest` (testpaths is `tests/`). Run by name:
 
@@ -64,6 +64,24 @@ RECRUITER = {
     "function": "Other",
     "seniority": "Staff",
 }
+BETWEEN_ROLES = {
+    "summary": (
+        "Revenue Cycle Manager. Fifteen years in physician-practice billing, "
+        "denials management and payer follow-up."
+    ),
+    "industry": "Physician Practice",
+    "function": "Operations",
+    "seniority": "Manager",
+}
+CONTRACTOR = {
+    "summary": (
+        "Independent consultant and speaker on medical coding and compliance. "
+        "Leads webinars and presentations for RCM industry audiences."
+    ),
+    "industry": "RCM",
+    "function": "Consulting",
+    "seniority": "Staff",
+}
 
 
 def _chat(*lines):
@@ -94,6 +112,27 @@ CONVERSATIONS = {
         "health-tech startup and your background looks like a great fit. Open to a chat?",
         "2026-03-02 Me: Thanks, not looking at the moment.",
     )),
+    # A refusal whose reason can expire keeps the relationship: these contacts
+    # still get product updates, so they must not land in `reject` or
+    # `not_relevant`. All three are drawn from real rulings that came back
+    # wrong under the five-stage vocabulary.
+    "soft_no_between_roles": (BETWEEN_ROLES, _chat(
+        f"2026-03-01 Me: {INTRO}",
+        "2026-03-02 Them: Thanks for reaching out. Unfortunately my position was "
+        "eliminated last month, so I'm not with the practice any more and am "
+        "exploring what's next.",
+    )),
+    "soft_no_not_the_decision_maker": (CONTRACTOR, _chat(
+        f"2026-03-01 Me: {INTRO}",
+        "2026-03-02 Them: Happy to connect! I should say I'm project-based here, "
+        "just running the webinars and presentations, so I'm not in a position to "
+        "suggest tools like yours.",
+    )),
+    "soft_no_bad_timing": (PATHOLOGY, _chat(
+        f"2026-03-01 Me: {INTRO}",
+        "2026-03-02 Them: Appreciate it, but my availability right now doesn't "
+        "allow me to take on anything else at the moment.",
+    )),
     # Rule probes.
     "reject_after_interest": (PATHOLOGY, _chat(
         f"2026-03-01 Me: {INTRO}",
@@ -119,6 +158,9 @@ EXPECTED = {
     "prospect_courtesy_reply": "prospect",
     "reject_has_vendor": "reject",
     "not_relevant_recruiter": "not_relevant",
+    "soft_no_between_roles": "soft_no",
+    "soft_no_not_the_decision_maker": "soft_no",
+    "soft_no_bad_timing": "soft_no",
     "reject_after_interest": "reject",
     "prospect_sounds_good": "prospect",
     "lead_at_a_hospital": "lead",

@@ -42,7 +42,7 @@ MODEL = "gemini-3.8-flash"
 #: One label per contact. The vocabulary lives in the schema Gemini must
 #: satisfy, so an out-of-vocabulary label fails validation instead of landing
 #: in Firestore.
-Stage = Literal["prospect", "lead", "reject", "not_relevant", "unknown"]
+Stage = Literal["prospect", "lead", "soft_no", "reject", "not_relevant", "unknown"]
 
 #: What the silent rule writes. A contact we have written to who has never
 #: answered is a prospect by definition; a model call would have nothing to read.
@@ -84,14 +84,17 @@ Decide where the contact stands in the sales pipeline from what THEY wrote. "Me:
 stage, exactly one of:
 - "lead": they showed interest in denial recovery or in Recovr. They asked how it works, what it costs, or whether it fits their situation; described their own denial or billing problem; asked for a call, a demo, or material; or offered to introduce the person who handles this at their organization.
 - "prospect": the default. The contact was chosen for outreach by their industry and seniority, and nothing they wrote changes that. A courtesy reply is "prospect": thanks for connecting, happy to stay in touch, will keep it in mind, sounds good, appreciate the offer. Use it whenever their words neither show interest, nor decline, nor reveal that they are not a buyer.
-- "reject": they declined. Not interested, no need, already covered by another vendor or an in-house team, asked not to be contacted, or gave a clear no to a specific ask.
-- "not_relevant": the conversation shows they are not a buyer at all. They are recruiting, job-seeking, selling their own product or service, asking for career advice, or their messages have nothing to do with their organization's billing. Judge this from what they wrote and the role the profile shows, never from the industry or size of their employer: a hospital executive who asks about the product is a "lead".
+- "soft_no": not now, but the door is open. They cannot act at the moment and said why, and nothing in their words suggests a later approach would be unwelcome: they are between roles or their position was eliminated; they are not the decision-maker, or are "not in a position to suggest tools like yours"; the timing, the budget or their workload is wrong "at the moment"; they have stepped away from this work "at present". These contacts still receive product updates.
+- "reject": a no with no opening. Not interested, no need, already covered by another vendor or an in-house team and not looking to change, asked not to be contacted, or a flat refusal such as "not looking". Use it only when nothing they wrote suggests a later approach would be welcome.
+- "not_relevant": the conversation shows they are not a buyer at all, in any timeframe. They are recruiting, selling their own product or service, asking for career advice, or their work has nothing to do with healthcare billing and never did. Judge this from what they wrote and the role the profile shows, never from the industry or size of their employer: a hospital executive who asks about the product is a "lead".
 - "unknown": their text cannot be read at all -- a language you do not understand, garbled characters, an empty automated reply. Text you can read but that carries no signal is "prospect", not "unknown".
 
 # Rules
 - The latest signal wins. Someone who was interested and later said no is "reject"; someone who declined and later asked for a demo is "lead".
 - Politeness is not interest. "Sounds good", "let's stay in touch" and "thanks for the offer" are "prospect".
-- When in doubt, "prospect": it is the default, and the other four each need a reason you can quote.
+- A refusal whose reason can expire is "soft_no", never "reject": between roles, wrong timing, too busy right now, not their decision to make. A refusal with no such reason is "reject".
+- Someone who has left this work but may return -- between jobs, "not in healthcare at present" -- is "soft_no", never "not_relevant". Reserve "not_relevant" for people whose working life has nothing to do with what we sell.
+- When in doubt, "prospect": it is the default, and the other five each need a reason you can quote.
 - A question about Recovr, denials or pricing is interest even when hedged.
 - An offer to forward the message or introduce a colleague is "lead".
 - Never infer a stage from the profile or the classification on file. Every conversation you receive has at least one "Them:" line; classify from those.
