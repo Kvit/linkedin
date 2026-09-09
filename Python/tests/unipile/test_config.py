@@ -7,7 +7,7 @@ refusing to start.
 
 import pytest
 
-from lib.unipile.config import UnipileSettings
+from lib.unipile.config import DEFAULT_PROFILE_SECTIONS, UnipileSettings
 from lib.unipile.errors import ConfigError
 
 REQUIRED = {"UNIPILE_API_KEY": "k-123",
@@ -54,6 +54,18 @@ def test_defaults_match_the_conservative_budget(monkeypatch):
     assert settings.max_messages_per_day == 50
     assert settings.max_profile_fetches_per_day == 250
     assert settings.account_id is None
+
+
+def test_the_default_section_list_stays_narrow():
+    """`about,experience` is tuned against live LinkedIn, not a placeholder.
+
+    A wider list stalls; on these two a 119-profile run completed ~99% of
+    fetches. The accepted cost is that `skills` and `educations` reach the
+    Gemini summary empty. Widening changes live fetch behaviour, so it has to be
+    a deliberate edit -- update `.env.example` and section 10 of the design spec
+    alongside it.
+    """
+    assert DEFAULT_PROFILE_SECTIONS == ["about", "experience"]
 
 
 def test_profile_sections_parse_from_a_comma_separated_string(monkeypatch):

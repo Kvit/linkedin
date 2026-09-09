@@ -77,11 +77,15 @@ def test_default_sections_actually_return_content(client):
     With no `linkedin_sections` the API returns no experience, education,
     skills or About text at all, so this guards against a regression that would
     silently feed empty summaries to Gemini.
+
+    Only what `DEFAULT_PROFILE_SECTIONS` actually asks for is asserted. That
+    list is deliberately `about,experience` because LinkedIn stalls on a wider
+    one, so education and skills are never requested here, and nothing is
+    assumed about what LinkedIn returns for a section that was not asked for.
     """
     profile = client.users.get_profile("khvatkov")
 
     assert profile.work_experience, "no work experience returned"
-    assert profile.skills, "no skills returned"
     assert profile.summary, "no About text returned"
     if not profile.is_complete:
         pytest.skip(f"LinkedIn throttled sections: {profile.throttled_sections}")

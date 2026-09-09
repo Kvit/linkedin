@@ -77,7 +77,7 @@ tenant and returns `503 no_client_session`.
 | `UNIPILE_USAGE_WARN_PCT` | `75` | Log a warning at this provider usage level |
 | `UNIPILE_USAGE_HALT_PCT` | `90` | Refuse further writes at this level |
 | `UNIPILE_BUDGET_STATE_PATH` | `.unipile_budget.json` | Counter file |
-| `UNIPILE_PROFILE_SECTIONS` | `about,experience,education,skills,certifications,languages,projects` | Default `linkedin_sections` selector |
+| `UNIPILE_PROFILE_SECTIONS` | `about,experience` | Default `linkedin_sections` selector (narrowed 2026-09-09, see section 10) |
 | `UNIPILE_TIMEOUT_SECONDS` | `30` | HTTP timeout |
 
 ## 5. Transport
@@ -308,12 +308,21 @@ rather than ignored:
 - Throttled sections are **never** auto-retried; retrying compounds throttling.
   The caller decides whether to skip the contact or schedule it for later.
 - Profile fetches are budgeted and jittered like writes (section 8).
-- `sections=` is a per-call parameter, so a caller that hits sustained throttling
-  can narrow to `["experience", "education", "skills"]` without code changes.
+- `sections=` is a per-call parameter, so a caller can widen or narrow a single
+  fetch without code changes -- widen when one profile needs richer input,
+  narrow further when throttling persists.
 
 **Pipeline rule:** a profile with a non-empty `throttled_sections` must not be
 written to Firestore. Writing it caches a classification derived from partial
 data, silently and permanently.
+
+**Revised 2026-09-09 after a live run.** The default is now `about, experience`
+only. The seven-section list above stalled against LinkedIn in practice; on the
+narrow list a 119-profile run completed ~99% of fetches, one profile withheld.
+The trade is accepted rather than hidden: `skills` and `educations` now reach the
+Gemini summary empty -- `compat.SUMMARY_KEYS` still reads both -- which forfeits
+the certification signal argued for above. Everything else in this section still
+holds, the per-call `sections=` escape hatch included.
 
 ## 11. LinkedIn Helper compatibility (`compat.py`)
 

@@ -15,6 +15,13 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from .errors import ConfigError
 
+#: Sections requested from LinkedIn on every profile fetch. Deliberately narrow.
+#: Section 10 of the design spec chose all seven, but LinkedIn stalls on the
+#: wider list; on these two a 119-profile run completed ~99% of fetches, and
+#: they carry enough signal to classify. The cost is that `skills` and
+#: `educations` reach the Gemini summary empty (`compat.SUMMARY_KEYS` reads
+#: both) -- an accepted trade, not an oversight. Widen for a single call with
+#: `get_profile(sections=...)` rather than raising this default.
 DEFAULT_PROFILE_SECTIONS = [
     "about",
     "experience"
