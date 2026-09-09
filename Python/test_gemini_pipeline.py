@@ -8,8 +8,8 @@ prompt under test is the prompt in production.
 
 Every call runs inside one session fixture, for two reasons: the client's async
 HTTP pool binds to the first event loop it runs on, so one `asyncio.run` per
-client is the rule; and the twenty assertions then cost ten calls, not
-twenty.
+client is the rule; and the twenty-two assertions then cost eleven calls, not
+twenty-two.
 
 Not collected by a bare `uv run pytest` (testpaths is `tests/`). Run by name:
 
@@ -133,6 +133,14 @@ CONVERSATIONS = {
         "2026-03-02 Them: Appreciate it, but my availability right now doesn't "
         "allow me to take on anything else at the moment.",
     )),
+    # The other side of that boundary: "at this time" hedging a statement of
+    # disinterest is politeness, not a circumstance. Contrast with
+    # soft_no_bad_timing, where availability -- not interest -- is the obstacle.
+    "reject_politely_hedged": (PATHOLOGY, _chat(
+        f"2026-03-01 Me: {INTRO}",
+        "2026-03-02 Them: Thank you for reaching out, but we are not interested "
+        "at this time.",
+    )),
     # Rule probes.
     "reject_after_interest": (PATHOLOGY, _chat(
         f"2026-03-01 Me: {INTRO}",
@@ -161,6 +169,7 @@ EXPECTED = {
     "soft_no_between_roles": "soft_no",
     "soft_no_not_the_decision_maker": "soft_no",
     "soft_no_bad_timing": "soft_no",
+    "reject_politely_hedged": "reject",
     "reject_after_interest": "reject",
     "prospect_sounds_good": "prospect",
     "lead_at_a_hospital": "lead",
