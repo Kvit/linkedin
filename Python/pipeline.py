@@ -23,9 +23,17 @@ events, deletions and attachment-only messages. Of 7,126 stored messages those
 are 4, 6 and 15.
 """
 
+import asyncio
+import itertools
+import logging
+import time
+from collections import Counter
+from dataclasses import dataclass, field
 from typing import Literal
 
 from google import genai
+from google.cloud import firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 from google.genai import types
 from pydantic import BaseModel, Field
 
@@ -244,8 +252,10 @@ def generation_config(thinking_level: str = DEFAULT_THINKING_LEVEL) -> types.Gen
     """The call configuration. Holds no connection, so it is cheap to build per call.
 
     Temperature is left at the default 1.0 -- the Gemini 3 docs warn that
-    lowering it degrades output. No tools, so no automatic-function-calling
-    config. An unknown level is rejected here so a typo fails once, up front.
+    lowering it degrades output. No tools are passed, but automatic function
+    calling is disabled all the same: left at its default, the SDK logs a
+    once-per-process advisory about using it on the async client. An unknown
+    level is rejected here so a typo fails once, up front.
     """
     if thinking_level not in THINKING_LEVELS:
         raise ValueError(
@@ -258,6 +268,7 @@ def generation_config(thinking_level: str = DEFAULT_THINKING_LEVEL) -> types.Gen
         thinking_config=types.ThinkingConfig(
             thinking_level=types.ThinkingLevel(thinking_level.upper())
         ),
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
     )
 
 
@@ -325,3 +336,245 @@ async def classify_conversation(
             f"no parseable stage (finish_reason={finish}): {(response.text or '')[:200]!r}"
         )
     return response.parsed
+
+
+# --- Firestore ----------------------------------------------------------------
+
+MESSAGES_COLLECTION = "messages"
+ANALYSIS_COLLECTION = "analysis"
+
+#: Firestore commits at most 500 operations per batch; one chunk is one round
+#: trip for `get_all` and one commit for the silent rule.
+PAGE_SIZE = 250
+
+#: `select()` leaves absent fields out of `to_dict()`, so every read is `.get()`.
+MESSAGE_FIELDS = ["chat_id", "contact_doc_id", "is_sender", "timestamp", "text", "is_event", "deleted"]
+ANALYSIS_FIELDS = ["summary", "profileUrl", "pipeline_stage", "pipeline_message_id", *ON_FILE_FIELDS]
+
+logger = logging.getLogger("pipeline")
+
+
+def load_messages(messages_ref, contacts=None) -> list:
+    """Message documents, projected to what `build_transcripts` reads.
+
+    The whole collection when `contacts` is None -- 7k documents, two seconds.
+    One equality query per contact otherwise, which is what lets a caller
+    reacting to a single new message avoid the full stream. `contact_doc_id`
+    is a single field, so Firestore's automatic index serves it.
+    """
+    query = messages_ref.select(MESSAGE_FIELDS)
+    if contacts is None:
+        return list(query.stream())
+    documents: list = []
+    for contact in contacts:
+        documents.extend(
+            query.where(filter=FieldFilter("contact_doc_id", "==", contact)).stream()
+        )
+    return documents
+
+
+def load_contacts(db, analysis_ref, contacts) -> dict[str, dict]:
+    """The `analysis` documents for these contacts, by id; absent ones are absent.
+
+    `get_all` on the contacts that have messages, not a stream of the
+    collection: `analysis` holds 28k documents whose summaries run to 35 KB.
+    `snapshot.exists` doubles as the never-mint check the planner relies on.
+    """
+    found: dict[str, dict] = {}
+    for chunk in itertools.batched(sorted(contacts), PAGE_SIZE):
+        references = [analysis_ref.document(contact) for contact in chunk]
+        for snapshot in db.get_all(references, field_paths=ANALYSIS_FIELDS):
+            if snapshot.exists:
+                found[snapshot.id] = snapshot.to_dict() or {}
+    return found
+
+
+def mark_silent(db, analysis_ref, contacts, *, dry_run) -> None:
+    """Write the rule for contacts who were messaged and never answered.
+
+    Merged, never set: `analysis` is the only copy of some contacts' names
+    and emails. No `pipeline_message_id` -- there is no inbound message to key
+    on, and its absence is what tells `plan_pipeline` the rule wrote this.
+    """
+    for chunk in itertools.batched(contacts, PAGE_SIZE):
+        batch = db.batch()
+        for contact in chunk:
+            batch.set(
+                analysis_ref.document(contact),
+                {
+                    "pipeline_stage": SILENT_STAGE,
+                    "pipeline_reason": SILENT_REASON,
+                    "pipeline_classified_at": firestore.SERVER_TIMESTAMP,
+                },
+                merge=True,
+            )
+        if not dry_run:
+            batch.commit()
+
+
+def write_stage(analysis_ref, contact, result: PipelineAnalysis, message_id, *, dry_run) -> None:
+    """Merge one Gemini result onto the contact, keyed to the message it read."""
+    if dry_run:
+        return
+    analysis_ref.document(contact).set(
+        {
+            "pipeline_stage": result.stage,
+            "pipeline_reason": result.reason,
+            "pipeline_classified_at": firestore.SERVER_TIMESTAMP,
+            "pipeline_message_id": message_id,
+        },
+        merge=True,
+    )
+
+
+# --- the engine ---------------------------------------------------------------
+
+
+@dataclass
+class PipelineRun:
+    """What one run did.
+
+    `rows` holds one review row per Gemini-classified contact -- what
+    pipeline-classify.py writes to the CSV, and what a one-contact caller reads
+    the stage from. `tally` counts everything else, including what was left
+    alone and why.
+    """
+
+    tally: dict[str, int]
+    rows: list[dict] = field(default_factory=list)
+    failed: int = 0
+
+    @property
+    def stages(self) -> Counter:
+        return Counter(row["stage"] for row in self.rows)
+
+
+async def run_pipeline(
+    db, client, *, contacts=None, force=False, reprocess_all=False, limit=None,
+    dry_run=False, concurrency=4, thinking_level=DEFAULT_THINKING_LEVEL,
+) -> PipelineRun:
+    """Classify every contact, or only `contacts`.
+
+    The one engine behind pipeline-classify.py and `classify_contact`, so the
+    batch and the one-contact call cannot drift apart. With `contacts` given,
+    only their messages are read. `force` queues them whatever is stored;
+    without it a contact whose newest inbound message was already classified
+    costs no call and no write.
+
+    Gemini calls run `concurrency` at a time through `client.aio` -- the SDK's
+    pattern for hundreds of independent requests. The three bulk reads and the
+    silent-rule batch happen before the gather and stay synchronous; each
+    result is written as it lands, from a thread so the synchronous Firestore
+    client does not block the loop, because 600 calls take minutes and an
+    interrupted run should keep what it paid for. A failed call -- after the
+    SDK's own retries -- writes nothing, so the contact's stored key is
+    unchanged and the next run queues it again.
+
+    Args:
+        db: The Firestore client.
+        client: The Gemini client, from `gemini_client()`; one per event loop.
+        contacts: Restrict to these contact document ids. None means everyone.
+        force: With `contacts`, classify them whatever is stored.
+        reprocess_all: Classify every contact with an inbound message again.
+        limit: At most this many Gemini calls, newest conversations first.
+        dry_run: Read and call Gemini, but write nothing to Firestore.
+        concurrency: Gemini calls in flight at once. Many 429 failures mean
+            the account's tier is lower than this; use 1.
+        thinking_level: "low", "medium" or "high". Recorded on every review
+            row, so two runs at different levels can be compared.
+
+    Returns:
+        PipelineRun: see the class.
+    """
+    generation_config(thinking_level)  # a bad level fails here, before any read
+    messages_ref = db.collection(MESSAGES_COLLECTION)
+    analysis_ref = db.collection(ANALYSIS_COLLECTION)
+
+    documents = load_messages(messages_ref, contacts)
+    transcripts = build_transcripts(documents)
+    stored = load_contacts(db, analysis_ref, transcripts)
+    forced = frozenset(contacts) if (contacts is not None and force) else frozenset()
+    silent, queue, tally = plan_pipeline(
+        transcripts, stored, reprocess_all=reprocess_all, force=forced
+    )
+    if contacts is not None:
+        tally["not_found"] = len(set(contacts) - transcripts.keys())
+    if limit is not None:
+        queue = queue[:limit]
+    tally["messages"] = len(documents)
+    tally["contacts"] = len(transcripts)
+    tally["with_inbound"] = sum(1 for entry in transcripts.values() if entry["inbound_total"])
+    tally["called"] = len(queue)
+
+    mark_silent(db, analysis_ref, silent, dry_run=dry_run)
+
+    run = PipelineRun(tally=tally)
+    semaphore = asyncio.Semaphore(concurrency)
+    finished = 0
+    started = time.monotonic()
+
+    async def one(contact):
+        nonlocal finished
+        entry, current = transcripts[contact], stored[contact]
+        row = None
+        async with semaphore:
+            try:
+                result = await classify_conversation(
+                    client, current, entry["transcript"], thinking_level=thinking_level
+                )
+                await asyncio.to_thread(
+                    write_stage, analysis_ref, contact, result, entry["newest_inbound_id"],
+                    dry_run=dry_run,
+                )
+                row = {
+                    "doc_id": contact,
+                    "profile_url": current.get("profileUrl") or "",
+                    "previous_stage": current.get("pipeline_stage") or "",
+                    "stage": result.stage,
+                    "reason": result.reason,
+                    "thinking_level": thinking_level,
+                    "inbound_total": entry["inbound_total"],
+                    "last_inbound": f"{entry['newest_inbound_date']:%Y-%m-%d}",
+                    "transcript": entry["transcript"],
+                }
+            except Exception as error:
+                run.failed += 1
+                logger.warning("  [!] %s: %s: %s", contact, type(error).__name__, error)
+        finished += 1
+        if finished % 50 == 0 or finished == len(queue):
+            logger.info("  %s | classified %d/%d  (%.0fs)", time.strftime("%H:%M:%S"),
+                        finished, len(queue), time.monotonic() - started)
+        return row
+
+    outcomes = await asyncio.gather(*(one(contact) for contact in queue))
+    run.rows = [row for row in outcomes if row is not None]
+    return run
+
+
+async def classify_contact(
+    db, client, contact: str, *, force=False, dry_run=False,
+    thinking_level=DEFAULT_THINKING_LEVEL,
+) -> PipelineRun:
+    """One contact, for a caller reacting to a new message.
+
+    Idempotent unless forced: a contact whose newest inbound message was
+    already classified costs no Gemini call and no write, so this is safe to
+    await on every event -- including our own outbound messages, which the
+    provider's webhooks also deliver. After a call, `run.rows[0]["stage"]` is
+    the new stage; `run.tally["silent"] == 1` means the rule applied (they
+    have never written to us); all zeros means nothing changed.
+
+        from google.cloud import firestore
+        from pipeline import classify_contact, gemini_client
+
+        db = firestore.Client(project="vk-linkedin", database="linkedin")
+        run = await classify_contact(db, gemini_client(), "some-linkedin-slug")
+
+    From synchronous code, `asyncio.run(classify_contact(...))` -- once per
+    process and per client. Several contacts from synchronous code is one
+    `run_pipeline(db, client, contacts=[...])`, not a loop of these.
+    """
+    return await run_pipeline(
+        db, client, contacts=[contact], force=force, dry_run=dry_run, concurrency=1,
+        thinking_level=thinking_level,
+    )
