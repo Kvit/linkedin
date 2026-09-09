@@ -10,7 +10,8 @@ import pytest
 from lib.unipile.config import UnipileSettings
 from lib.unipile.errors import ConfigError
 
-REQUIRED = {"UNIPILE_API_KEY": "k-123", "UNIPILE_DNS": "api62.unipile.com:19262"}
+REQUIRED = {"UNIPILE_API_KEY": "k-123",
+            "UNIPILE_DNS": "api62.unipile.com:19262"}
 
 
 def _env(monkeypatch, **overrides):
@@ -90,7 +91,8 @@ def test_config_errors_never_carry_the_api_key(monkeypatch):
 
     error = excinfo.value
     exposed = " ".join(
-        [str(error), repr(error), error.title, error.detail or "", str(error.__cause__)]
+        [str(error), repr(error), error.title,
+         error.detail or "", str(error.__cause__)]
     )
     assert "SECRET-KEY-123" not in exposed
     assert "dns" in error.title, "the error must still say which field is wrong"
@@ -114,6 +116,7 @@ def test_pacing_settings_come_from_the_environment(monkeypatch):
         UNIPILE_LONG_PAUSE_MIN_SECONDS="300",
         UNIPILE_LONG_PAUSE_MAX_SECONDS="900",
         UNIPILE_THROTTLE_RETRIES="4",
+        UNIPILE_MAX_CONSECUTIVE_THROTTLED="9",
     )
 
     settings = UnipileSettings.from_env(env_file=None)
@@ -124,6 +127,7 @@ def test_pacing_settings_come_from_the_environment(monkeypatch):
     assert settings.long_pause_min_seconds == 300.0
     assert settings.long_pause_max_seconds == 900.0
     assert settings.throttle_retries == 4
+    assert settings.max_consecutive_throttled == 9
 
 
 def test_pacing_defaults_are_slower_than_a_script(monkeypatch):

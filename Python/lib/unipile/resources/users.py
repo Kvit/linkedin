@@ -5,7 +5,7 @@ from collections.abc import Callable, Iterator
 from typing import Any, Literal
 
 from ..budget import SendBudget
-from ..errors import ProfileIncomplete
+from ..errors import ProfileIncomplete, ThrottleLockout
 from ..models import (
     InvitationSentResult,
     Profile,
@@ -34,12 +34,20 @@ class UsersResource:
         budget: SendBudget,
         default_sections: list[str] | None = None,
         throttle_retries: int = 2,
+        max_consecutive_throttled: int = 5,
     ) -> None:
         self._transport = transport
         self._account_id = account_id
         self._budget = budget
         self._default_sections = default_sections
         self._throttle_retries = throttle_retries
+        self._max_consecutive_throttled = max_consecutive_throttled
+        self._consecutive_throttled = 0
+
+    @property
+    def consecutive_throttled(self) -> int:
+        """Profiles that have exhausted their retries since the last clean one."""
+        return self._consecutive_throttled
 
     # --- profiles -------------------------------------------------------------
 
@@ -68,11 +76,18 @@ class UsersResource:
         and the widened gap stays in force for whatever the caller does next.
         Attempts are bounded by `throttle_retries`; if the budget runs out
         first, `check` refuses and the caller sees `BudgetExhausted`.
+
+        Retries bound one slug, not the run. When `max_consecutive_throttled`
+        profiles in a row exhaust theirs, the account itself is throttled and
+        every further fetch would spend budget on data LinkedIn is not going to
+        return, so this raises `ThrottleLockout` instead. One complete profile
+        resets that count.
         """
         attempts = self._throttle_retries + 1
 
         for attempt in range(1, attempts + 1):
-            profile = self._fetch_profile(identifier, sections=sections, notify=notify)
+            profile = self._fetch_profile(
+                identifier, sections=sections, notify=notify)
 
             if profile.is_complete:
                 if attempt > 1:
@@ -82,6 +97,7 @@ class UsersResource:
                         identifier,
                         attempt,
                     )
+                self._consecutive_throttled = 0
                 self._budget.recovered()
                 return profile
 
@@ -105,6 +121,24 @@ class UsersResource:
                 )
             self._budget.back_off()
 
+        self._consecutive_throttled += 1
+        if (
+            self._max_consecutive_throttled > 0
+            and self._consecutive_throttled >= self._max_consecutive_throttled
+        ):
+            log.error(
+                "LinkedIn withheld sections for %d profiles in a row -- the account "
+                "is being throttled, not the profile. Stopping.",
+                self._consecutive_throttled,
+            )
+            raise ThrottleLockout(
+                type="local/throttle_lockout",
+                title=f"LinkedIn withheld sections for "
+                f"{self._consecutive_throttled} profiles in a row",
+                detail="Further fetches would spend the daily budget on partial "
+                "data. Stop this run and resume in a few hours or tomorrow.",
+            )
+
         if require_complete:
             raise ProfileIncomplete(
                 type="local/profile_incomplete",
@@ -125,7 +159,8 @@ class UsersResource:
             "notify": "true" if notify else "false",
             "linkedin_sections": sections if sections is not None else self._default_sections,
         }
-        body = self._transport.get(f"/api/v1/users/{identifier}", params=params)
+        body = self._transport.get(
+            f"/api/v1/users/{identifier}", params=params)
         self._budget.record("profile")
         return Profile.model_validate(body)
 

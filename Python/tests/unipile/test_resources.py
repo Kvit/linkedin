@@ -10,7 +10,7 @@ import pytest
 import respx
 
 from lib.unipile.budget import SendBudget
-from lib.unipile.errors import BudgetExhausted, ProfileIncomplete
+from lib.unipile.errors import BudgetExhausted, ProfileIncomplete, ThrottleLockout
 from lib.unipile.models import Chat, Profile, Relation
 from lib.unipile.resources.accounts import AccountsResource
 from lib.unipile.resources.messaging import MessagingResource
@@ -25,11 +25,11 @@ ACCOUNT = "ACC1"
 class RecordingBudget(SendBudget):
     """A real budget that also records the order of its calls."""
 
-    def __init__(self, tmp_path, **kwargs):
+    def __init__(self, tmp_path, limits=None, **kwargs):
         super().__init__(
             path=tmp_path / "budget.json",
             account_id=ACCOUNT,
-            limits={"invite": 5, "message": 5, "profile": 5},
+            limits=limits or {"invite": 5, "message": 5, "profile": 5},
             sleep=lambda _s: None,
             **kwargs,
         )
@@ -62,6 +62,12 @@ def budget(tmp_path):
 
 
 @pytest.fixture
+def roomy_budget(tmp_path):
+    """Enough daily budget that the lockout, not the cap, is what stops a run."""
+    return RecordingBudget(tmp_path, limits={"invite": 5, "message": 5, "profile": 50})
+
+
+@pytest.fixture
 def transport():
     return Transport(httpx.Client(base_url=BASE), sleep=lambda _s: None)
 
@@ -82,7 +88,8 @@ def messaging(transport, budget):
 @respx.mock
 def test_accounts_list_returns_models(transport):
     respx.get(f"{BASE}/api/v1/accounts").mock(
-        return_value=httpx.Response(200, json={"items": [{"id": ACCOUNT, "name": "V"}], "cursor": None})
+        return_value=httpx.Response(
+            200, json={"items": [{"id": ACCOUNT, "name": "V"}], "cursor": None})
     )
 
     accounts = AccountsResource(transport).list()
@@ -126,7 +133,8 @@ def test_get_profile_charges_the_profile_budget_before_the_call(users, budget, p
 
     users.get_profile("khvatkov")
 
-    assert budget.calls == ["check:profile", "throttle", "record:profile", "recovered"]
+    assert budget.calls == ["check:profile",
+                            "throttle", "record:profile", "recovered"]
 
 
 @respx.mock
@@ -232,7 +240,8 @@ def test_retrying_stops_when_the_budget_runs_out(users, budget, throttled_profil
     route = respx.get(f"{BASE}/api/v1/users/x").mock(
         return_value=httpx.Response(200, json=throttled_profile_body)
     )
-    budget.record("profile", 4)  # limit is 5, so only one attempt is affordable
+    # limit is 5, so only one attempt is affordable
+    budget.record("profile", 4)
 
     with pytest.raises(BudgetExhausted):
         users.get_profile("x")
@@ -280,6 +289,83 @@ def test_require_complete_rejects_a_throttled_profile(users, throttled_profile_b
 
 
 @respx.mock
+def test_sustained_throttling_stops_the_whole_run(
+    transport, roomy_budget, throttled_profile_body
+):
+    """Retries bound one slug; only the lockout bounds the run.
+
+    Without it a throttled account keeps fetching at the widened pace until the
+    daily budget is gone, storing nothing.
+    """
+    route = respx.get(f"{BASE}/api/v1/users/x").mock(
+        return_value=httpx.Response(200, json=throttled_profile_body)
+    )
+    users = UsersResource(
+        transport,
+        account_id=lambda: ACCOUNT,
+        budget=roomy_budget,
+        throttle_retries=0,
+        max_consecutive_throttled=3,
+    )
+
+    users.get_profile("x")
+    users.get_profile("x")
+    with pytest.raises(ThrottleLockout):
+        users.get_profile("x")
+
+    assert route.call_count == 3
+    assert roomy_budget.remaining(
+        "profile") == 47, "the rest of the day is preserved"
+
+
+@respx.mock
+def test_one_complete_profile_resets_the_lockout_count(
+    transport, roomy_budget, throttled_profile_body, profile_body
+):
+    """Scattered withheld profiles are normal; only an unbroken run means lockout."""
+    respx.get(f"{BASE}/api/v1/users/x").mock(
+        side_effect=[
+            httpx.Response(200, json=throttled_profile_body),
+            httpx.Response(200, json=throttled_profile_body),
+            httpx.Response(200, json=profile_body),
+            httpx.Response(200, json=throttled_profile_body),
+            httpx.Response(200, json=throttled_profile_body),
+        ]
+    )
+    users = UsersResource(
+        transport,
+        account_id=lambda: ACCOUNT,
+        budget=roomy_budget,
+        throttle_retries=0,
+        max_consecutive_throttled=3,
+    )
+
+    for _ in range(5):
+        users.get_profile("x")
+
+    assert users.consecutive_throttled == 2
+
+
+@respx.mock
+def test_the_lockout_can_be_switched_off(transport, roomy_budget, throttled_profile_body):
+    respx.get(f"{BASE}/api/v1/users/x").mock(
+        return_value=httpx.Response(200, json=throttled_profile_body)
+    )
+    users = UsersResource(
+        transport,
+        account_id=lambda: ACCOUNT,
+        budget=roomy_budget,
+        throttle_retries=0,
+        max_consecutive_throttled=0,
+    )
+
+    for _ in range(6):
+        users.get_profile("x")
+
+    assert users.consecutive_throttled == 6
+
+
+@respx.mock
 def test_exhausted_profile_budget_prevents_the_request(users, budget, profile_body):
     route = respx.get(f"{BASE}/api/v1/users/khvatkov").mock(
         return_value=httpx.Response(200, json=profile_body)
@@ -297,14 +383,17 @@ def test_exhausted_profile_budget_prevents_the_request(users, budget, profile_bo
 
 @respx.mock
 def test_iter_relations_walks_every_page(users, relations_body):
-    second = {"items": [dict(relations_body["items"][0], public_identifier="second")], "cursor": None}
+    second = {"items": [
+        dict(relations_body["items"][0], public_identifier="second")], "cursor": None}
     respx.get(f"{BASE}/api/v1/users/relations").mock(
-        side_effect=[httpx.Response(200, json=relations_body), httpx.Response(200, json=second)]
+        side_effect=[httpx.Response(
+            200, json=relations_body), httpx.Response(200, json=second)]
     )
 
     relations = list(users.iter_relations())
 
-    assert [r.public_identifier for r in relations] == ["danareyesrn", "second"]
+    assert [r.public_identifier for r in relations] == [
+        "danareyesrn", "second"]
     assert isinstance(relations[0], Relation)
 
 
@@ -322,7 +411,8 @@ def test_iter_invitations_sent_exposes_the_firestore_keys(users, invitations_sen
 @respx.mock
 def test_send_invitation_posts_json_and_charges_the_budget(users, budget):
     route = respx.post(f"{BASE}/api/v1/users/invite").mock(
-        return_value=httpx.Response(200, json={"object": "UserInvitationSent", "invitation_id": "inv-9"})
+        return_value=httpx.Response(
+            200, json={"object": "UserInvitationSent", "invitation_id": "inv-9"})
     )
 
     result = users.send_invitation("ACoAAA1", message="hello")
@@ -332,7 +422,8 @@ def test_send_invitation_posts_json_and_charges_the_budget(users, budget):
     import json as _json
 
     body = _json.loads(route.calls[0].request.content)
-    assert body == {"provider_id": "ACoAAA1", "account_id": ACCOUNT, "message": "hello"}
+    assert body == {"provider_id": "ACoAAA1",
+                    "account_id": ACCOUNT, "message": "hello"}
 
 
 def test_send_invitation_rejects_a_note_over_the_linkedin_limit(users):
@@ -343,7 +434,8 @@ def test_send_invitation_rejects_a_note_over_the_linkedin_limit(users):
 @respx.mock
 def test_send_invitation_feeds_the_provider_usage_signal_into_the_budget(users, budget):
     respx.post(f"{BASE}/api/v1/users/invite").mock(
-        return_value=httpx.Response(200, json={"invitation_id": "inv-9", "usage": 95})
+        return_value=httpx.Response(
+            200, json={"invitation_id": "inv-9", "usage": 95})
     )
 
     with pytest.raises(BudgetExhausted):
@@ -380,7 +472,8 @@ def test_iter_chats_passes_unread_as_a_string(messaging, chats_body):
 
 @respx.mock
 def test_find_chat_with_matches_on_attendee_provider_id(messaging, chats_body):
-    respx.get(f"{BASE}/api/v1/chats").mock(return_value=httpx.Response(200, json=chats_body))
+    respx.get(
+        f"{BASE}/api/v1/chats").mock(return_value=httpx.Response(200, json=chats_body))
 
     found = messaging.find_chat_with("ACoAAFIXTUREATTENDEE0000000000000000000")
 
@@ -389,7 +482,8 @@ def test_find_chat_with_matches_on_attendee_provider_id(messaging, chats_body):
 
 @respx.mock
 def test_find_chat_with_returns_none_when_absent(messaging, chats_body):
-    respx.get(f"{BASE}/api/v1/chats").mock(return_value=httpx.Response(200, json=chats_body))
+    respx.get(
+        f"{BASE}/api/v1/chats").mock(return_value=httpx.Response(200, json=chats_body))
 
     assert messaging.find_chat_with("ACoAA-nobody") is None
 
@@ -397,7 +491,8 @@ def test_find_chat_with_returns_none_when_absent(messaging, chats_body):
 @respx.mock
 def test_send_message_posts_multipart_and_charges_the_budget(messaging, budget):
     route = respx.post(f"{BASE}/api/v1/chats/chat-1/messages").mock(
-        return_value=httpx.Response(201, json={"object": "MessageSent", "message_id": "m-1"})
+        return_value=httpx.Response(
+            201, json={"object": "MessageSent", "message_id": "m-1"})
     )
 
     result = messaging.send_message("chat-1", "hi there")
@@ -411,7 +506,8 @@ def test_send_message_posts_multipart_and_charges_the_budget(messaging, budget):
 @respx.mock
 def test_start_chat_repeats_attendee_ids_and_brackets_linkedin_options(messaging):
     route = respx.post(f"{BASE}/api/v1/chats").mock(
-        return_value=httpx.Response(201, json={"chat_id": "c-1", "message_id": "m-1"})
+        return_value=httpx.Response(
+            201, json={"chat_id": "c-1", "message_id": "m-1"})
     )
 
     messaging.start_chat(["ACoAA1", "ACoAA2"], "hello", inmail=True)
@@ -424,11 +520,13 @@ def test_start_chat_repeats_attendee_ids_and_brackets_linkedin_options(messaging
 
 @respx.mock
 def test_send_to_reuses_an_existing_chat(messaging, chats_body):
-    respx.get(f"{BASE}/api/v1/chats").mock(return_value=httpx.Response(200, json=chats_body))
+    respx.get(
+        f"{BASE}/api/v1/chats").mock(return_value=httpx.Response(200, json=chats_body))
     send = respx.post(f"{BASE}/api/v1/chats/a7imlprjXGmSmywp0cuzoA/messages").mock(
         return_value=httpx.Response(201, json={"message_id": "m-2"})
     )
-    start = respx.post(f"{BASE}/api/v1/chats").mock(return_value=httpx.Response(201, json={}))
+    start = respx.post(
+        f"{BASE}/api/v1/chats").mock(return_value=httpx.Response(201, json={}))
 
     messaging.send_to("ACoAAFIXTUREATTENDEE0000000000000000000", "hello again")
 
@@ -438,9 +536,11 @@ def test_send_to_reuses_an_existing_chat(messaging, chats_body):
 
 @respx.mock
 def test_send_to_starts_a_new_chat_when_none_exists(messaging, chats_body):
-    respx.get(f"{BASE}/api/v1/chats").mock(return_value=httpx.Response(200, json=chats_body))
+    respx.get(
+        f"{BASE}/api/v1/chats").mock(return_value=httpx.Response(200, json=chats_body))
     start = respx.post(f"{BASE}/api/v1/chats").mock(
-        return_value=httpx.Response(201, json={"chat_id": "c-9", "message_id": "m-9"})
+        return_value=httpx.Response(
+            201, json={"chat_id": "c-9", "message_id": "m-9"})
     )
 
     messaging.send_to("ACoAA-stranger", "first contact")
@@ -477,7 +577,8 @@ def test_search_posts_the_config_and_pages_results(transport):
     )
 
     results = list(
-        SearchResource(transport, account_id=lambda: ACCOUNT).search({"keywords": "denials"})
+        SearchResource(transport, account_id=lambda: ACCOUNT).search(
+            {"keywords": "denials"})
     )
 
     assert [r.public_identifier for r in results] == ["someone"]
@@ -490,7 +591,8 @@ def test_handle_invitation_sends_the_shared_secret_linkedin_requires(users):
     from lib.unipile.models import ReceivedInvitation
 
     route = respx.post(f"{BASE}/api/v1/users/invite/received/inv-3").mock(
-        return_value=httpx.Response(200, json={"object": "UserInvitationHandled", "status": "ACCEPTED"})
+        return_value=httpx.Response(
+            200, json={"object": "UserInvitationHandled", "status": "ACCEPTED"})
     )
     invitation = ReceivedInvitation.model_validate(
         {"id": "inv-3", "shared_secret": "secret-xyz"}
@@ -512,7 +614,8 @@ def test_handle_invitation_without_a_shared_secret_fails_fast(users):
     from lib.unipile.models import ReceivedInvitation
 
     with pytest.raises(ValueError, match="shared_secret"):
-        users.handle_invitation(ReceivedInvitation.model_validate({"id": "inv-4"}), "accept")
+        users.handle_invitation(
+            ReceivedInvitation.model_validate({"id": "inv-4"}), "accept")
 
 
 @respx.mock
@@ -536,7 +639,8 @@ def test_search_sends_account_id_as_a_query_parameter_not_in_the_body(transport)
     import json as _json
 
     body = _json.loads(request.content)
-    assert body == {"api": "classic", "category": "people", "keywords": "revenue cycle"}
+    assert body == {"api": "classic",
+                    "category": "people", "keywords": "revenue cycle"}
 
 
 @respx.mock
@@ -546,7 +650,8 @@ def test_search_parameters_return_models_like_every_other_iterator(transport):
             200,
             json={
                 "items": [
-                    {"object": "LinkedinSearchParameter", "title": "United States", "id": "103644278"}
+                    {"object": "LinkedinSearchParameter",
+                        "title": "United States", "id": "103644278"}
                 ],
                 "paging": {"page_count": 1},
             },
@@ -566,7 +671,8 @@ def test_search_parameters_return_models_like_every_other_iterator(transport):
 def test_a_none_valued_filter_is_not_sent_as_a_query_parameter(users, relations_body):
     """Guard for the shared listing helper: optional filters stay absent."""
     route = respx.get(f"{BASE}/api/v1/users/relations").mock(
-        return_value=httpx.Response(200, json={"items": relations_body["items"], "cursor": None})
+        return_value=httpx.Response(
+            200, json={"items": relations_body["items"], "cursor": None})
     )
 
     list(users.iter_relations(filter=None))
@@ -577,7 +683,8 @@ def test_a_none_valued_filter_is_not_sent_as_a_query_parameter(users, relations_
 @respx.mock
 def test_unread_is_omitted_when_not_requested(messaging, chats_body):
     route = respx.get(f"{BASE}/api/v1/chats").mock(
-        return_value=httpx.Response(200, json={"items": chats_body["items"], "cursor": None})
+        return_value=httpx.Response(
+            200, json={"items": chats_body["items"], "cursor": None})
     )
 
     list(messaging.iter_chats())

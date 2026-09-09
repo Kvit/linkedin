@@ -123,6 +123,11 @@ sections empty, never as an error.
 | Variable | Default | What it does |
 |----------|---------|--------------|
 | `UNIPILE_THROTTLE_RETRIES` | `2` | Extra attempts for a profile whose sections were withheld. `2` means up to three fetches, waiting ~2x then ~4x the normal gap. Each attempt is charged to the daily profile budget. `0` skips the profile immediately and leaves it for a later run. |
+| `UNIPILE_MAX_CONSECUTIVE_THROTTLED` | `5` | Profiles in a row that may exhaust their retries before `get_profile` raises `ThrottleLockout` and the run stops. One complete profile resets the count. `0` disables the stop. |
+
+Retries bound one slug; the lockout bounds the run. Without it a throttled
+account keeps fetching at the 8x pace until the daily budget is gone, storing
+nothing — roughly 83 slugs and many hours for zero profiles.
 
 The backoff multiplier itself is not an environment variable: each withheld
 response doubles every subsequent gap, capped by `HumanCadence.MAX_BACKOFF`
@@ -323,6 +328,12 @@ A profile whose sections never arrive is **never stored**: `to_lh_document`
 refuses to build a document from an incomplete profile, so a classification can
 never be cached from data LinkedIn withheld. Those slugs are simply retried on a
 later run.
+
+When throttling does not clear, the retries alone would not stop anything — they
+bound one slug, not the run. So after `UNIPILE_MAX_CONSECUTIVE_THROTTLED`
+profiles in a row exhaust their retries (default 5), `get_profile` raises
+`ThrottleLockout` and the caller stops for the day. A single complete profile
+resets the count.
 
 
 `new-contacts.ipynb` runs exactly this loop and then classifies. Its two halves

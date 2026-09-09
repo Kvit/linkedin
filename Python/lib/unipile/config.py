@@ -64,6 +64,12 @@ class UnipileSettings(BaseSettings):
     #: 0 skips a throttled profile immediately, leaving it for a later run.
     throttle_retries: int = 2
 
+    #: How many consecutive profiles may exhaust their retries before the client
+    #: gives up on the whole run. Without this a throttled account keeps fetching
+    #: at the 8x pace until the daily budget is gone, storing nothing. A single
+    #: complete profile resets the count; 0 disables the stop.
+    max_consecutive_throttled: int = 5
+
     usage_warn_pct: float = 75.0
     usage_halt_pct: float = 90.0
 

@@ -150,7 +150,8 @@ def _by_status_class(status: int) -> type[UnipileError]:
 def raise_for_response(status: int, body: dict[str, Any]) -> None:
     """Raise the exception matching ``body["type"]``, else the status default."""
     error_type = body.get("type", "")
-    cls = _BY_TYPE.get(error_type) or _BY_STATUS.get(status) or _by_status_class(status)
+    cls = _BY_TYPE.get(error_type) or _BY_STATUS.get(
+        status) or _by_status_class(status)
     raise cls(
         type=error_type,
         status=body.get("status", status),
@@ -176,6 +177,16 @@ class ProfileIncomplete(UnipileError):
     The response was a 200 with empty sections, so this is not a transport
     failure. Storing such a profile would cache a classification derived from
     partial data, silently and permanently.
+    """
+
+
+class ThrottleLockout(UnipileError):
+    """Enough profiles in a row came back withheld that the account, not the
+    profile, is the problem. Stop the run and resume later.
+
+    Distinct from :class:`ProfileIncomplete`, which is about one slug and is
+    safe to skip past. This one means every further fetch would spend daily
+    budget on data LinkedIn has already decided not to give.
     """
 
 

@@ -73,6 +73,7 @@ class UnipileClient:
             budget=budget,
             default_sections=settings.profile_sections,
             throttle_retries=settings.throttle_retries,
+            max_consecutive_throttled=settings.max_consecutive_throttled,
         )
         self.messaging = MessagingResource(
             self._transport, account_id=lambda: self.account_id, budget=budget
