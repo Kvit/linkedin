@@ -304,6 +304,91 @@ def boundary_window(watermark, direction: str):
     return watermark - step if direction == "forward" else watermark + step
 
 
+def contact_message_stats(documents) -> dict[str, dict]:
+    """Per-contact reply and send tallies, keyed by contact document id.
+
+    A reply is an inbound message in a conversation *we* opened. One arriving
+    before our first message in that chat is someone approaching us -- a
+    recruiter or a vendor -- and counting it overstates the reply rate by 35%:
+    616 contacts have sent an inbound message, only 456 have answered one of
+    ours.
+
+    The test is applied per chat and the totals roll up per contact, because 21
+    contacts hold more than one conversation, and an outbound in the warm one
+    must not license an unsolicited inbound in the cold one.
+
+    Attribution is dropped in the roll-up rather than in the first pass. 330
+    stored messages carry no ``contact_doc_id``, and discarding them earlier
+    could remove the very outbound that opens a chat, silently demoting a real
+    reply to a cold approach.
+
+    The ``--since`` floor causes that same demotion honestly: a conversation
+    opened below the floor whose reply landed above it has no stored outbound.
+    That is a property of the stored window rather than a rule to loosen --
+    widen the floor and let the backward pass refill.
+
+    Args:
+        documents: Streamed `messages` documents, each exposing ``.id`` and
+            ``.to_dict()``. Undated messages, and any whose ``is_sender`` is
+            neither 0 nor 1, are ignored: neither can be placed against the
+            conversation's opening message.
+
+    Returns:
+        dict[str, dict]: ``contact_doc_id`` to ``replied_total`` and
+        ``sent_total``, plus ``last_reply_date``, ``last_reply_message_id`` and
+        ``last_sent_date`` where there is one. Those three keys are absent
+        rather than None, so "never replied" stays distinguishable from "no
+        data" in any query written downstream.
+    """
+    rows = []
+    opened: dict[str, datetime] = {}
+
+    for document in documents:
+        body = document.to_dict() or {}
+        timestamp = body.get("timestamp")
+        is_sender = body.get("is_sender")
+        if timestamp is None or is_sender not in (0, 1):
+            continue
+
+        # A message with no chat is its own conversation. Pooling them under one
+        # key would let an outbound to one contact open a chat for another.
+        chat = body.get("chat_id") or document.id
+        rows.append((chat, body.get("contact_doc_id"), is_sender, timestamp, document.id))
+        if is_sender == 1 and (chat not in opened or timestamp < opened[chat]):
+            opened[chat] = timestamp
+
+    stats: dict[str, dict] = {}
+    newest_reply: dict[str, tuple] = {}
+    newest_sent: dict[str, datetime] = {}
+
+    for chat, contact, is_sender, timestamp, message_id in rows:
+        if not contact:
+            continue
+
+        entry = stats.setdefault(contact, {"replied_total": 0, "sent_total": 0})
+        if is_sender == 1:
+            entry["sent_total"] += 1
+            if contact not in newest_sent or timestamp > newest_sent[contact]:
+                newest_sent[contact] = timestamp
+        elif chat in opened and timestamp > opened[chat]:
+            # Strictly later: a message sharing an instant with our own opening
+            # message was not written in response to it.
+            entry["replied_total"] += 1
+            # The id breaks a timestamp tie, so the winner is the same on every
+            # recompute and an unchanged conversation is never rewritten.
+            mark = (timestamp, message_id)
+            if contact not in newest_reply or mark > newest_reply[contact]:
+                newest_reply[contact] = mark
+
+    for contact, entry in stats.items():
+        if contact in newest_sent:
+            entry["last_sent_date"] = newest_sent[contact]
+        if contact in newest_reply:
+            entry["last_reply_date"], entry["last_reply_message_id"] = newest_reply[contact]
+
+    return stats
+
+
 # test
 if __name__ == "__main__" and os.path.exists("profile.json"):
     with open("profile.json", "r") as f:

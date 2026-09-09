@@ -3,10 +3,11 @@
 Fetches only what Firestore does not already hold, and resolves each message to
 a contact in `extracted` / `analysis` so the two can be analysed together.
 
-    uv run python messages-sync.py                  # incremental, since 2024-01-01
+    uv run python messages-sync.py                  # incremental, since 2023-01-01
     uv run python messages-sync.py --dry-run        # read everything, write nothing
     uv run python messages-sync.py --since 2023-01-01   # widen the history
     uv run python messages-sync.py --verify         # check for gaps
+    uv run python messages-sync.py --no-contact-stats   # skip the analysis roll-up
 
 The invariant
 -------------
@@ -22,13 +23,38 @@ The ordering rule that makes that true is in `plan_forward_writes`: the API
 answers newest-first, and writing in that order is the one way this can lose
 data permanently. See its docstring.
 
+Contact stats
+-------------
+After the passes, each contact's reply and send tallies are recomputed from the
+whole collection and merged into their `analysis` document: `replied_total`,
+`sent_total`, `last_reply_date`, `last_reply_message_id` and `last_sent_date`.
+
+A reply is an inbound message in a conversation *we* opened. One arriving before
+our first message in that chat is someone approaching us, and counting it would
+overstate the reply rate by 35%: 616 contacts have sent one, 456 have answered.
+
+Recomputed whole rather than incremented, because the classification notebooks
+replace an `analysis` document wholesale and erase any field they do not know
+about; the next run puts these back. For the same reason the pass merges and
+never sets -- `analysis` holds the only copy of some contacts' names and emails.
+
+Skipped when `--max-pages` stopped the backfill part-way. A reply is judged
+against the oldest part of a conversation, which is exactly what a partial
+history lacks, so a truncated collection would not shade these counts -- it
+would zero them.
+
 Known limits
 ------------
-A message edited, deleted or marked seen *after* it was stored is never re-read,
-so its stored copy keeps the state it had at sync time. Deleted messages remain
+A message edited or deleted *after* it was stored is never re-read, so its
+stored copy keeps the state it had at sync time. Deleted messages remain
 in the API stream flagged `deleted: 1` rather than vanishing, so one deleted
 before we first saw it is captured correctly. `--rescan-days N` re-walks the
 last N days to refresh those flags; the default of 0 is pure incremental.
+
+Read state is not among what a rescan can recover. `seen` and `seen_by` come
+back as 0 and {} for every LinkedIn message in both directions -- including ones
+a contact demonstrably read, since they replied to them -- so a reply is the only
+evidence of engagement this data holds.
 
 An out-of-band write into `messages` -- a document added by hand or imported by
 another tool -- can stretch [min_ts, max_ts] across an interior that was never
@@ -58,6 +84,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 
 from functions import (
     boundary_window,
+    contact_message_stats,
     index_external_ids,
     member_id_from_urn,
     needs_backfill,
@@ -157,7 +184,12 @@ class ContactResolver:
     3. `(key_type, external_id) -> document id`, from `extracted`.
 
     A steady-state run in which no new conversation appeared answers entirely
-    from resolutions already stored on earlier messages, and touches none of them.
+    from resolutions already stored on earlier messages, and touches none of them
+    -- including the document id, which is read back off a sibling message rather
+    than rebuilt from the index.
+
+    A contact added to `extracted` after their messages were stored stays
+    unjoined until a `--rescan-days` run rewrites them.
     """
 
     def __init__(self, client: UnipileClient, messages_ref, extracted_ref, *, join: bool):
@@ -166,6 +198,7 @@ class ContactResolver:
         self._extracted_ref = extracted_ref
         self._join = join
         self._by_chat: dict[str, str] = {}
+        self._doc_by_chat: dict[str, str] = {}
         self._member_by_provider: dict[str, str] = {}
         self._index: dict[tuple[str, str], str] | None = None
         self._chats_listed = False
@@ -188,15 +221,21 @@ class ContactResolver:
             # that is a convenience rather than a requirement.
             query = (
                 self._messages_ref.where(filter=FieldFilter("chat_id", "==", chat_id))
-                .select(["contact_provider_id", "contact_member_id"])
+                .select(["contact_provider_id", "contact_member_id", "contact_doc_id"])
                 .limit(5)
             )
-            provider_id = member_id = None
+            provider_id = member_id = doc_id = None
             for stored in query.stream():
                 body = stored.to_dict() or {}
-                if body.get("contact_provider_id"):
+                if provider_id is None and body.get("contact_provider_id"):
                     provider_id = body["contact_provider_id"]
                     member_id = body.get("contact_member_id")
+                # Sampled across all five rather than taken from the first row
+                # with a provider: 330 stored messages carry an identity but no
+                # document id, and stopping on one of those would drop a join
+                # its siblings already hold.
+                doc_id = doc_id or body.get("contact_doc_id")
+                if provider_id and doc_id:
                     break
 
             if provider_id is None:
@@ -206,6 +245,8 @@ class ContactResolver:
             self._by_chat[chat_id] = provider_id
             if member_id:
                 self._member_by_provider[provider_id] = member_id
+            if doc_id:
+                self._doc_by_chat[chat_id] = doc_id
             self.stats["reused"] += 1
         return unresolved
 
@@ -280,8 +321,12 @@ class ContactResolver:
 
         member_id = self._member_by_provider.get(provider_id)
 
-        doc_id = None
-        if self._index is not None:
+        # Reused from a sibling message before the index is consulted. Without
+        # this, a steady-state run -- new messages, all in conversations already
+        # seen -- never builds the index and stores every one of them with a
+        # null `contact_doc_id`, leaving the newest replies unattributable.
+        doc_id = self._doc_by_chat.get(message.chat_id)
+        if doc_id is None and self._index is not None:
             doc_id = self._index.get(("li-hash-id", provider_id))
             if doc_id is None and member_id:
                 doc_id = self._index.get(("member-id", member_id))
@@ -389,9 +434,13 @@ def backward_pass(client, db, messages_ref, resolver, min_ts, floor, skip_ids, *
     Bounding the window on both sides is what makes this terminate: once the
     backfill has reached the floor there is nothing between the bounds, so the
     pass costs a single request instead of paging to exhaustion.
+
+    Returns `(written, truncated)`. The second is what tells the caller the
+    stored history is knowingly partial, which the contact stats must not be
+    computed over.
     """
     if not needs_backfill(min_ts, floor):
-        return 0
+        return 0, False
 
     stream = client.messaging.iter_all_messages(
         before=boundary_window(min_ts, "backward"),
@@ -400,10 +449,12 @@ def backward_pass(client, db, messages_ref, resolver, min_ts, floor, skip_ids, *
     )
 
     written = 0
+    truncated = False
     for index, chunk in enumerate(_chunks(stream, PAGE_SIZE)):
         if max_pages and index >= max_pages:
             print()
             print(f"  stopped at --max-pages {max_pages}; re-run to continue")
+            truncated = True
             break
         fresh = [m for m in chunk if m.id not in skip_ids]
         if not fresh:
@@ -413,11 +464,11 @@ def backward_pass(client, db, messages_ref, resolver, min_ts, floor, skip_ids, *
         print(f"  backfilled {written:,}...", end="\r")
     if written:
         print()
-    return written
+    return written, truncated
 
 
 def rescan(client, db, messages_ref, resolver, days, *, dry_run):
-    """Re-read a recent window so edits, deletions and read receipts refresh."""
+    """Re-read a recent window so edits and deletions refresh."""
     if not days:
         return 0
     since = datetime.now(UTC) - timedelta(days=days)
@@ -462,6 +513,122 @@ def verify(client, messages_ref, min_ts, max_ts) -> bool:
     return False
 
 
+# --- contact stats ------------------------------------------------------------
+
+
+#: Written onto the contact's `analysis` document. Enumerated because the pass
+#: must also clear the ones a later recompute no longer produces.
+STATS_FIELDS = (
+    "replied_total",
+    "sent_total",
+    "last_reply_date",
+    "last_reply_message_id",
+    "last_sent_date",
+)
+
+
+def refresh_contact_stats(db, messages_ref, analysis_ref, *, dry_run) -> dict:
+    """Recompute every contact's reply and send tallies into `analysis`.
+
+    Computed whole on every run rather than incremented, and that is what keeps
+    the fields alive rather than merely cheap. `analysis.ipynb`,
+    `new-contacts.ipynb` and `intro.ipynb` each replace the document wholesale,
+    so a field they do not know about is deleted the moment a contact is
+    re-classified -- `created_at` survives on 2 of 28,318 documents for exactly
+    that reason. A recompute restores these five on the next sync whether or not
+    a message arrived; an increment never could.
+
+    Merged, never set. `analysis` is the only store holding `firstName`,
+    `lastName` and `email1` for 14,158 contacts -- `extracted` carries none of
+    them -- so a full-document write from here would be the thing that destroys
+    them.
+
+    Only what changed is written, so an unchanged mailbox commits nothing and a
+    large `changed` count reads as an alarm rather than as routine traffic.
+
+    Args:
+        db: The Firestore client, for batches and `get_all`.
+        messages_ref: The `messages` collection, re-read after this run's writes.
+        analysis_ref: The `analysis` collection to merge into.
+        dry_run: Compute and report everything, commit nothing.
+
+    Returns:
+        dict: Counters -- `contacts`, `replied`, `changed`, `cleared`,
+        `unattributed` and `missing`.
+    """
+    documents = list(
+        messages_ref.select(["chat_id", "contact_doc_id", "is_sender", "timestamp"]).stream()
+    )
+    fresh = contact_message_stats(documents)
+
+    # `>= 0` returns exactly the documents this pass has written before, because
+    # Firestore's inequality skips one missing the field entirely. It doubles as
+    # the read of their current values, so the diff costs no second query.
+    stored = {
+        document.id: document.to_dict() or {}
+        for document in analysis_ref.where(filter=FieldFilter("sent_total", ">=", 0))
+        .select(list(STATS_FIELDS))
+        .stream()
+    }
+
+    tally = {
+        "contacts": len(fresh),
+        "replied": sum(1 for entry in fresh.values() if entry["replied_total"]),
+        "changed": 0,
+        "cleared": 0,
+        "unattributed": sum(
+            1 for document in documents if not (document.to_dict() or {}).get("contact_doc_id")
+        ),
+        "missing": 0,
+    }
+
+    # A contact with no classification yet must not be created here: `merge=True`
+    # mints an absent document, and one holding five counters and nothing else
+    # would flow into every downstream count and the CSV export.
+    for chunk in _chunks([c for c in fresh if c not in stored], PAGE_SIZE):
+        present = {
+            snapshot.id
+            for snapshot in db.get_all(
+                [analysis_ref.document(contact) for contact in chunk],
+                field_paths=["sent_total"],
+            )
+            if snapshot.exists
+        }
+        tally["missing"] += len(chunk) - len(present)
+        for contact in chunk:
+            if contact not in present:
+                fresh.pop(contact)
+
+    updates: dict[str, dict] = {}
+    for contact, entry in fresh.items():
+        current = stored.get(contact, {})
+        if all(current.get(field) == entry.get(field) for field in STATS_FIELDS):
+            continue
+        updates[contact] = dict(entry) | {
+            field: firestore.DELETE_FIELD
+            for field in STATS_FIELDS
+            if field not in entry and field in current
+        }
+
+    # A contact whose messages left the stored window would keep a stale tally
+    # forever. Clearing the fields makes absence mean the same thing it means
+    # for a contact never written: no data, as opposed to a measured zero.
+    for contact in stored.keys() - fresh.keys():
+        updates[contact] = {field: firestore.DELETE_FIELD for field in STATS_FIELDS}
+        tally["cleared"] += 1
+
+    tally["changed"] = len(updates) - tally["cleared"]
+
+    for chunk in _chunks(sorted(updates), PAGE_SIZE):
+        batch = db.batch()
+        for contact in chunk:
+            batch.set(analysis_ref.document(contact), updates[contact], merge=True)
+        if not dry_run:
+            batch.commit()
+
+    return tally
+
+
 # --- entry point --------------------------------------------------------------
 
 
@@ -469,8 +636,8 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Sync LinkedIn messages into the Firestore 'messages' collection.",
     )
-    parser.add_argument("--since", default="2024-01-01",
-                        help="oldest message to fetch, YYYY-MM-DD (default: 2024-01-01)")
+    parser.add_argument("--since", default="2023-01-01",
+                        help="oldest message to fetch, YYYY-MM-DD (default: 2023-01-01)")
     parser.add_argument("--dry-run", action="store_true",
                         help="read everything, write nothing")
     parser.add_argument("--max-pages", type=int, default=None,
@@ -480,6 +647,8 @@ def parse_args(argv=None):
                         help="also re-read the last N days to refresh edits and deletions")
     parser.add_argument("--no-contact-join", action="store_true",
                         help="skip resolving contacts; store the raw ids only")
+    parser.add_argument("--no-contact-stats", action="store_true",
+                        help="skip the per-contact reply and send tallies merged into 'analysis'")
     parser.add_argument("--verify", action="store_true",
                         help="check the stored range against the provider and exit")
     return parser.parse_args(argv)
@@ -499,6 +668,7 @@ def main(argv=None) -> int:
     db = firestore.Client(project="vk-linkedin", database="linkedin")
     messages_ref = db.collection("messages")
     extracted_ref = db.collection("extracted")
+    analysis_ref = db.collection("analysis")
 
     client = UnipileClient.from_env()
     started = time.monotonic()
@@ -527,8 +697,9 @@ def main(argv=None) -> int:
                            dry_run=args.dry_run)
         print(f"  forward pass:  {new:,} new")
 
-        old = backward_pass(client, db, messages_ref, resolver, min_ts, floor, skip_ids,
-                            dry_run=args.dry_run, max_pages=args.max_pages)
+        old, truncated = backward_pass(client, db, messages_ref, resolver, min_ts, floor,
+                                       skip_ids, dry_run=args.dry_run,
+                                       max_pages=args.max_pages)
         print(f"  backward pass: {old:,} older")
 
         if args.rescan_days:
@@ -547,6 +718,37 @@ def main(argv=None) -> int:
             min_ts, max_ts = _watermarks(messages_ref)
             if max_ts is not None:
                 print(f"  stored after:  {min_ts:%Y-%m-%d %H:%M} .. {max_ts:%Y-%m-%d %H:%M}")
+
+        # Outside the `if new or old` above on purpose: a run with no delta is
+        # exactly when a classification pass has erased these fields and they
+        # need putting back.
+        if not args.no_contact_stats:
+            if args.no_contact_join:
+                print("  analysis:      skipped; --no-contact-join stores no contact ids")
+            elif truncated:
+                # A reply is judged against the first message we sent in that
+                # chat, which is the oldest part of the conversation and so the
+                # part a stopped backfill is still missing. Writing now would not
+                # shade the counts, it would zero them.
+                #
+                # `truncated` and not `needs_backfill`: the latter stays true
+                # whenever the floor sits below the oldest message the account
+                # actually has, which is the ordinary state after a deep
+                # backfill and would skip this pass forever.
+                print("  analysis:      skipped; --max-pages left history partial")
+            else:
+                tally = refresh_contact_stats(db, messages_ref, analysis_ref,
+                                              dry_run=args.dry_run)
+                print(f"  analysis:      {tally['contacts']:,} contacts, "
+                      f"{tally['replied']:,} with replies, {tally['changed']:,} changed")
+                for count, note in (
+                    (tally["cleared"], "contact(s) cleared -- no messages in range"),
+                    (tally["unattributed"], "message(s) with no contact -- not counted"),
+                    (tally["missing"], "contact(s) not in 'analysis' -- skipped"),
+                ):
+                    if count:
+                        print(f"  [!] {count:,} {note}")
+
         print(f"  elapsed: {time.monotonic() - started:.1f}s")
         return 0
 

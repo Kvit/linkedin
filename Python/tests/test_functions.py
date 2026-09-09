@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 from functions import (
     boundary_window,
+    contact_message_stats,
     count_created_since,
     get_member_distance,
     index_external_ids,
@@ -317,3 +318,176 @@ def test_backfill_stops_once_stored_history_reaches_the_floor():
 
     assert needs_backfill(stored_from, datetime(2026, 9, 1, tzinfo=UTC)) is False
     assert needs_backfill(stored_from, stored_from) is False
+
+
+# --- per-contact message stats ------------------------------------------------
+
+
+def _stored(mid, chat, contact, sender, ts):
+    """One document as `messages` holds it, projected to the four fields read."""
+    return _FakeDoc(mid, {
+        "chat_id": chat,
+        "contact_doc_id": contact,
+        "is_sender": sender,
+        "timestamp": ts,
+    })
+
+
+def _day(number):
+    return datetime(2026, 1, number, 12, 0, tzinfo=UTC)
+
+
+def test_an_inbound_before_the_first_outbound_is_not_a_reply():
+    """The single most consequential rule in this function.
+
+    616 contacts have sent an inbound message; only 456 have answered one of
+    ours. The other 160 opened the conversation themselves -- recruiters and
+    vendors pitching us -- and counting them would overstate the reply rate by
+    35%.
+    """
+    stats = contact_message_stats([
+        _stored("pitch", "chat-1", "cold-caller", 0, _day(1)),
+        _stored("ours", "chat-1", "cold-caller", 1, _day(2)),
+    ])
+
+    assert stats["cold-caller"]["replied_total"] == 0
+    assert stats["cold-caller"]["sent_total"] == 1
+
+
+def test_an_inbound_after_the_first_outbound_is_a_reply():
+    stats = contact_message_stats([
+        _stored("ours", "chat-1", "answered", 1, _day(1)),
+        _stored("theirs", "chat-1", "answered", 0, _day(2)),
+    ])
+
+    assert stats["answered"]["replied_total"] == 1
+    assert stats["answered"]["last_reply_date"] == _day(2)
+
+
+def test_the_reply_rule_is_applied_per_chat_before_the_contact_rollup():
+    """21 contacts hold more than one conversation.
+
+    Judging a contact as a whole would let an outbound in one chat license an
+    unsolicited inbound in another as a reply.
+    """
+    stats = contact_message_stats([
+        _stored("pitch", "chat-cold", "two-chats", 0, _day(1)),
+        _stored("ours", "chat-warm", "two-chats", 1, _day(2)),
+        _stored("theirs", "chat-warm", "two-chats", 0, _day(3)),
+    ])
+
+    assert stats["two-chats"]["replied_total"] == 1
+    assert stats["two-chats"]["sent_total"] == 1
+
+
+def test_an_unattributed_outbound_still_opens_the_conversation():
+    """Attribution is dropped in the roll-up, never before the per-chat pass.
+
+    330 stored messages carry no `contact_doc_id`. Filtering them out first
+    could remove the outbound that opens a chat, silently demoting a real reply
+    to an unsolicited approach.
+    """
+    stats = contact_message_stats([
+        _stored("ours", "chat-1", None, 1, _day(1)),
+        _stored("theirs", "chat-1", "joined", 0, _day(2)),
+    ])
+
+    assert stats["joined"]["replied_total"] == 1
+
+
+def test_a_null_is_sender_counts_as_neither_sent_nor_replied():
+    """`is_sender` is 0, 1 or None. `if not is_sender` would invent a reply."""
+    stats = contact_message_stats([
+        _stored("ours", "chat-1", "unknown-direction", 1, _day(1)),
+        _stored("mystery", "chat-1", "unknown-direction", None, _day(2)),
+    ])
+
+    assert stats["unknown-direction"]["sent_total"] == 1
+    assert stats["unknown-direction"]["replied_total"] == 0
+
+
+def test_undated_messages_are_left_out_entirely():
+    """A message with no timestamp cannot be placed against the first outbound.
+
+    The sync omits a null timestamp rather than storing one, so the key is
+    absent rather than None.
+    """
+    stats = contact_message_stats([
+        _stored("ours", "chat-1", "partly-dated", 1, _day(1)),
+        _FakeDoc("undated", {"chat_id": "chat-1", "contact_doc_id": "partly-dated",
+                             "is_sender": 0}),
+    ])
+
+    assert stats["partly-dated"]["replied_total"] == 0
+    assert stats["partly-dated"]["sent_total"] == 1
+
+
+def test_a_contact_who_never_replied_carries_no_last_reply_fields():
+    """Absent beats null: a null date sorts first in every query written later."""
+    stats = contact_message_stats([
+        _stored("ours", "chat-1", "silent", 1, _day(1)),
+    ])
+
+    assert stats["silent"]["replied_total"] == 0
+    assert "last_reply_date" not in stats["silent"]
+    assert "last_reply_message_id" not in stats["silent"]
+
+
+def test_last_reply_message_id_is_the_document_id_of_the_newest_reply():
+    """The id is the join key back into `messages`, where it is the document id."""
+    stats = contact_message_stats([
+        _stored("ours", "chat-1", "chatty", 1, _day(1)),
+        _stored("first-reply", "chat-1", "chatty", 0, _day(2)),
+        _stored("latest-reply", "chat-1", "chatty", 0, _day(3)),
+    ])
+
+    assert stats["chatty"]["last_reply_message_id"] == "latest-reply"
+    assert stats["chatty"]["replied_total"] == 2
+
+
+def test_the_newest_reply_breaks_a_timestamp_tie_on_the_message_id():
+    """Stability matters because the pass rewrites only what changed.
+
+    An arbitrary winner among two replies sharing a millisecond would rewrite
+    the document on every run. `boundary_window` exists because such ties are
+    real.
+    """
+    tie = _day(2)
+    stats = contact_message_stats([
+        _stored("ours", "chat-1", "tied", 1, _day(1)),
+        _stored("zzz", "chat-1", "tied", 0, tie),
+        _stored("aaa", "chat-1", "tied", 0, tie),
+    ])
+
+    assert stats["tied"]["last_reply_message_id"] == "zzz"
+
+
+def test_last_sent_date_is_the_newest_outbound_across_every_chat():
+    stats = contact_message_stats([
+        _stored("old", "chat-a", "two-chats", 1, _day(1)),
+        _stored("new", "chat-b", "two-chats", 1, _day(5)),
+    ])
+
+    assert stats["two-chats"]["last_sent_date"] == _day(5)
+    assert stats["two-chats"]["sent_total"] == 2
+
+
+def test_a_message_with_no_chat_id_is_its_own_conversation():
+    """Grouping every chatless message together would fabricate a conversation."""
+    stats = contact_message_stats([
+        _stored("ours", None, "no-chat", 1, _day(1)),
+        _stored("theirs", None, "no-chat", 0, _day(2)),
+    ])
+
+    assert stats["no-chat"]["replied_total"] == 0
+
+
+def test_messages_with_no_contact_reach_no_contact_document():
+    """Two stored messages carry no identity at all, and an empty string would
+    address a Firestore document just as readily as a real id."""
+    stats = contact_message_stats([
+        _stored("orphan", "chat-1", None, 1, _day(1)),
+        _stored("blank", "chat-2", "", 0, _day(2)),
+    ])
+
+    assert stats == {}

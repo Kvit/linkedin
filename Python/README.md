@@ -254,11 +254,12 @@ floor set by `--since` in roughly fifteen pages.
 
 | Flag | Effect |
 |------|--------|
-| `--since YYYY-MM-DD` | Oldest message to fetch. Default `2024-01-01`. Lowering it later resumes the backfill automatically; raising it discards nothing. |
+| `--since YYYY-MM-DD` | Oldest message to fetch. Default `2023-01-01`. Lowering it later resumes the backfill automatically; raising it discards nothing. |
 | `--dry-run` | Read everything, write nothing. |
 | `--max-pages N` | Stop after N pages per pass. Re-run to continue. |
 | `--rescan-days N` | Also re-read the last N days, refreshing edits and deletions. Default `0`. |
 | `--no-contact-join` | Skip contact resolution; store the raw provider and member ids only. |
+| `--no-contact-stats` | Skip the per-contact reply and send tallies merged into `analysis`. |
 | `--verify` | Compare the stored range against the provider and report any gap. |
 
 ### How it resumes
@@ -270,12 +271,49 @@ connection, a rate limit or `--max-pages` is repaired by running the script
 again. New messages are written oldest-first so that a partial write leaves a
 shorter contiguous range rather than a gap.
 
+### Contact stats
+
+After the passes, every contact's engagement is recomputed from the whole
+collection and merged onto their `analysis` document:
+
+| Field | Meaning |
+|-------|---------|
+| `replied_total` | Replies received. `0` means messaged but never answered. |
+| `last_reply_date` | When the most recent reply arrived. Absent when there is none. |
+| `last_reply_message_id` | That reply's document id in `messages`. |
+| `sent_total` | Messages sent to this contact. |
+| `last_sent_date` | When we last wrote to them. |
+
+A **reply** is an inbound message in a conversation *we* opened. One arriving
+before our first message in that chat is someone approaching us -- a recruiter or
+a vendor -- and counting it would overstate the reply rate by 35%: 616 contacts
+have sent an inbound message, only 456 have answered one of ours. The test is
+applied per conversation and the totals roll up per contact.
+
+The fields are recomputed whole on every run rather than incremented. The
+classification notebooks replace an `analysis` document wholesale, so any field
+they do not know about is deleted the moment a contact is re-classified -- the
+next sync restores these. For the same reason the pass merges rather than sets:
+`analysis` holds the only copy of some contacts' names and email addresses.
+
+The pass is skipped, and says so, when `--max-pages` stopped the backfill
+part-way. A reply is judged against the oldest part of a conversation, which is
+exactly what a partial history lacks, so a truncated collection would not shade
+these counts -- it would zero them. Contacts with no classification yet are
+skipped rather than created.
+
 ### Known limits
 
-A message edited, deleted or marked seen *after* it was stored is not re-read,
-so its stored copy keeps the state it had at sync time. Use `--rescan-days` to
-refresh a recent window. Attachments are stored as metadata only; documents
-carrying any are flagged `attachments_fetched: False` for a later pass.
+A message edited or deleted *after* it was stored is not re-read, so its stored
+copy keeps the state it had at sync time. Use `--rescan-days` to refresh a recent
+window. Attachments are stored as metadata only; documents carrying any are
+flagged `attachments_fetched: False` for a later pass.
+
+Read state is not recoverable at all. `seen` and `seen_by` come back as `0` and
+`{}` for every LinkedIn message in both directions -- including ones a contact
+demonstrably read, since they replied to them -- so whether someone opened a
+message cannot be known from this data. A reply is the only evidence of
+engagement it holds.
 
 ## AI Classification (`analysis.ipynb`)
 
