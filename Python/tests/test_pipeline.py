@@ -271,3 +271,53 @@ def test_the_queue_is_newest_inbound_first():
     )
 
     assert queue == ["new", "old"]
+
+
+# --- build_prompt -------------------------------------------------------------
+
+
+def test_prompt_states_what_is_on_file_then_the_profile_then_the_conversation():
+    """The model should know who is speaking, and what is already decided
+    about them, before it reads them."""
+    prompt = build_prompt(
+        {
+            "summary": "Lab Director at Acme Path",
+            "industry": "Pathology",
+            "function": "Operations",
+            "seniority": "Director",
+        },
+        "--- conversation 1 ---\n2026-01-01 Them: hi",
+    )
+
+    assert prompt == (
+        "PROFILE\n"
+        "On file, already classified and not to be re-judged: "
+        "industry Pathology; function Operations; seniority Director\n"
+        "Lab Director at Acme Path\n\n"
+        "CONVERSATION\n--- conversation 1 ---\n2026-01-01 Them: hi"
+    )
+
+
+def test_a_missing_profile_or_classification_is_said_rather_than_left_blank():
+    """26 of the 617 inbound contacts have no usable summary; they are
+    classified from the conversation alone, and the model is told so."""
+    assert build_prompt({}, "x").startswith(f"PROFILE\n{NOT_CLASSIFIED}\n{NO_PROFILE}\n")
+    assert build_prompt({"summary": "   "}, "x").startswith(
+        f"PROFILE\n{NOT_CLASSIFIED}\n{NO_PROFILE}\n"
+    )
+    assert build_prompt({"industry": "RCM"}, "x").startswith(
+        "PROFILE\nOn file, already classified and not to be re-judged: industry RCM\n"
+    )
+
+
+# --- generation_config --------------------------------------------------------
+
+
+def test_an_unknown_thinking_level_is_rejected_before_any_call():
+    """A typo in --thinking-level must fail once, up front -- not 617 times
+    inside the gather, each counted as a Gemini failure."""
+    import pytest
+    from pipeline import generation_config
+
+    with pytest.raises(ValueError):
+        generation_config("max")
