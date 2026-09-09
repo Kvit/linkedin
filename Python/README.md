@@ -430,6 +430,133 @@ GOOGLE_API_KEY=your-api-key-here
 
 Note: The core API server (`main.py`) does not require Gemini — it only uses Firestore.
 
+## Pipeline Classification (`pipeline-classify.py`)
+
+Reads every conversation in `messages` and writes a sales-pipeline stage onto the
+contact's `analysis` document with Gemini. The rules live in `pipeline.py`, so
+the same code classifies one contact from another script the moment a message
+arrives.
+
+```bash
+uv run python pipeline-classify.py --dry-run --limit 30   # first look; read pipeline-review.csv
+uv run python pipeline-classify.py                        # incremental
+```
+
+| Flag | Effect |
+|------|--------|
+| `--dry-run` | Call Gemini but write nothing to Firestore. Still billed; the review CSV is the point. |
+| `--limit N` | At most N Gemini calls, newest conversations first. |
+| `--contact DOC_ID` | Only this contact, whatever is stored. Repeatable. |
+| `--reprocess-all` | Reclassify everyone with an inbound message, e.g. after a prompt change. |
+| `--concurrency N` | Gemini calls in flight at once. Default 4. Many 429 failures mean your tier is lower: use 1 and check the rate limits in AI Studio. |
+| `--thinking-level L` | `low` (default, the docs' recommendation for classification), `medium` or `high`. Recorded on every CSV row. |
+| `--csv PATH` | Where the review file goes. Default `pipeline-review.csv`. |
+
+### Stages
+
+| `pipeline_stage` | Meaning |
+|------------------|---------|
+| `lead` | Showed interest: asked how it works or what it costs, described their denials problem, asked for a call or material, offered an introduction. |
+| `prospect` | The default. The contact was selected by industry and seniority targeting, and nothing they wrote changes that: a courtesy reply -- "thanks for connecting", "will keep it in mind" -- or no reply at all. |
+| `soft_no` | A circumstance stops them, not a lack of interest: between roles, not the decision-maker, workload or budget, stepped away "at present". The obstacle can expire, so they keep receiving product updates. |
+| `reject` | They say they do not want it: "not interested", "no need", covered by another vendor and not looking to change. A softening phrase -- "at this time", "right now" -- is politeness, not a reason, and does not make it a `soft_no`. |
+| `not_relevant` | Not a buyer at all, in any timeframe: recruiting, selling to us, asking for career advice. |
+| `unknown` | The text cannot be read at all. Readable text with no signal is `prospect`. |
+
+The line between `reject` and `soft_no` is what the refusal speaks to. A no about
+their **interest** is `reject`, however politely hedged. A no about their
+**circumstances** is `soft_no`, because the obstacle can expire and they never
+said the product was unwanted.
+
+Gemini reads the contact's profile `summary`, the `industry`, `function` and
+`seniority` already on file, and the whole conversation. The three
+classifications are shown as given and are never re-judged -- the model returns
+a stage and a reason, nothing else. Target-market fit is not part of the label:
+a hospital executive who asks about the product is a `lead`. Combine the two at
+query time -- `pipeline_stage == "lead"` and `industry` in `TARGET_INDUSTRIES`
+-- for an outreach list.
+
+Only contacts with at least one inbound message reach the model (617 today); one
+message is enough, since a single "no, thank you" disqualifies. The 1,299
+contacts who never answered are `prospect` by rule with no call. A contact with
+no `analysis` document is skipped, never created.
+
+The call uses `gemini-3.8-flash` in JSON mode with a Pydantic schema, reads
+`response.parsed`, runs at `thinking_level=low` by default (the docs'
+recommendation for classification), leaves temperature at its default, and has
+retries on -- the SDK ships with them off. Calls run four at a time through the
+async client.
+
+### Checking the rulings
+
+Every row of `pipeline-review.csv` has the transcript, the stage, the model's
+one-sentence reason and the thinking level it ran at, on dry runs too. To see
+whether more reasoning changes the calls:
+
+```bash
+uv run python pipeline-classify.py --dry-run --reprocess-all --thinking-level medium --csv pipeline-review-medium.csv
+```
+
+writes a second file to diff against the first without touching Firestore. If
+`medium` wins, change `DEFAULT_THINKING_LEVEL` in `pipeline.py`, run
+`PIPELINE_THINKING_LEVEL=medium uv run pytest test_gemini_pipeline.py`, then
+`--reprocess-all` to re-stage everyone.
+
+### Fields
+
+| Field | Meaning |
+|-------|---------|
+| `pipeline_stage` | One of the six stages. |
+| `pipeline_reason` | One sentence from the model naming the words that decided it, or `messaged, no reply yet`. |
+| `pipeline_classified_at` | When. Server timestamp. |
+| `pipeline_message_id` | The inbound message the stage was read from. Absent for the rule. |
+
+### Re-runs
+
+`pipeline_message_id` is the incremental key. When `messages-sync.py` stores a
+newer inbound message from a contact, the next run rebuilds their whole
+transcript and classifies again; the latest signal wins, so an interested
+contact who later declines becomes `reject`. Our own follow-ups never trigger a
+reclassification, and neither does a changed profile summary or a re-run of
+`analysis.ipynb`. A Gemini failure writes nothing, so the contact is queued
+again next run. The rule never overwrites a stage the model assigned, and a run
+with nothing new writes nothing.
+
+Fields are merged, never set: `analysis` holds the only copy of some contacts'
+names and emails. `collection-tocsv.py` exports them with everything else.
+
+### One contact at a time
+
+For a webhook or a sync hook, `pipeline.classify_contact` reads only that
+contact's messages and applies the same rules. It is idempotent: with nothing
+new to read it makes no call and no write, so it is safe on every event,
+including our own outbound messages.
+
+```python
+import asyncio
+from google.cloud import firestore
+from pipeline import classify_contact, gemini_client
+
+db = firestore.Client(project="vk-linkedin", database="linkedin")
+run = asyncio.run(classify_contact(db, gemini_client(), "some-linkedin-slug"))
+if run.rows:
+    print(run.rows[0]["stage"], run.rows[0]["reason"])
+```
+
+Inside async code (a FastAPI handler), `await classify_contact(...)` directly.
+One Gemini client per event loop: its HTTP pool binds to the loop it first runs
+on, so build it where the loop lives, and classify several contacts from
+synchronous code with one `run_pipeline(db, client, contacts=[...])` rather than
+a loop of `asyncio.run`.
+
+### Tests
+
+`uv run pytest tests/test_pipeline.py` covers the transcript, the planner and
+the prompt without credentials. `uv run pytest test_gemini_pipeline.py -v` hits
+the model with one conversation per stage plus rule probes, eleven calls in one
+event loop; it is not collected by the default run and skips without
+`GOOGLE_API_KEY`.
+
 ## LinkedIn operations (`lib/unipile`)
 
 Replaces LinkedIn Helper for contact and messaging work, using the Unipile API.
