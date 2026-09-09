@@ -131,8 +131,71 @@ def build_transcripts(documents) -> dict[str, dict]:
     return result
 
 
-def plan_pipeline(transcripts, stored, *, reprocess_all=False, force=frozenset()):
-    raise NotImplementedError  # Task 2
+def plan_pipeline(
+    transcripts, stored, *, reprocess_all=False, force=frozenset()
+) -> tuple[list[str], list[str], dict[str, int]]:
+    """Decide who gets the silent rule, who goes to Gemini, and who is left alone.
+
+    Pure on purpose, like `functions.plan_forward_writes`: the engine attaches
+    `SERVER_TIMESTAMP` and does the writes, so every rule here is pinned by a
+    test that needs no Firestore.
+
+    Args:
+        transcripts: `build_transcripts` output.
+        stored: contact id to its current ``pipeline_stage`` and
+            ``pipeline_message_id`` (either may be absent), for every contact
+            that has an `analysis` document. A contact absent here has none and
+            must never be minted.
+        reprocess_all: queue every contact with an inbound message, whatever is
+            stored -- for prompt or taxonomy changes.
+        force: contacts to queue even when nothing changed.
+
+    Returns:
+        tuple: ``(silent, queue, tally)``. ``silent`` are contacts to mark
+        ``prospect`` by rule. ``queue`` are contacts for Gemini, newest inbound
+        first. ``tally`` counts ``silent``, ``queued``, ``unchanged``, ``stale``
+        (Gemini-classified, but their inbound message is no longer stored),
+        ``missing`` (no `analysis` document) and ``not_found`` (forced, but no
+        messages at all).
+    """
+    silent: list[str] = []
+    queue: list[str] = []
+    tally = {
+        "silent": 0, "queued": 0, "unchanged": 0, "stale": 0, "missing": 0,
+        "not_found": len(set(force) - transcripts.keys()),
+    }
+
+    for contact, entry in transcripts.items():
+        current = stored.get(contact)
+        if current is None:
+            tally["missing"] += 1
+            continue
+
+        if entry["inbound_total"] == 0:
+            if current.get("pipeline_message_id"):
+                # Gemini read a message that is no longer in the window. The
+                # judgment stands; a reject turned prospect would be messaged.
+                tally["stale"] += 1
+            elif current.get("pipeline_stage") == SILENT_STAGE:
+                tally["unchanged"] += 1
+            else:
+                silent.append(contact)
+            continue
+
+        if (
+            reprocess_all
+            or contact in force
+            or current.get("pipeline_message_id") != entry["newest_inbound_id"]
+        ):
+            queue.append(contact)
+        else:
+            tally["unchanged"] += 1
+
+    queue.sort(key=lambda contact: (transcripts[contact]["newest_inbound_date"], contact),
+               reverse=True)
+    tally["silent"] = len(silent)
+    tally["queued"] = len(queue)
+    return silent, queue, tally
 
 
 def build_prompt(contact, transcript) -> str:

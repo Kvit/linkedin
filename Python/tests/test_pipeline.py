@@ -137,3 +137,137 @@ def test_a_message_with_no_chat_id_is_its_own_conversation():
     ])
 
     assert out["ann"]["transcript"].count("--- conversation") == 2
+
+
+# --- plan_pipeline ------------------------------------------------------------
+
+
+def _entry(inbound_total, newest_id=None, newest_date=None):
+    return {
+        "transcript": "--- conversation 1 ---\n2026-01-01 Me: intro",
+        "inbound_total": inbound_total,
+        "newest_inbound_id": newest_id,
+        "newest_inbound_date": newest_date,
+    }
+
+
+def test_a_contact_with_an_inbound_message_and_no_classification_is_queued():
+    silent, queue, tally = plan_pipeline({"ann": _entry(1, "m2", _day(2))}, {"ann": {}})
+
+    assert queue == ["ann"]
+    assert silent == []
+    assert tally["queued"] == 1
+
+
+def test_a_single_inbound_message_is_enough_to_be_queued():
+    """One 'no, thank you' must reach Gemini: it disqualifies the contact."""
+    silent, queue, tally = plan_pipeline(
+        {"ann": _entry(1, "m2", _day(2))}, {"ann": {"pipeline_stage": "prospect"}}
+    )
+
+    assert queue == ["ann"]
+
+
+def test_an_unchanged_newest_inbound_is_not_queued():
+    """What makes `classify_contact` safe to call on every event."""
+    silent, queue, tally = plan_pipeline(
+        {"ann": _entry(1, "m2", _day(2))},
+        {"ann": {"pipeline_stage": "lead", "pipeline_message_id": "m2"}},
+    )
+
+    assert queue == []
+    assert tally["unchanged"] == 1
+
+
+def test_a_new_inbound_message_requeues_a_classified_contact():
+    """The re-run path: a newer inbound was stored, so the whole transcript
+    is read again and the latest signal wins."""
+    silent, queue, tally = plan_pipeline(
+        {"ann": _entry(2, "m5", _day(5))},
+        {"ann": {"pipeline_stage": "lead", "pipeline_message_id": "m2"}},
+    )
+
+    assert queue == ["ann"]
+
+
+def test_reprocess_all_requeues_everyone_with_an_inbound_message():
+    silent, queue, tally = plan_pipeline(
+        {"ann": _entry(1, "m2", _day(2)), "bob": _entry(0)},
+        {
+            "ann": {"pipeline_stage": "lead", "pipeline_message_id": "m2"},
+            "bob": {"pipeline_stage": SILENT_STAGE},
+        },
+        reprocess_all=True,
+    )
+
+    assert queue == ["ann"]  # bob has nothing to read
+    assert silent == []
+    assert tally["unchanged"] == 1
+
+
+def test_force_requeues_a_named_contact_whose_key_is_unchanged():
+    silent, queue, tally = plan_pipeline(
+        {"ann": _entry(1, "m2", _day(2))},
+        {"ann": {"pipeline_stage": "lead", "pipeline_message_id": "m2"}},
+        force={"ann"},
+    )
+
+    assert queue == ["ann"]
+
+
+def test_a_forced_contact_with_no_messages_is_reported_not_ignored():
+    silent, queue, tally = plan_pipeline({}, {}, force={"ghost"})
+
+    assert tally["not_found"] == 1
+
+
+def test_a_silent_contact_never_classified_gets_the_rule():
+    silent, queue, tally = plan_pipeline({"ann": _entry(0)}, {"ann": {}})
+
+    assert silent == ["ann"]
+    assert queue == []
+    assert tally["silent"] == 1
+
+
+def test_a_silent_contact_already_prospect_is_left_unchanged():
+    """A steady-state run must write nothing."""
+    silent, queue, tally = plan_pipeline(
+        {"ann": _entry(0)}, {"ann": {"pipeline_stage": SILENT_STAGE}}
+    )
+
+    assert silent == []
+    assert tally["unchanged"] == 1
+
+
+def test_the_rule_never_overwrites_a_stage_gemini_assigned():
+    """Their reply left the window -- deleted on rescan, or the floor moved.
+    Absence of evidence does not refute a judgment made on evidence; a reject
+    silently turned prospect would be messaged again."""
+    silent, queue, tally = plan_pipeline(
+        {"ann": _entry(0)},
+        {"ann": {"pipeline_stage": "reject", "pipeline_message_id": "m2"}},
+    )
+
+    assert silent == []
+    assert queue == []
+    assert tally["stale"] == 1
+
+
+def test_a_contact_with_no_analysis_document_is_skipped_and_counted():
+    """merge=True mints an absent document; one holding a stage and nothing
+    else would flow into every downstream count and the CSV export."""
+    silent, queue, tally = plan_pipeline({"ann": _entry(1, "m2", _day(2))}, {})
+
+    assert silent == []
+    assert queue == []
+    assert tally["missing"] == 1
+
+
+def test_the_queue_is_newest_inbound_first():
+    """So `--limit 30` on a review pass reads the conversations that matter."""
+    silent, queue, tally = plan_pipeline(
+        {"old": _entry(1, "m1", _day(1)), "new": _entry(1, "m9", _day(9))},
+        {"old": {}, "new": {}},
+    )
+
+    assert queue == ["new", "old"]
