@@ -54,9 +54,9 @@ class UnipileSettings(BaseSettings):
     #: Average number of calls between long breaks; 0 disables them.
     long_pause_every: int = 10
     #: Shortest long break.
-    long_pause_min_seconds: float = 60.0
+    long_pause_min_seconds: float = 2*60.0
     #: Longest long break, drawn uniformly against the minimum.
-    long_pause_max_seconds: float = 120.0
+    long_pause_max_seconds: float = 5*60.0
 
     #: Extra attempts for a profile whose sections LinkedIn withheld, each after
     #: a doubled pause. Every attempt is charged to
