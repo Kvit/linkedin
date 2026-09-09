@@ -47,10 +47,10 @@ class UnipileSettings(BaseSettings):
     # `pacing.HumanCadence` for how a gap is drawn.
 
     #: Shortest gap between two calls.
-    min_delay_seconds: float = 10.0
+    min_delay_seconds: float = 20.0
     #: Longest ordinary gap. Draws are skewed toward `min_delay_seconds`, so the
     #: mean sits near a third of the way up the range, not at the midpoint.
-    max_delay_seconds: float = 30.0
+    max_delay_seconds: float = 40.0
     #: Average number of calls between long breaks; 0 disables them.
     long_pause_every: int = 10
     #: Shortest long break.
