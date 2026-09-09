@@ -1,5 +1,7 @@
 __pycache__
 *service-account.json
+# Data files are ignored wholesale; anything needed is re-added by name.
+*.json
 .Rproj.user
 *.csv
 *.env

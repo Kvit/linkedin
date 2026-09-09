@@ -1,0 +1,65 @@
+{
+  "object": "UserProfile",
+  "provider": "LINKEDIN",
+  "provider_id": "ACoAAAAZ0JEBdxllEow1i5AAvLdaATMLQCdXF6c",
+  "public_identifier": "khvatkov",
+  "member_urn": "1691793",
+  "first_name": "Vitali",
+  "last_name": "Khvatkov",
+  "headline": "Building AI Denial Recovery Software for Pathology & Medical Labs",
+  "location": "Houston, Texas, United States",
+  "network_distance": "SECOND_DEGREE",
+  "is_premium": true,
+  "websites": ["https://www.pinnacleservice.co/"],
+  "follower_count": 3995,
+  "connections_count": 3454,
+  "contact_info": {"emails": ["redacted@example.com"], "phones": ["000-0000000"]},
+  "summary": "I help independent labs and RCM groups recover revenue they thought was lost.",
+  "work_experience_total_count": 2,
+  "work_experience": [
+    {
+      "id": "1205676587",
+      "company_id": "27454299",
+      "company": "Pinnacle Services Corporation",
+      "position": "Founder",
+      "location": "Houston, Texas, United States",
+      "description": "Builds Recovr, an AI denial-recovery platform for laboratories.",
+      "status": "Full-time",
+      "skills": ["Business Strategy", "Revenue Cycle Management"],
+      "start": "5/1/2016",
+      "end": null
+    },
+    {
+      "id": "1879018068",
+      "company": "Lighthouse Lab Services",
+      "position": "Chief Information Officer",
+      "location": "Houston, Texas, United States",
+      "description": "Technology for lab operations from ordering to billing.",
+      "status": "Full-time",
+      "skills": ["IT Strategy"],
+      "start": "7/1/2021",
+      "end": "4/1/2023"
+    }
+  ],
+  "education_total_count": 1,
+  "education": [
+    {
+      "id": "36707912",
+      "degree": "Master, Business Administration",
+      "school": "Rice Business",
+      "start": "1/1/2008",
+      "end": "1/1/2010"
+    }
+  ],
+  "skills_total_count": 2,
+  "skills": [
+    {"name": "Revenue Cycle Management", "endorsement_count": 16, "endorsement_id": null, "insights": [], "endorsed": false},
+    {"name": "Medical Billing", "endorsement_count": 25, "endorsement_id": null, "insights": [], "endorsed": false}
+  ],
+  "languages_total_count": 1,
+  "languages": [{"name": "English", "proficiency": "Native or bilingual proficiency"}],
+  "certifications_total_count": 1,
+  "certifications": [{"name": "CRCR", "organization": "HFMA"}],
+  "projects_total_count": 1,
+  "projects": [{"name": "Immunoscore", "description": "Prognostic cancer biomarkers", "skills": [], "start": "5/1/2015", "end": null}]
+}

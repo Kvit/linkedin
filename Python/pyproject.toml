@@ -8,15 +8,28 @@ dependencies = [
     "fastapi>=0.128.7",
     "google-cloud-firestore>=2.23.0",
     "ipykernel>=7.2.0",
-    "google-genai>=1.0.0",
+    "google-genai>=2.22.0",
+    "httpx>=0.28.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
     "pandas>=3.0.0",
     "polars>=1.0.0",
     "python-dotenv>=1.0.0",
     "uvicorn>=0.40.0",
+    "pyarrow>=25.0.1",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
     "python-dotenv>=1.2.1",
+    "respx>=0.22.0",
+    "nbformat>=5.10.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "live: hits the real Unipile API (read-only); deselected by default",
+]
+addopts = "-m 'not live'"

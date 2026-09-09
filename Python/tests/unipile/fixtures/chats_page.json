@@ -1,0 +1,23 @@
+{
+  "object": "ChatList",
+  "items": [
+    {
+      "object": "Chat",
+      "name": null,
+      "type": 0,
+      "folder": ["INBOX", "INBOX_LINKEDIN_CLASSIC"],
+      "pinned": 0,
+      "unread": 1,
+      "archived": 0,
+      "read_only": 0,
+      "timestamp": "2026-09-04T12:46:04.000Z",
+      "account_id": "ACC1",
+      "provider_id": "2-ZjMwYmQwZGUtY2IyYy00MmM1LTkyMWM=",
+      "account_type": "LINKEDIN",
+      "unread_count": 2,
+      "attendee_provider_id": "ACoAAFIXTUREATTENDEE0000000000000000000",
+      "id": "a7imlprjXGmSmywp0cuzoA"
+    }
+  ],
+  "cursor": null
+}

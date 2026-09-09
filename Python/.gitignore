@@ -1,9 +1,14 @@
 # Environment variables
 .env
 
-# Google Cloud credentials
+# Every .json is ignored -- service-account keys, the budget state file and
+# captured profiles all land here. Anything the repo genuinely needs is
+# re-added by name below.
 *.json
-!package.json
+!.devcontainer/devcontainer.json
+# Test fixtures are sanitized API captures and must be committed, or the suite
+# cannot run from a fresh clone.
+!tests/**/fixtures/*.json
 
 # Python
 __pycache__/

@@ -1,0 +1,17 @@
+{
+  "object": "InvitationList",
+  "items": [
+    {
+      "object": "InvitationSent",
+      "id": "7503196768394842113",
+      "date": "Sent today",
+      "parsed_datetime": "2026-09-08T23:08:37.426Z",
+      "invitation_text": null,
+      "invited_user": "Alex Morgan",
+      "invited_user_id": "ACoAAFIXTUREINVITEE00000000000000000000",
+      "invited_user_public_id": "alex-morgan-4070701b",
+      "invited_user_description": "Pathology Manager at Midwest Diagnostic Laboratory"
+    }
+  ],
+  "cursor": null
+}
