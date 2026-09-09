@@ -50,13 +50,13 @@ class UnipileSettings(BaseSettings):
     min_delay_seconds: float = 20.0
     #: Longest ordinary gap. Draws are skewed toward `min_delay_seconds`, so the
     #: mean sits near a third of the way up the range, not at the midpoint.
-    max_delay_seconds: float = 40.0
+    max_delay_seconds: float = 90.0
     #: Average number of calls between long breaks; 0 disables them.
-    long_pause_every: int = 10
+    long_pause_every: int = 20
     #: Shortest long break.
-    long_pause_min_seconds: float = 2*60.0
+    long_pause_min_seconds: float = 3*60.0
     #: Longest long break, drawn uniformly against the minimum.
-    long_pause_max_seconds: float = 5*60.0
+    long_pause_max_seconds: float = 10*60.0
 
     #: Extra attempts for a profile whose sections LinkedIn withheld, each after
     #: a doubled pause. Every attempt is charged to

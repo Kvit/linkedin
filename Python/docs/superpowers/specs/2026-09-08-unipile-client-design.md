@@ -72,8 +72,8 @@ tenant and returns `503 no_client_session`.
 | `UNIPILE_MAX_INVITES_PER_DAY` | `25` | Daily invite cap |
 | `UNIPILE_MAX_MESSAGES_PER_DAY` | `50` | Daily message cap |
 | `UNIPILE_MAX_PROFILE_FETCHES_PER_DAY` | `250` | Profile fetches are the throttled read |
-| `UNIPILE_MIN_DELAY_SECONDS` | `4` | Lower bound of randomized inter-call delay |
-| `UNIPILE_MAX_DELAY_SECONDS` | `12` | Upper bound |
+| `UNIPILE_MIN_DELAY_SECONDS` | `20` | Lower bound of randomized inter-call delay |
+| `UNIPILE_MAX_DELAY_SECONDS` | `90` | Upper bound |
 | `UNIPILE_USAGE_WARN_PCT` | `75` | Log a warning at this provider usage level |
 | `UNIPILE_USAGE_HALT_PCT` | `90` | Refuse further writes at this level |
 | `UNIPILE_BUDGET_STATE_PATH` | `.unipile_budget.json` | Counter file |
