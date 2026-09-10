@@ -80,6 +80,7 @@ from datetime import UTC, datetime, timedelta
 
 from dotenv import load_dotenv
 from lib import firestore
+from google.cloud.firestore_v1 import DELETE_FIELD, SERVER_TIMESTAMP, Query
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from functions import (
@@ -133,13 +134,13 @@ def _watermarks(messages_ref) -> tuple[datetime | None, datetime | None]:
     automatically, so this needs no composite index.
     """
     newest = next(
-        messages_ref.order_by("timestamp", direction=firestore.Query.DESCENDING)
+        messages_ref.order_by("timestamp", direction=Query.DESCENDING)
         .limit(1)
         .stream(),
         None,
     )
     oldest = next(
-        messages_ref.order_by("timestamp", direction=firestore.Query.ASCENDING)
+        messages_ref.order_by("timestamp", direction=Query.ASCENDING)
         .limit(1)
         .stream(),
         None,
@@ -360,7 +361,7 @@ def _document_body(message, provider_id, member_id, doc_id) -> dict:
     body["contact_doc_id"] = doc_id
     if message.attachments:
         body["attachments_fetched"] = False
-    body["synced_at"] = firestore.SERVER_TIMESTAMP
+    body["synced_at"] = SERVER_TIMESTAMP
     return body
 
 
@@ -605,7 +606,7 @@ def refresh_contact_stats(db, messages_ref, analysis_ref, *, dry_run) -> dict:
         if all(current.get(field) == entry.get(field) for field in STATS_FIELDS):
             continue
         updates[contact] = dict(entry) | {
-            field: firestore.DELETE_FIELD
+            field: DELETE_FIELD
             for field in STATS_FIELDS
             if field not in entry and field in current
         }
@@ -614,7 +615,7 @@ def refresh_contact_stats(db, messages_ref, analysis_ref, *, dry_run) -> dict:
     # forever. Clearing the fields makes absence mean the same thing it means
     # for a contact never written: no data, as opposed to a measured zero.
     for contact in stored.keys() - fresh.keys():
-        updates[contact] = {field: firestore.DELETE_FIELD for field in STATS_FIELDS}
+        updates[contact] = {field: DELETE_FIELD for field in STATS_FIELDS}
         tally["cleared"] += 1
 
     tally["changed"] = len(updates) - tally["cleared"]
