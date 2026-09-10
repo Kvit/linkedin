@@ -6,12 +6,12 @@ real tenant and fails with ``503 no_client_session`` — refusing to start beats
 silently talking to the wrong host.
 """
 
-import json
-from pathlib import Path
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, ClassVar
 
-from pydantic import Field, SecretStr, ValidationError, field_validator
-from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from pydantic import Field, SecretStr, field_validator
+from pydantic_settings import NoDecode, SettingsConfigDict
+
+from lib.config import BaseConfig, split_list
 
 from .errors import ConfigError
 
@@ -28,14 +28,22 @@ DEFAULT_PROFILE_SECTIONS = [
 ]
 
 
-class UnipileSettings(BaseSettings):
-    """All ``UNIPILE_*`` configuration, validated once at client construction."""
+class UnipileSettings(BaseConfig):
+    """All ``UNIPILE_*`` configuration, validated once at client construction.
+
+    The loading and error-redaction machinery lives in :class:`lib.config.BaseConfig`,
+    shared with every other configurable component; only the fields and the two
+    class attributes below belong to Unipile.
+    """
 
     model_config = SettingsConfigDict(
         env_prefix="UNIPILE_",
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    error_class: ClassVar[type[Exception]] = ConfigError
+    subject: ClassVar[str] = "Unipile settings"
 
     api_key: SecretStr
     dns: str
@@ -92,16 +100,11 @@ class UnipileSettings(BaseSettings):
     def _parse_sections(cls, value: Any) -> Any:
         """Accept ``about,experience`` as well as ``["about", "experience"]``.
 
-        ``NoDecode`` turns off pydantic-settings' own JSON decoding (it runs at
-        the source level, before validators, so the comma form would be a parse
-        error). That means the JSON form has to be decoded here instead.
+        The splitting itself is `lib.config.split_list`, shared with every other
+        settings class; its docstring explains why `NoDecode` above is required
+        for the comma form to reach a validator at all.
         """
-        if not isinstance(value, str):
-            return value
-        text = value.strip()
-        if text.startswith("["):
-            return json.loads(text)
-        return [part.strip() for part in text.split(",") if part.strip()]
+        return split_list(value)
 
     @property
     def base_url(self) -> str:
@@ -110,34 +113,3 @@ class UnipileSettings(BaseSettings):
         if dns.startswith(("http://", "https://")):
             return dns
         return f"https://{dns}"
-
-    @classmethod
-    def from_env(cls, env_file: str | Path | None = ".env") -> Self:
-        """Load settings, turning validation failures into :class:`ConfigError`."""
-        try:
-            return cls(_env_file=env_file)  # type: ignore[call-arg]
-        except ValidationError as exc:
-            raise ConfigError(
-                type="config/invalid_settings",
-                title=f"Invalid Unipile settings: {_field_list(exc)}",
-                detail=_safe_detail(exc),
-            ) from None  # the chained error embeds the raw API key
-
-
-def _field_list(exc: ValidationError) -> str:
-    return ", ".join(str(err["loc"][0]) for err in exc.errors() if err["loc"])
-
-
-def _safe_detail(exc: ValidationError) -> str:
-    """Describe what is wrong without ever echoing a value.
-
-    Pydantic renders the raw input alongside each error, and at that point the
-    API key is still a plain string -- ``SecretStr`` has not been applied. So
-    ``str(exc)`` and the chained traceback would both print the key verbatim
-    whenever some *other* field fails validation, which is exactly the
-    "key set, DNS forgotten" case.
-    """
-    return "; ".join(
-        f"{'.'.join(str(part) for part in err['loc'])}: {err['msg']}"
-        for err in exc.errors(include_input=False, include_url=False)
-    )

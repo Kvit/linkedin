@@ -1,0 +1,48 @@
+# Cloud sandbox shared by both LinkedIn Outreach agents (agents/scheduled.md
+# and agents/interactive.md). Environments aren't agent-specific - "There is
+# no environment field on the agent" (platform-schema-verified.md) - so one
+# environment definition covers both; which MCP servers it may reach is
+# read off of whichever agent a session actually starts with.
+#
+# Schema verified against:
+#   https://platform.claude.com/docs/en/managed-agents/environments
+#   https://platform.claude.com/docs/en/api/beta/environments/create
+# Both are quoted verbatim in task-1d-report.md next to this file.
+#
+# This file's kind is inferred from the directory it lives in
+# (`environments/`), not from a field in the file - see README.md,
+# "How ant apply finds these files", quoting
+# https://platform.claude.com/docs/en/cli-sdks-libraries/cli/apply#kind-inference.
+name: linkedin-outreach
+config:
+  type: cloud
+  networking:
+    type: limited
+    # Narrowest setting that still lets the agent reach its MCP servers:
+    # `allow_mcp_servers: true` opens outbound access to whatever MCP
+    # server URLs are declared on the agent a session starts with (today:
+    # the outreach service; for agents/interactive.md, also Unipile) and
+    # nothing else. Neither agent's toolset enables bash, write, edit, or
+    # a bare shell that could reach the open internet on its own - the
+    # scheduled agent doesn't even enable those tools, and web_fetch /
+    # web_search (where enabled, on the interactive agent) run on
+    # Anthropic's own servers, not through this sandbox's network policy
+    # at all ("An environment's networking settings ... do not affect
+    # web_search or web_fetch" - tools doc).
+    #
+    # allowed_hosts is `optional array of string or null` with no stated
+    # minItems/minLength on
+    # https://platform.claude.com/docs/en/api/beta/environments/create -
+    # unlike, e.g., the web_search/web_fetch domain lists elsewhere, which
+    # explicitly reject an empty list. Every *prose* example on the
+    # environments page happens to show allowed_hosts populated, but nothing
+    # in either page requires that. An explicit empty list is used here for
+    # the narrowest possible expression of "no hosts beyond MCP servers";
+    # omitting the field entirely would mean the same thing.
+    allowed_hosts: []
+    allow_mcp_servers: true
+    # Not used: neither agent installs packages, so this stays at its
+    # documented default (false) and is written out only so a future
+    # reader doesn't have to look up the default to know it's off on
+    # purpose.
+    allow_package_managers: false

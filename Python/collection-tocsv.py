@@ -3,18 +3,14 @@
 import os
 import pandas as pd
 from dotenv import load_dotenv
-from google.cloud import firestore
+from lib import firestore
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Initialize Firestore client with specific project ID, only if file is found
-if os.path.isfile("vk-linkedin-master-service-account.json"):
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = (
-        "vk-linkedin-master-service-account.json"
-    )
-
-db = firestore.Client(project="vk-linkedin", database="linkedin")
+# Credentials guard and the two database literals live in lib/firestore.py,
+# shared with every other entry point.
+db = firestore.client()
 
 
 def collection_to_csv(col, file):

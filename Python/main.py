@@ -7,20 +7,16 @@ from dotenv import load_dotenv
 from functions import join_keys
 
 # Assume the google-cloud-firestore import is available in the development environment
-from google.cloud import firestore
+from lib import firestore
 
 # Load environment variables from .env file
 load_dotenv()
 
 app = FastAPI()
 
-# Initialize Firestore client with specific project ID, only if file is found
-if os.path.isfile("vk-linkedin-master-service-account.json"):
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = (
-        "vk-linkedin-master-service-account.json"
-    )
-
-db = firestore.Client(project="vk-linkedin", database="linkedin")
+# Credentials guard and the two database literals live in lib/firestore.py,
+# shared with every other entry point.
+db = firestore.client()
 
 
 @app.post("/add-profile/")

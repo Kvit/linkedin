@@ -32,3 +32,11 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# ant apply's lockfile MUST be committed: it maps each platform file to the
+# resource it created in the Anthropic account, and it is the only thing that
+# makes a re-run update those resources instead of creating a second copy of
+# every agent, environment and deployment. The blanket `*.json` above would
+# otherwise swallow it silently, and the duplicates would be discovered by
+# their bill.
+!linkedinmcp/platform/claude-lock.json

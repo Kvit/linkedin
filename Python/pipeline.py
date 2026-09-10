@@ -567,10 +567,10 @@ async def classify_contact(
     the new stage; `run.tally["silent"] == 1` means the rule applied (they
     have never written to us); all zeros means nothing changed.
 
-        from google.cloud import firestore
+        from lib import firestore
         from pipeline import classify_contact, gemini_client
 
-        db = firestore.Client(project="vk-linkedin", database="linkedin")
+        db = firestore.client()
         run = await classify_contact(db, gemini_client(), "some-linkedin-slug")
 
     From synchronous code, `asyncio.run(classify_contact(...))` -- once per

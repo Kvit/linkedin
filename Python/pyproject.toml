@@ -17,6 +17,25 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "uvicorn>=0.40.0",
     "pyarrow>=25.0.1",
+    "fastmcp>=4,<5",
+    # ZoneInfo has no bundled database. pandas pulls tzdata in only on win32, so
+    # a Linux container would fall back to the base image's system zoneinfo --
+    # which python:*-slim does not reliably carry. OUTREACH_TZ must resolve there.
+    "tzdata>=2026.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+only-include = [
+    "lib",
+    "linkedinmcp",
+    "functions.py",
+    "pipeline.py",
+    "profiles.py",
+    "messages_sync.py",
 ]
 
 [dependency-groups]

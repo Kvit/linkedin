@@ -68,7 +68,7 @@ import time
 
 import polars as pl
 from dotenv import load_dotenv
-from google.cloud import firestore
+from lib import firestore
 
 from pipeline import (
     DEFAULT_THINKING_LEVEL,
@@ -110,10 +110,9 @@ def main(argv=None) -> int:
     logging.basicConfig(level=logging.WARNING, format="%(message)s")
     logging.getLogger("pipeline").setLevel(logging.INFO)
 
-    if os.path.isfile("vk-linkedin-master-service-account.json"):
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "vk-linkedin-master-service-account.json"
-
-    db = firestore.Client(project="vk-linkedin", database="linkedin")
+    # Credentials guard and the two database literals live in lib/firestore.py,
+    # shared with every other entry point.
+    db = firestore.client()
     # Built up front so a missing GOOGLE_API_KEY fails here, not after the reads.
     client = gemini_client()
     started = time.monotonic()
