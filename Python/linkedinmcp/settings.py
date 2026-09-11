@@ -40,16 +40,32 @@ failure -- the real environment gets read instead of the fake settings -- is
 baffling to chase down.
 """
 
+import os
 from pathlib import Path
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any, ClassVar, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, SecretStr, field_validator
+from dotenv import load_dotenv
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import NoDecode, SettingsConfigDict
 
 from lib.config import BaseConfig, ConfigError, split_list
 
-__all__ = ["ConfigError", "OutreachSettings", "get_settings"]
+__all__ = ["SERVICE_PACING", "ConfigError", "OutreachSettings", "get_settings", "load_environment"]
+
+#: The service's pacing: no sleep between LinkedIn calls, no long breaks, no
+#: throttle retries. `load_environment` writes these four into `os.environ`,
+#: where `lib.unipile.config.UnipileSettings` -- which reads both the
+#: environment and the `.env` file, the environment winning -- picks them up.
+#: The notebooks pace like a person, inside one long process; this service is
+#: paced by its scheduler instead, and a sleep inside a leased tick is billed
+#: wall-clock time that can outlast the lease.
+SERVICE_PACING = {
+    "UNIPILE_MIN_DELAY_SECONDS": "0",
+    "UNIPILE_MAX_DELAY_SECONDS": "0",
+    "UNIPILE_LONG_PAUSE_EVERY": "0",
+    "UNIPILE_THROTTLE_RETRIES": "0",
+}
 
 
 class OutreachSettings(BaseConfig):
@@ -84,6 +100,15 @@ class OutreachSettings(BaseConfig):
 
     #: How many intro messages one daily planning run may queue.
     intro_daily_cap: int = Field(default=10, ge=1)
+
+    #: The random gap between one queued intro's `due_at` and the next, in
+    #: minutes (ruling P5-3; bounds set by the user on 2026-09-11). Queued
+    #: intros are spread so the day's messages never leave in one burst.
+    #: The tick sends at most one due item per run, so a gap shorter than
+    #: its own interval -- `*/4` in working hours -- gives that interval
+    #: instead. Both `0` means every intro is due at once.
+    intro_gap_min_minutes: int = Field(default=1, ge=0)
+    intro_gap_max_minutes: int = Field(default=5, ge=0)
 
     #: Minimum age, in days, of the newest outbound message before a follow-up
     #: may go out.
@@ -129,6 +154,31 @@ class OutreachSettings(BaseConfig):
     #: endpoint is off.
     anthropic_webhook_signing_key: SecretStr | None = None
 
+    #: How many days back the daily job looks for connections whose profile
+    #: is not stored yet (ledger ruling P3-1): the user keeps loading the
+    #: historical backlog with `new-contacts.ipynb`; this service handles
+    #: only the day's increment.
+    new_connection_days: int = Field(default=14, ge=1)
+
+    #: How many days back a connection may have been made and still get the
+    #: daily job's intro. 0 means every eligible connection, however old --
+    #: v1's behaviour. The backlog of older connections belongs to
+    #: `send-intros.ipynb` (MCP v2 design, 2026-09-11).
+    intro_connection_days: int = Field(default=14, ge=0)
+
+    #: How a job the MCP tools start is run (`monitor.py`): `inline` in the
+    #: same call -- tests and local runs -- or `cloud_tasks`, an HTTP task
+    #: that calls back `POST /jobs/run/{job_id}` on this service.
+    job_executor: Literal["inline", "cloud_tasks"] = "inline"
+
+    #: This service's own base URL, without `/mcp/` -- where a Cloud Task
+    #: sends a job back to. `deploy.cmd` sets it; `cloud_tasks` needs it.
+    service_url: str | None = None
+
+    #: The Cloud Tasks queue jobs go through, and where it lives.
+    jobs_queue: str = "linkedin-jobs"
+    jobs_location: str = "us-central1"
+
     @field_validator("allowed_link_domains", "target_industries", mode="before")
     @classmethod
     def _split_csv(cls, value: Any) -> Any:
@@ -157,6 +207,56 @@ class OutreachSettings(BaseConfig):
         except ZoneInfoNotFoundError:
             raise ValueError(f"unknown IANA time zone: {value!r}") from None
         return value
+
+    @model_validator(mode="after")
+    def _check_intro_gap(self) -> "OutreachSettings":
+        """An upper bound below the lower one is a typo, not a range: the
+        draw would silently run between the two anyway."""
+        if self.intro_gap_max_minutes < self.intro_gap_min_minutes:
+            raise ValueError(
+                f"INTRO_GAP_MAX_MINUTES ({self.intro_gap_max_minutes}) is below INTRO_GAP_MIN_MINUTES "
+                f"({self.intro_gap_min_minutes})"
+            )
+        return self
+
+
+def load_environment() -> None:
+    """Load the service's environment files and force its zero pacing.
+
+    Called by `app.create_app` (unless it is handed settings) and by the
+    `run_jobs` command line, before `get_settings()`. The notebooks never call
+    it, so their pacing is unaffected.
+
+    Three steps, in this order:
+
+    1. `.env` -- the project's shared file, the same one the notebooks read.
+       It carries every credential -- `OUTREACH_API_KEY` included, alongside
+       `UNIPILE_*` and `GOOGLE_API_KEY` -- and the rate limits `SendBudget`
+       enforces. Loaded without `override`, so a variable already set in the
+       process environment keeps its value.
+    2. `SERVICE_PACING` written into `os.environ`, replacing whatever step 1
+       loaded or the process already had.
+    3. `linkedinmcp/.env` -- optional. `override=True` is what makes this file
+       win wherever it names the same variable as step 1 or step 2, so it is
+       where a deliberate non-zero pacing for the service would go.
+
+    Why step 2 exists: `linkedinmcp/.env` is gitignored, and on 2026-09-10 it
+    was found missing from the working tree -- every image built until then
+    had run with the notebooks' 20-40 s pacing and multi-minute breaks.
+    Harmless for the read tools; fatal for a tick, whose lease a long break
+    outlasts. A gitignored file going missing must never re-enable sleeps.
+
+    Both files are named by explicit relative path and never loaded through a
+    bare `load_dotenv()` -- the bare form calls `find_dotenv()`, which walks up
+    the directory tree and would pick up whatever it found first. The working
+    directory is `Python/` locally and `/app` in the container, which is the
+    same directory, so both paths resolve identically in both places. Nothing
+    from either file is ever printed.
+    """
+    load_dotenv(".env")
+    for name, value in SERVICE_PACING.items():
+        os.environ[name] = value
+    load_dotenv("linkedinmcp/.env", override=True)
 
 
 def get_settings() -> OutreachSettings:

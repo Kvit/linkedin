@@ -55,7 +55,9 @@ analysis.csv  /  analysis.txt
 | `main.py` | FastAPI server with `/add-profile/` and `/echo/` endpoints |
 | `functions.py` | Helper functions for profile processing (ID extraction, text joining) |
 | `collection-tocsv.py` | Export Firestore collection to CSV and TXT files |
-| `messages-sync.py` | Incrementally sync LinkedIn messages into the `messages` collection, joined to contacts |
+| `messages_sync.py` | Incrementally sync LinkedIn messages into the `messages` collection, joined to contacts (importable; the outreach service's `sync` job uses it) |
+| `profiles.py` | Profile classification with Gemini, shared by the notebooks' copies and the outreach service |
+| `linkedinmcp/` | The LinkedIn outreach service (MCP server + scheduled jobs on Cloud Run) — see [below](#outreach-service-linkedinmcp) |
 | `analysis.ipynb` | Classify profiles with Gemini, including re-classifying changed summaries |
 | `new-contacts.ipynb` | Pull new connections through Unipile, store them, then classify the unclassified backlog |
 | `send-intros.ipynb` | Send `templates/intro.md` to target-industry connections we have never messaged |
@@ -240,14 +242,18 @@ python collection-tocsv.py
 
 This generates `analysis.csv` and `analysis.txt` from the `analysis` Firestore collection.
 
-## Message Sync (`messages-sync.py`)
+## Message Sync (`messages_sync.py`)
 
 Pulls LinkedIn messages into the `messages` Firestore collection, resolving each
 one to a contact in `extracted` / `analysis` so conversations and classifications
 can be analysed together.
 
+It was `messages-sync.py` until the outreach service needed to import it (a
+hyphen is not a valid module name); the service's `sync` job calls its
+`forward_pass` and `refresh_contact_stats`.
+
 ```bash
-uv run python messages-sync.py
+uv run python messages_sync.py
 ```
 
 Only messages Firestore does not already hold are fetched. A steady-state run
@@ -304,6 +310,16 @@ exactly what a partial history lacks, so a truncated collection would not shade
 these counts -- it would zero them. Contacts with no classification yet are
 skipped rather than created.
 
+### Campaign tags
+
+Every `messages` document has `tags`. A message the outreach service sent
+through its queue carries its queue item's campaign tags, for example
+`["recovr", "stage-1"]`, matched by the message id Unipile answered the send
+with. Every other message has `[]`, including the notebooks' own sends and
+every reply. The tags are looked up again each time a message is written, so a
+`--rescan-days` run keeps them. A one-time backfill on 2026-09-11 gave the
+7,332 documents stored before then `tags: []`.
+
 ### Known limits
 
 A message edited or deleted *after* it was stored is not re-read, so its stored
@@ -323,7 +339,7 @@ Sends the message in `templates/intro.md`, unchanged, to every first-degree
 connection classified into a target industry that no message has ever gone to.
 Open the notebook and run it top to bottom; `DRY_RUN = True` is the default.
 
-Phase A0 runs `messages-sync.py` as a subprocess before anything reads
+Phase A0 runs `messages_sync.py` as a subprocess before anything reads
 `analysis`, so `sent_total` reflects today rather than whenever that script was
 last run by hand. It writes to Firestore even under `DRY_RUN` -- it mirrors your
 own mailbox rather than acting on LinkedIn, and a dry run built on a stale
@@ -513,7 +529,7 @@ writes a second file to diff against the first without touching Firestore. If
 
 ### Re-runs
 
-`pipeline_message_id` is the incremental key. When `messages-sync.py` stores a
+`pipeline_message_id` is the incremental key. When `messages_sync.py` stores a
 newer inbound message from a contact, the next run rebuilds their whole
 transcript and classifies again; the latest signal wins, so an interested
 contact who later declines becomes `reject`. Our own follow-ups never trigger a
@@ -556,6 +572,32 @@ the prompt without credentials. `uv run pytest test_gemini_pipeline.py -v` hits
 the model with one conversation per stage plus rule probes, eleven calls in one
 event loop; it is not collected by the default run and skips without
 `GOOGLE_API_KEY`.
+
+## Outreach service (`linkedinmcp/`)
+
+A Claude agent works the **daily increment** through this service, while the
+notebooks above stay the tools for **volume** work (backlogs, bulk intro runs).
+It runs on Cloud Run as `linkedin-outreach`: an MCP server the agent and Claude
+Code connect to, plus three scheduled jobs — `tick` (sends the next due queued
+message, or fetches one new connection's profile), `sync` (mirrors messages and
+reacts to replies) and `daily` (queues the day's intros and new connections).
+Every send passes code-level guards and a claim/settle protocol, so nothing goes
+out twice and the agent can only queue, never send.
+
+Its MCP tools follow the scripts above, one tool per step with the script's
+settings as parameters: `sync_messages` (`messages_sync.py`), `get_contacts`
+(`new-contacts.ipynb` A-D), `classify_contacts` (its Phase E),
+`classify_stages` (`pipeline-classify.py`) and `send_intro`
+(`send-intros.ipynb`, queued for the tick to send). Each runs as a job the
+agent follows with `get_job`; a dry run spends nothing.
+
+**Do not run `send-intros.ipynb` Phase E while the service's `outreach-tick`
+Scheduler job is resumed** — the service queues intros itself, and the
+notebook's Phase E checks only its own in-memory snapshot.
+
+Everything else — tools, jobs, configuration, deploying, scheduling, the Claude
+platform setup and the switches that turn sending on — is in
+[`linkedinmcp/README.md`](linkedinmcp/README.md).
 
 ## LinkedIn operations (`lib/unipile`)
 

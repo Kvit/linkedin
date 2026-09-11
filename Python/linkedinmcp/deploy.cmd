@@ -64,6 +64,25 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM The job executor (linkedinmcp\monitor.py, MCP v2): a process-step tool
+REM starts a job and a Cloud Task calls this service back to run it, so the
+REM service needs its own URL. A Cloud Run URL never changes between
+REM revisions, so it is read BEFORE this deploy. `for /f` runs its command in
+REM a child cmd, so it needs no `call`. Env vars set here win over .env: the
+REM service loads .env without override. `--update-env-vars`, never
+REM `--set-env-vars`, which would wipe any other variable set on the service.
+REM --timeout=1800 is the longest a job may run: a Cloud Task's dispatch
+REM deadline is at most 30 minutes too, and every step is capped well inside it.
+SET "SELF_URL="
+for /f "delims=" %%u in ('gcloud run services describe %SERVICE% --region %REGION% --project %PROJECT% --format "value(status.url)"') do set "SELF_URL=%%u"
+SET "JOB_ENV=--update-env-vars=OUTREACH_JOB_EXECUTOR=cloud_tasks,OUTREACH_SERVICE_URL=%SELF_URL%"
+if not defined SELF_URL (
+    echo.
+    echo WARNING: the service's URL could not be read -- a first deploy? The
+    echo process-step tools stay on the inline executor until the next deploy.
+    SET "JOB_ENV="
+)
+
 echo.
 echo === Deploying to Cloud Run ===
 call gcloud run deploy %SERVICE% ^
@@ -72,8 +91,9 @@ call gcloud run deploy %SERVICE% ^
     --region %REGION% ^
     --project %PROJECT% ^
     --allow-unauthenticated ^
-    --timeout=600 ^
+    --timeout=1800 ^
     --concurrency=4 ^
+    %JOB_ENV% ^
     --port 8080
 if errorlevel 1 (
     echo.

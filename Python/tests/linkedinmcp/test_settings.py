@@ -5,12 +5,19 @@ developer's real `.env` in `Python/` can never leak into those results. The
 one test that calls `get_settings()` instead -- which has no such parameter
 and reads the default `.env` from the current directory -- `chdir`s to an
 empty `tmp_path` first, for the same reason.
+
+The `load_environment` tests at the bottom `chdir` to `tmp_path` too, and write
+their own fake `.env` files there, so `Python/.env` is never read.
+`load_environment` writes straight into `os.environ`, which `monkeypatch` does
+not undo on its own; the `dotenv_dir` fixture registers every variable those
+files define before the test runs, so each one is restored afterwards.
 """
 
 import os
 
 import pytest
 
+from lib.unipile.config import UnipileSettings
 from linkedinmcp import settings as cfg
 from linkedinmcp.settings import ConfigError, OutreachSettings
 
@@ -76,6 +83,7 @@ def test_defaults_match_the_table(monkeypatch):
     assert settings.allow_http_dry_run is True
     assert settings.budget_snapshot_max_age_minutes == 60
     assert settings.anthropic_webhook_signing_key is None
+    assert settings.new_connection_days == 14
 
 
 def test_allowed_link_domains_parses_from_csv(monkeypatch):
@@ -129,6 +137,40 @@ def test_zero_max_touches_raises_config_error(monkeypatch):
     """`max_touches` is `ge=1`, not `ge=0`: zero would silently disable the
     per-contact touch cap rather than loudly refusing to start."""
     _env(monkeypatch, OUTREACH_MAX_TOUCHES="0")
+
+    with pytest.raises(ConfigError):
+        OutreachSettings.from_env(env_file=None)
+
+
+def test_new_connection_days_parses_from_the_env(monkeypatch):
+    _env(monkeypatch, OUTREACH_NEW_CONNECTION_DAYS="30")
+
+    settings = OutreachSettings.from_env(env_file=None)
+
+    assert settings.new_connection_days == 30
+
+
+def test_new_connection_days_below_its_floor_raises_config_error(monkeypatch):
+    """`ge=1`: zero would make the daily job's new-connection window
+    disappear rather than loudly refuse to start."""
+    _env(monkeypatch, OUTREACH_NEW_CONNECTION_DAYS="0")
+
+    with pytest.raises(ConfigError):
+        OutreachSettings.from_env(env_file=None)
+
+
+def test_the_intro_gap_bounds_come_from_the_environment(monkeypatch):
+    _env(monkeypatch, OUTREACH_INTRO_GAP_MIN_MINUTES="2", OUTREACH_INTRO_GAP_MAX_MINUTES="8")
+
+    settings = OutreachSettings.from_env(env_file=None)
+
+    assert (settings.intro_gap_min_minutes, settings.intro_gap_max_minutes) == (2, 8)
+
+
+def test_an_intro_gap_maximum_below_its_minimum_raises_config_error(monkeypatch):
+    """A reversed range is a typo: `uniform` would draw between the two
+    either way, so it must refuse at startup."""
+    _env(monkeypatch, OUTREACH_INTRO_GAP_MIN_MINUTES="10", OUTREACH_INTRO_GAP_MAX_MINUTES="5")
 
     with pytest.raises(ConfigError):
         OutreachSettings.from_env(env_file=None)
@@ -247,3 +289,127 @@ def test_rate_limits_are_not_declared_here(monkeypatch):
         assert not hasattr(settings, banned), (
             f"{banned} belongs to lib/unipile/config.py, not to this service"
         )
+
+
+# --- load_environment ---------------------------------------------------------
+
+#: The four pacing variables `load_environment` forces to zero.
+PACING = (
+    "UNIPILE_MIN_DELAY_SECONDS",
+    "UNIPILE_MAX_DELAY_SECONDS",
+    "UNIPILE_LONG_PAUSE_EVERY",
+    "UNIPILE_THROTTLE_RETRIES",
+)
+
+#: What the notebooks' shared `.env` could hold: a human's pacing.
+HUMAN_PACING = {
+    "UNIPILE_MIN_DELAY_SECONDS": "20",
+    "UNIPILE_MAX_DELAY_SECONDS": "40",
+    "UNIPILE_LONG_PAUSE_EVERY": "10",
+    "UNIPILE_THROTTLE_RETRIES": "2",
+}
+
+#: Fake Unipile credentials, so `UnipileSettings` can be built from the files.
+FAKE_UNIPILE = {
+    "UNIPILE_API_KEY": "unipile-key-not-a-real-secret",
+    "UNIPILE_DNS": "api99.unipile.com:19999",
+}
+
+#: Two marker variables for the load-order test; nothing else uses them.
+SHARED_MARKER = "LINKEDINMCP_TEST_SHARED_MARKER"
+BOTH_MARKER = "LINKEDINMCP_TEST_BOTH_MARKER"
+
+
+def _write_env(path, values: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(f"{key}={value}\n" for key, value in values.items()), encoding="utf-8")
+
+
+@pytest.fixture
+def dotenv_dir(monkeypatch, tmp_path):
+    """`tmp_path` as the working directory, with every variable the fake files
+    below can define unset for the test and restored afterwards.
+
+    `setenv` first, then `delenv`: `monkeypatch.delenv(..., raising=False)` on
+    a variable that is not set records nothing, so a value `load_environment`
+    later writes into `os.environ` would outlive the test. `setenv` always
+    records the original state, and teardown restores it.
+    """
+    monkeypatch.chdir(tmp_path)
+    for name in (*PACING, *FAKE_UNIPILE, SHARED_MARKER, BOTH_MARKER):
+        monkeypatch.setenv(name, "restored-after-the-test")
+        monkeypatch.delenv(name)
+    return tmp_path
+
+
+def test_service_pacing_is_the_four_zero_values():
+    assert cfg.SERVICE_PACING == {name: "0" for name in PACING}
+
+
+def test_load_environment_forces_zero_pacing_over_the_shared_env(dotenv_dir):
+    """The shared `.env` holds a human's pacing; after `load_environment()`
+    all four variables read `"0"`."""
+    _write_env(dotenv_dir / ".env", HUMAN_PACING)
+
+    cfg.load_environment()
+
+    assert {name: os.environ[name] for name in PACING} == {name: "0" for name in PACING}
+
+
+def test_the_optional_service_file_still_wins_over_the_forced_zero(dotenv_dir):
+    """`linkedinmcp/.env` sets one pacing variable to `"5"`: that one reads
+    `"5"`, the other three `"0"`."""
+    _write_env(dotenv_dir / ".env", HUMAN_PACING)
+    _write_env(dotenv_dir / "linkedinmcp" / ".env", {"UNIPILE_MIN_DELAY_SECONDS": "5"})
+
+    cfg.load_environment()
+
+    assert os.environ["UNIPILE_MIN_DELAY_SECONDS"] == "5"
+    for name in PACING[1:]:
+        assert os.environ[name] == "0", name
+
+
+def test_a_pacing_value_already_in_the_process_environment_is_forced_too(dotenv_dir, monkeypatch):
+    """A value set in the process environment before the call -- which `.env`
+    does not override -- still ends up `"0"`."""
+    monkeypatch.setenv("UNIPILE_MAX_DELAY_SECONDS", "40")
+
+    cfg.load_environment()
+
+    assert os.environ["UNIPILE_MAX_DELAY_SECONDS"] == "0"
+
+
+def test_load_environment_with_neither_file_present_still_forces_zero_pacing(dotenv_dir):
+    cfg.load_environment()
+
+    assert {name: os.environ[name] for name in PACING} == {name: "0" for name in PACING}
+
+
+def test_the_shared_env_does_not_override_and_the_service_file_does(dotenv_dir, monkeypatch):
+    """The load order `create_app` has always had: `.env` never replaces a
+    variable already in the environment, and `linkedinmcp/.env` replaces
+    whatever `.env` set."""
+    _write_env(dotenv_dir / ".env", {SHARED_MARKER: "from-shared-env", BOTH_MARKER: "from-shared-env"})
+    _write_env(dotenv_dir / "linkedinmcp" / ".env", {BOTH_MARKER: "from-service-env"})
+    monkeypatch.setenv(SHARED_MARKER, "from-process")
+
+    cfg.load_environment()
+
+    assert os.environ[SHARED_MARKER] == "from-process"
+    assert os.environ[BOTH_MARKER] == "from-service-env"
+
+
+def test_the_unipile_settings_read_zero_pacing_after_load_environment(dotenv_dir):
+    """`UnipileSettings.from_env()` -- what `clients.unipile_client()` builds
+    on -- reads the `.env` file itself as well as the environment. With the
+    shared `.env` holding a human's pacing, the settings it builds after
+    `load_environment()` carry zero pacing."""
+    _write_env(dotenv_dir / ".env", {**HUMAN_PACING, **FAKE_UNIPILE})
+
+    cfg.load_environment()
+    unipile = UnipileSettings.from_env()
+
+    assert unipile.min_delay_seconds == 0
+    assert unipile.max_delay_seconds == 0
+    assert unipile.long_pause_every == 0
+    assert unipile.throttle_retries == 0

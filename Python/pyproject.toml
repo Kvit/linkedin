@@ -22,6 +22,7 @@ dependencies = [
     # a Linux container would fall back to the base image's system zoneinfo --
     # which python:*-slim does not reliably carry. OUTREACH_TZ must resolve there.
     "tzdata>=2026.3",
+    "google-cloud-tasks>=2.19",
 ]
 
 [build-system]

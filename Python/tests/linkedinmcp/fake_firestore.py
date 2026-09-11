@@ -39,18 +39,42 @@ Test-only control surface beyond the constructor:
   a transactional function, every attempt, to simulate perpetual contention
   (see the "gives up after max_attempts" test).
 
+## Library surprises confirmed against the installed client
+
+- `FieldFilter(field, "==", None)` and `FieldFilter(field, "!=", None)` do
+  not stay `"=="`/`"!="` by the time a query runs: the real `FieldFilter.
+  __init__` rewrites its own `op_string` at construction to the enum members
+  `StructuredQuery.UnaryFilter.Operator.IS_NULL` / `.IS_NOT_NULL` (see
+  `_validate_opation` in the installed `base_query.py`). No other operator
+  accepts a `None` value -- every one besides `==`/`!=` raises `ValueError`
+  inside `FieldFilter.__init__` itself when given `None`, before a filter
+  object exists at all. This fake matches both enum members: `IS_NULL`
+  matches a document whose field is present and `None`; `IS_NOT_NULL`
+  matches one whose field is present and not `None`. A document missing the
+  field matches neither, the same "no value, no match" rule every other
+  operator follows.
+- A query with NO `order_by()` at all is not insertion-ordered. Real
+  Firestore always applies one more, implicit `order_by` clause -- document
+  id -- as the final tiebreak (see `BaseQuery._comparator` in the installed
+  `base_query.py`): ascending when the query has no `order_by()` of its own,
+  and otherwise document id in the direction of the LAST `order_by()`
+  clause. `limit()` is applied after this ordering, never before it.
+
 ## What this deliberately does not do
 
 No composite-index simulation, no security rules, no subcollections, no
-`array_contains` / `not-in` / `array_contains_any`, no pagination cursors
+`not-in` / `array_contains_any`, no pagination cursors
 (`start_at`/`start_after`/`end_at`/`end_before`), no listeners, no dotted or
-nested field paths in `where()`/`order_by()` (top-level field names only), no
-`.get()` on a collection or query (only `.stream()` -- see below), and no
-real optimistic-concurrency conflict detection between two transactions. The
-only way to make a transaction abort is the explicit `contend_once()` test
-helper. If a later task needs any of these, that task adds it with a test --
-a fake that grows features nobody uses is a second implementation to
-maintain.
+nested field paths in `where()`/`order_by()` (top-level field names only) or
+in `update()` (real `DocumentReference.update({"a.b": 1})` writes the nested
+field `b` of map `a`; this fake writes a literal top-level key `"a.b"`
+instead -- every document the current service writes is flat, so this has
+not mattered yet), no `.get()` on a collection or query (only `.stream()` --
+see below), and no real optimistic-concurrency conflict detection between two
+transactions. The only way to make a transaction abort is the explicit
+`contend_once()` test helper. If a later task needs any of these, that task
+adds it with a test -- a fake that grows features nobody uses is a second
+implementation to maintain.
 
 `mcp_server.py`'s `_firestore_health` already calls
 `db.collection("analysis").select([]).limit(1).get()` (`.get()`, not
@@ -66,12 +90,20 @@ silently not resolve/merge the way real Firestore's field-mask merge does.
 
 ## Firestore API surface implemented here
 
-- `FakeFirestore`: `.collection(name)`, `.get_all(refs)`, `.batch()`,
-  `.transaction(max_attempts=5, read_only=False)`, `.contend_once()`
-- `FakeCollectionReference`: `.document(doc_id=None)`, `.where(filter=...)`,
-  `.order_by(field, direction=...)`, `.limit(n)`, `.select(fields)`,
-  `.count(alias=...)`, `.stream()`
-- `FakeDocumentReference`: `.get(transaction=None)`, `.set(data,
+- `FakeFirestore`: `.collection(name)`, `.get_all(refs, field_paths=None)`,
+  `.batch()`, `.transaction(max_attempts=5, read_only=False)`,
+  `.contend_once()`
+- `FakeCollectionReference`: `.document(doc_id=None)`, `.where(filter=...)`
+  (`==`, `!=`, `>`, `>=`, `<`, `<=`, `in`, `array_contains` -- `queue.py`'s
+  `tags` -- plus `== None`/`!= None` -- see
+  "Library surprises" above), `.order_by(field, direction=...)` (ascending
+  by default; document id is always the final tiebreak), `.limit(n)`,
+  `.select(fields)`, `.count(alias=...)`, `.stream()`. A `where` or
+  `order_by` on `FieldPath.document_id()` (`__name__`) works on the
+  document id: a filter's value must be a document reference in the same
+  collection (a bare string raises `InvalidArgument`, as real Firestore
+  answers one), with `==`, `!=` and the four range operators
+- `FakeDocumentReference`: `.get(transaction=None)`, `.create(data)`, `.set(data,
   merge=False)`, `.update(data)`, `.delete()`
 - `FakeWriteBatch`: `.set()`, `.update()`, `.delete()`, `.commit()`
 - `FakeTransaction`: the `_Transactional` protocol (`_clean_up`, `_begin`,
@@ -92,6 +124,7 @@ from typing import Any
 from google.api_core import exceptions as api_exceptions
 from google.cloud import firestore
 from google.cloud.exceptions import NotFound
+from google.cloud.firestore_v1.types import StructuredQuery
 
 _MISSING = object()  # sentinel: "this document has no such key at all"
 
@@ -120,22 +153,71 @@ _OTHER_OPS: dict[str, Callable[[Any, Any], bool]] = {
     "==": lambda a, v: a == v,
     "!=": lambda a, v: a != v,
     "in": lambda a, v: a in v,
+    # A field that is not an array never matches, as in real Firestore.
+    "array_contains": lambda a, v: isinstance(a, list) and v in a,
 }
-_SUPPORTED_OPS = frozenset(_RANGE_OPS) | frozenset(_OTHER_OPS)
+# `FieldFilter(field, "==", None)` / `FieldFilter(field, "!=", None)` do not
+# reach here as the strings "==" / "!=" at all: the real `FieldFilter.
+# __init__` rewrites its own `op_string` at construction time (see
+# `_validate_opation` in the installed `base_query.py`) to these two enum
+# members. No other operator accepts a `None` value -- every one besides
+# `==`/`!=` raises `ValueError` inside `FieldFilter.__init__` itself when
+# given `None`, before a filter object exists -- so `_RANGE_OPS`/`_OTHER_OPS`
+# never see a `None` filter value.
+_UNARY_OPS: dict[Any, Callable[[Any], bool]] = {
+    StructuredQuery.UnaryFilter.Operator.IS_NULL: lambda actual: actual is None,
+    StructuredQuery.UnaryFilter.Operator.IS_NOT_NULL: lambda actual: actual is not None,
+}
+_SUPPORTED_OPS = frozenset(_RANGE_OPS) | frozenset(_OTHER_OPS) | frozenset(_UNARY_OPS)
+
+#: `FieldPath.document_id()`: the field path that means "the document id".
+_DOCUMENT_ID = "__name__"
+
+
+def _passes_document_id_filter(collection_name: str, doc_id: str, field_filter) -> bool:
+    """Whether the document `doc_id` of `collection_name` matches a filter on
+    its id (`FieldPath.document_id()`).
+
+    The value must be a document reference, as the real client needs it to
+    be: it encodes a `DocumentReference` as a reference value, and a plain
+    string as a string, which real Firestore answers with InvalidArgument
+    ("__key__ filter value must be a Key") -- raised here too. Ids are
+    compared as strings, which matches Firestore's order for the ids this
+    service writes; a reference into another collection and an `in` list
+    are not implemented.
+    """
+    value = field_filter.value
+    if not isinstance(value, FakeDocumentReference):
+        raise api_exceptions.InvalidArgument("__key__ filter value must be a Key")
+    if value._collection_name != collection_name:
+        raise NotImplementedError("FakeFirestore compares document ids within one collection only")
+    op = field_filter.op_string
+    if op in _RANGE_OPS:
+        return _RANGE_OPS[op](doc_id, value.id)
+    if op in ("==", "!="):
+        return _OTHER_OPS[op](doc_id, value.id)
+    raise NotImplementedError(f"FakeFirestore does not implement the {op!r} operator on document ids")
 
 
 def _passes_filter(body: dict, field_filter) -> bool:
     """Whether `body` matches one `FieldFilter`.
 
-    Pins two real, easy-to-miss Firestore rules:
+    Pins several real, easy-to-miss Firestore rules:
 
     - a document that lacks the filtered field entirely is excluded from
-      EVERY operator, not just the range ones -- there is no value to
-      compare, so it never matches;
+      EVERY operator, including the two null-equality ones below -- there is
+      no value to compare, so it never matches;
     - an explicit `None` fails a range comparison (`>`, `>=`, `<`, `<=`) even
       though the field is present, because null does not compare greater or
       less than anything. `==`/`!=`/`in` are left as plain Python, since
-      `None == None` and `None != 5` are already the answers Firestore gives.
+      `None == None` and `None != 5` are already the answers Firestore gives;
+    - `FieldFilter(field, "==", None)` and `FieldFilter(field, "!=", None)`
+      arrive here as the enum members `StructuredQuery.UnaryFilter.
+      Operator.IS_NULL` / `.IS_NOT_NULL`, not as `"=="`/`"!="` (see
+      `_UNARY_OPS` above). `IS_NULL` matches a document whose field is
+      present and `None`; `IS_NOT_NULL` matches one whose field is present
+      and not `None`. A document missing the field matches neither, same as
+      every other operator.
 
     A `TypeError` from comparing incompatible types (e.g. a stored string
     against a `datetime` filter value) is treated the same way: no match,
@@ -148,6 +230,9 @@ def _passes_filter(body: dict, field_filter) -> bool:
     actual = body.get(field_filter.field_path, _MISSING)
     if actual is _MISSING:
         return False
+
+    if op in _UNARY_OPS:
+        return _UNARY_OPS[op](actual)
 
     if op in _RANGE_OPS:
         if actual is None:
@@ -230,6 +315,21 @@ class FakeDocumentReference:
             return _FakeSnapshot(self, None, exists=False)
         return _FakeSnapshot(self, body, exists=True)
 
+    def create(self, document_data: dict) -> None:
+        """Mirrors real `DocumentReference.create`: fails on an existing
+        document instead of overwriting it, unlike `set()`.
+
+        Raises `google.api_core.exceptions.AlreadyExists` -- a subclass of
+        `Conflict`, which is what production code is expected to catch, since
+        that is the real API's own exception hierarchy for this call -- and
+        leaves the stored document untouched. Otherwise stores `document_data`
+        exactly as `set(document_data)` would, including `SERVER_TIMESTAMP`
+        resolution.
+        """
+        if self.id in self._store():
+            raise api_exceptions.AlreadyExists(f"Document already exists: {self.path}")
+        _write_set(self._store(), self.id, document_data, False, self._db._resolve_server_timestamps)
+
     def set(self, document_data: dict, merge: bool = False) -> None:
         _write_set(self._store(), self.id, document_data, merge, self._db._resolve_server_timestamps)
 
@@ -309,16 +409,44 @@ class _FakeQuery:
 
     def _matching_bodies(self) -> list[tuple[str, dict]]:
         items = list(self._collection._store().items())
+        collection_name = self._collection._name
 
         for field_filter in self._filters:
-            items = [(doc_id, body) for doc_id, body in items if _passes_filter(body, field_filter)]
+            if field_filter.field_path == _DOCUMENT_ID:
+                items = [
+                    (doc_id, body)
+                    for doc_id, body in items
+                    if _passes_document_id_filter(collection_name, doc_id, field_filter)
+                ]
+            else:
+                items = [(doc_id, body) for doc_id, body in items if _passes_filter(body, field_filter)]
 
         # A document missing an order_by field is absent from the result
         # entirely (behaviour 4) -- but one holding an explicit None for that
-        # field IS present, and sorts as the smallest value.
+        # field IS present, and sorts as the smallest value. Every document
+        # has an id, so ordering by `FieldPath.document_id()` drops none.
         for field_path, _direction in self._orders:
+            if field_path == _DOCUMENT_ID:
+                continue
             items = [(doc_id, body) for doc_id, body in items if field_path in body]
+
+        # Real Firestore always appends one more, implicit `order_by` clause
+        # -- document id -- as the final tiebreak (verified against
+        # `BaseQuery._comparator` in the installed `base_query.py`,
+        # ~1221-1265): ascending when the query has no `order_by()` at all,
+        # otherwise document id in the direction of the LAST `order_by()`
+        # clause. Composed with the same least-significant-key-first stable
+        # sort the loop below already uses for the caller's own `order_by()`
+        # clauses: sort by id first, since it is always the least
+        # significant key of all, then let each `order_by()` field re-sort
+        # in turn from last (least significant) to first (most significant,
+        # sorted last so it dominates).
+        id_tiebreak_direction = self._orders[-1][1] if self._orders else "ASCENDING"
+        items.sort(key=lambda item: item[0], reverse=(id_tiebreak_direction == "DESCENDING"))
         for field_path, direction in reversed(self._orders):
+            if field_path == _DOCUMENT_ID:
+                items.sort(key=lambda item: item[0], reverse=(direction == "DESCENDING"))
+                continue
             items.sort(
                 key=lambda item, fp=field_path: (item[1][fp] is not None, item[1][fp]),
                 reverse=(direction == "DESCENDING"),
@@ -570,13 +698,26 @@ class FakeFirestore:
     def collection(self, name: str) -> FakeCollectionReference:
         return FakeCollectionReference(self, name)
 
-    def get_all(self, references: list) -> list:
+    def get_all(self, references: list, field_paths: Iterable[str] | None = None) -> list:
         """Order is not guaranteed by the real API; shuffle deliberately so
         code that accidentally depends on request order fails here instead
         of in production. Seeded (`FakeFirestore(shuffle_seed=...)`) so a
         failure reproduces instead of flaking.
+
+        `field_paths`, when given, projects each returned (existing)
+        snapshot to just those top-level fields -- mirrors the real client's
+        `get_all(references, field_paths=...)` parameter. Existence is
+        unaffected: a reference `get_all` cannot find is still
+        `exists=False` regardless of `field_paths`. Top-level fields only,
+        the same restriction `.select()` on a query already has (see the
+        module docstring).
         """
-        snapshots = [ref.get() for ref in references]
+        select_fields = tuple(field_paths) if field_paths is not None else None
+        snapshots = []
+        for ref in references:
+            body = ref._store().get(ref.id)
+            exists = body is not None
+            snapshots.append(_FakeSnapshot(ref, body, exists=exists, select_fields=select_fields))
         self._rng.shuffle(snapshots)
         return snapshots
 

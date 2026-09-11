@@ -2,8 +2,8 @@
 
 Run as `uvicorn --factory linkedinmcp.app:create_app` with `Python/` as the
 working directory -- the same directory in the container, where it is `/app`.
-That is what makes `load_dotenv(".env")` find the project's shared environment
-file and `templates_dir`'s default resolve beside it.
+That is what makes `settings.load_environment()` find the project's shared
+`.env` file and `templates_dir`'s default resolve beside it.
 
 **`create_app` is a factory, and there is no module-level `app` object.** That
 is a ruling, not a preference:
@@ -21,17 +21,31 @@ missing `OUTREACH_API_KEY` raises `ConfigError` at uvicorn startup. That is
 intended: a container that refuses to start is a much better outcome than one
 that starts and serves without authentication.
 
+Beside the MCP app, two plain routes that Cloud Scheduler and the Unipile
+webhook call, each behind `http_auth.require_api_key`: `POST /jobs/{job}`
+runs `tick`, `sync` or `daily` through `run_jobs.run` (the same function the
+command line uses), and `POST /webhooks/unipile` records that a sync is
+wanted. Both are sync `def` handlers -- FastAPI runs those in its thread pool,
+which is where the blocking jobs belong. A failure answers 500 with the
+exception's class name only; the message stays in the service's own log.
+
 Modules are imported as modules (`from linkedinmcp import mcp_server`), matching
 the convention `linkedinmcp/settings.py` sets out.
 """
 
-from dotenv import load_dotenv
-from fastapi import FastAPI
+import json
+import logging
+from typing import Any
+
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from starlette.middleware import Middleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from linkedinmcp import mcp_server, settings as cfg
-from linkedinmcp.http_auth import ApiKeyMiddleware
+from linkedinmcp import clients, clock, http_auth, jobs, mcp_server, monitor, run_jobs, settings as cfg, state
+
+logger = logging.getLogger(__name__)
 
 
 class _ServeMcpWithoutSlash:
@@ -59,36 +73,46 @@ class _ServeMcpWithoutSlash:
         await self.app(scope, receive, send)
 
 
+def _failure(error: Exception, route: str) -> JSONResponse:
+    """A 500 naming only the exception's class.
+
+    The message stays out of the response -- it can carry project ids, URLs
+    or a contact's data. It goes to the service's log instead, with the
+    traceback, which uvicorn would have logged had the exception not been
+    caught here.
+    """
+    logger.exception("%s failed", route)
+    return JSONResponse(status_code=500, content={"ok": False, "error": type(error).__name__})
+
+
+async def _json_body(request: Request) -> Any:
+    """The request body parsed as JSON, or a 400.
+
+    A dependency rather than a body parameter: FastAPI answers malformed JSON
+    in a declared body with a 422, and this route promises a 400. Declared
+    after `require_api_key` on the route, so an unauthenticated caller is
+    refused before its body is read.
+    """
+    raw = await request.body()
+    try:
+        return json.loads(raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="The body must be JSON.") from None
+
+
 def create_app(settings: cfg.OutreachSettings | None = None) -> FastAPI:
-    """Build the service: the MCP app behind an API key, plus an open
-    `/health`.
+    """Build the service: the MCP app behind an API key, the key-protected
+    `POST /jobs/{job}` and `POST /webhooks/unipile`, and an open `/health`.
 
     Pass `settings` to skip environment loading entirely -- that is the path
     every test takes, with
     `OutreachSettings(api_key="test-key", _env_file=None)`.
     """
     if settings is None:
-        # Two files, in this order, both by explicit relative path and never
-        # via a bare `load_dotenv()` -- the bare form calls `find_dotenv()`,
-        # which walks up the directory tree and would pick up whatever it found
-        # first.
-        #
-        # `.env` is the project's shared file, the same one the notebooks read.
-        # It carries every credential -- `OUTREACH_API_KEY` included, alongside
-        # `UNIPILE_*` and `GOOGLE_API_KEY` -- and the rate limits `SendBudget`
-        # enforces. `linkedinmcp/.env` is optional and holds one thing: the
-        # zero-pacing values. Pacing is the only setting whose right value
-        # genuinely differs between a notebook, which sleeps between calls
-        # inside one long process, and this service, where the scheduler
-        # interval is the cadence and an in-process sleep would be billed
-        # wall-clock time spent doing nothing. `override=True` is what makes the
-        # second file win where the two name the same variable.
-        #
-        # The working directory is `Python/` locally and `/app` in the
-        # container, which is the same directory, so both paths resolve
-        # identically in both places. Nothing from either file is ever printed.
-        load_dotenv(".env")
-        load_dotenv("linkedinmcp/.env", override=True)
+        # `.env`, then the service's forced zero pacing, then the optional
+        # `linkedinmcp/.env` -- see `settings.load_environment` for the order
+        # and why the pacing is forced rather than left to that optional file.
+        cfg.load_environment()
         settings = cfg.get_settings()
 
     mcp_app = mcp_server.mcp.http_app(
@@ -100,7 +124,7 @@ def create_app(settings: cfg.OutreachSettings | None = None) -> FastAPI:
         # middleware knowing any path or carrying any exemption list.
         middleware=[
             Middleware(
-                ApiKeyMiddleware, api_key=settings.api_key.get_secret_value()
+                http_auth.ApiKeyMiddleware, api_key=settings.api_key.get_secret_value()
             )
         ],
     )
@@ -136,5 +160,61 @@ def create_app(settings: cfg.OutreachSettings | None = None) -> FastAPI:
         checks nothing.
         """
         return {"ok": True}
+
+    @app.post("/jobs/{job}", dependencies=[Depends(http_auth.require_api_key)])
+    def run_job(job: str, dry_run: bool = False) -> JSONResponse:
+        """Run one job -- `tick`, `sync` or `daily` -- and answer its summary.
+
+        Cloud Scheduler calls this. Any other job is a 404. `?dry_run=1`
+        writes nothing and sends nothing, and is honoured only when the
+        settings this app was built with allow it (`allow_http_dry_run`);
+        otherwise it is a 400. `run_jobs.run` builds the clients, closes the
+        LinkedIn client afterwards, and hands the job a `RuntimeState` on the
+        real clock.
+        """
+        if job not in run_jobs.JOBS:
+            raise HTTPException(status_code=404, detail="Not Found")
+        if dry_run and not settings.allow_http_dry_run:
+            raise HTTPException(status_code=400, detail="dry_run is disabled on this service.")
+        try:
+            summary = run_jobs.run(job, settings, dry_run=dry_run)
+            return JSONResponse(jsonable_encoder(summary))
+        except Exception as error:
+            return _failure(error, f"POST /jobs/{job}")
+
+    @app.post("/jobs/run/{job_id}", dependencies=[Depends(http_auth.require_api_key)])
+    def run_started_job(job_id: str) -> JSONResponse:
+        """Run a job a process-step tool started -- the call a Cloud Task
+        makes back to this service (`monitor.submit`), so the job runs inside
+        a request of its own, with its CPU for the whole job.
+
+        `monitor.run` claims the job first, so a job delivered twice runs
+        once. Every outcome of the job answers 200 -- it is recorded in the
+        job itself, where `get_job` reads it -- so the queue never retries
+        one; only a failure to reach Firestore at all is a 500.
+        """
+        try:
+            return JSONResponse(jsonable_encoder(monitor.run(job_id, settings)))
+        except Exception as error:
+            return _failure(error, "POST /jobs/run")
+
+    @app.post("/webhooks/unipile", dependencies=[Depends(http_auth.require_api_key)])
+    def unipile_webhook(payload: Any = Depends(_json_body)) -> JSONResponse:
+        """Unipile's new-message webhook: record that a sync is wanted.
+
+        Every outcome of `jobs.handle_unipile_webhook` answers 200, an ignored
+        event included -- Unipile retries anything else within 30 s, up to
+        five times (https://developer.unipile.com/docs/webhooks-2). Unipile
+        sends the key in the custom `x-api-key` header configured when the
+        webhook is registered. A body that is not JSON is a 400; a failure
+        here is a 500, which Unipile retries.
+        """
+        try:
+            db = clients.firestore_client()
+            now = clock.utcnow()
+            result = jobs.handle_unipile_webhook(db, payload, now, state=state.RuntimeState(db, clock.utcnow))
+            return JSONResponse(jsonable_encoder(result))
+        except Exception as error:
+            return _failure(error, "POST /webhooks/unipile")
 
     return app

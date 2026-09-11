@@ -43,6 +43,12 @@ against the oldest part of a conversation, which is exactly what a partial
 history lacks, so a truncated collection would not shade these counts -- it
 would zero them.
 
+Campaign tags
+-------------
+Every document has `tags`. A message the outreach service sent carries its
+`outreach_queue` item's tags, matched by `message_id`; every other message has
+`[]`. They are looked up again whenever a message is written (`_commit`).
+
 Known limits
 ------------
 A message edited or deleted *after* it was stored is never re-read, so its
@@ -342,7 +348,35 @@ class ContactResolver:
 # --- writing ------------------------------------------------------------------
 
 
-def _document_body(message, provider_id, member_id, doc_id) -> dict:
+#: The outreach service's queue (`linkedinmcp/queue.py`). A message the service
+#: sent is stored with its queue item's campaign tags. Named here rather than
+#: imported: `linkedinmcp` imports this module, never the other way round.
+QUEUE_COLLECTION = "outreach_queue"
+
+#: The most values one Firestore `in` filter takes.
+_IN_LIMIT = 30
+
+
+def _queued_tags(db, messages) -> dict[str, list[str]]:
+    """The campaign tags of each message here the outreach service sent:
+    those of the `outreach_queue` item whose `message_id` it is -- the id
+    Unipile answered the send with, the same id it lists the message under.
+    Outbound messages only, `_IN_LIMIT` ids per query."""
+    from google.cloud.firestore_v1.base_query import FieldFilter
+
+    outbound = [message.id for message in messages if message.is_sender == 1]
+    tags: dict[str, list[str]] = {}
+    queue_ref = db.collection(QUEUE_COLLECTION)
+    for chunk in _chunks(outbound, _IN_LIMIT):
+        query = queue_ref.where(filter=FieldFilter("message_id", "in", chunk)).select(["message_id", "tags"])
+        for snapshot in query.stream():
+            item = snapshot.to_dict() or {}
+            if item.get("message_id"):
+                tags[item["message_id"]] = list(item.get("tags") or [])
+    return tags
+
+
+def _document_body(message, provider_id, member_id, doc_id, tags=()) -> dict:
     """The Firestore document for one message.
 
     `model_dump()` and never `mode="json"`: JSON mode stringifies the timestamp,
@@ -351,6 +385,9 @@ def _document_body(message, provider_id, member_id, doc_id) -> dict:
 
     A null timestamp is omitted rather than written, for the mirror-image reason
     -- Firestore sorts nulls first, so an explicit one would become min_ts.
+
+    Every document has `tags`: the campaign tags of a message the outreach
+    service sent (`_queued_tags`), `[]` for every other message.
     """
     body = message.model_dump()
     if body.get("timestamp") is None:
@@ -361,6 +398,7 @@ def _document_body(message, provider_id, member_id, doc_id) -> dict:
     body["contact_doc_id"] = doc_id
     if message.attachments:
         body["attachments_fetched"] = False
+    body["tags"] = list(tags)
     body["synced_at"] = SERVER_TIMESTAMP
     return body
 
@@ -371,16 +409,20 @@ def _commit(db, messages_ref, messages, resolver, *, dry_run: bool) -> int:
     A batch rather than a bulk writer: `BulkWriter` parallelises and gives no
     ordering guarantee across batches, and ordered commits are the whole reason
     an interrupted run leaves a contiguous range rather than a hole.
+
+    Each message is written whole, so its campaign tags are looked up again
+    every time it is written (`_queued_tags`) -- a rescan keeps them.
     """
     if not messages:
         return 0
 
+    tags = {} if dry_run else _queued_tags(db, messages)
     batch = db.batch()
     for message in messages:
         provider_id, member_id, doc_id = resolver.resolve(message)
         batch.set(
             messages_ref.document(_check_document_id(message.id)),
-            _document_body(message, provider_id, member_id, doc_id),
+            _document_body(message, provider_id, member_id, doc_id, tags.get(message.id, [])),
         )
     if not dry_run:
         batch.commit()

@@ -14,9 +14,11 @@ from a query rather than treated as null or zero.
 from datetime import UTC, datetime
 
 import pytest
+from google.api_core.exceptions import AlreadyExists, Conflict, InvalidArgument
 from google.cloud import firestore
 from google.cloud.exceptions import NotFound
 from google.cloud.firestore_v1.base_query import FieldFilter
+from google.cloud.firestore_v1.field_path import FieldPath
 
 from tests.linkedinmcp.fake_firestore import FakeFirestore
 
@@ -131,6 +133,60 @@ def test_deleting_an_absent_document_is_not_an_error():
     ref.delete()  # must not raise
 
 
+# --- ref.create() -------------------------------------------------------------
+
+
+def test_create_on_a_new_id_stores_the_data():
+    db = FakeFirestore()
+    ref = db.collection("c").document("d")
+
+    ref.create({"a": 1})
+
+    assert ref.get().to_dict() == {"a": 1}
+
+
+def test_create_on_an_existing_id_raises_already_exists_and_leaves_it_unchanged():
+    """The failure mode `queue.enqueue` depends on for its deterministic ids
+    (`intro:{doc_id}`, `agent:{doc_id}:{day}`): a second create for the same id
+    must fail loudly, and the first caller's data must survive untouched.
+    """
+    db = FakeFirestore()
+    ref = db.collection("c").document("d")
+    ref.set({"a": 1})
+
+    with pytest.raises(AlreadyExists):
+        ref.create({"a": 9})
+
+    assert ref.get().to_dict() == {"a": 1}  # unchanged, not overwritten
+
+
+def test_already_exists_is_a_conflict():
+    """Pins the hierarchy production code depends on: callers are told to
+    catch the broader `google.api_core.exceptions.Conflict`, not
+    `AlreadyExists` itself, matching the real `DocumentReference.create`
+    behaviour this fake mirrors.
+    """
+    db = FakeFirestore()
+    ref = db.collection("c").document("d")
+    ref.set({"a": 1})
+
+    with pytest.raises(Conflict):
+        ref.create({"a": 9})
+
+
+def test_create_resolves_server_timestamp_from_the_injected_clock():
+    fixed = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
+    db = FakeFirestore(clock=lambda: fixed)
+    ref = db.collection("c").document("d")
+
+    ref.create({"created_at": firestore.SERVER_TIMESTAMP, "name": "unchanged"})
+
+    data = ref.get().to_dict()
+    assert data["created_at"] == fixed
+    assert isinstance(data["created_at"], datetime)
+    assert data["name"] == "unchanged"
+
+
 # --- col.where() -------------------------------------------------------------
 
 
@@ -162,6 +218,21 @@ def test_where_supports_every_documented_operator(op, value, expected_ids):
     assert sorted(s.id for s in results) == sorted(expected_ids)
 
 
+def test_array_contains_matches_a_document_whose_array_holds_the_value():
+    """What `queue.py` asks of `tags`. A field that is missing, or is not an
+    array, never matches -- as in real Firestore."""
+    db = FakeFirestore()
+    col = db.collection("c")
+    col.document("a").set({"tags": ["recovr", "stage-1"]})
+    col.document("b").set({"tags": ["recovr"]})
+    col.document("c").set({"tags": "stage-1"})
+    col.document("d").set({})
+
+    results = col.where(filter=FieldFilter("tags", "array_contains", "stage-1")).stream()
+
+    assert [s.id for s in results] == ["a"]
+
+
 def test_where_can_be_chained_for_an_implicit_and():
     db = FakeFirestore()
     col = db.collection("c")
@@ -187,6 +258,47 @@ def test_where_rejects_the_deprecated_positional_form():
 
     with pytest.raises(NotImplementedError):
         col.where("n", "==", 2)
+
+
+# --- col.where(filter=FieldFilter(field, "==" | "!=", None)): the real
+# `FieldFilter` rewrites these two to IS_NULL / IS_NOT_NULL at construction
+# time (`_validate_opation` in the installed `base_query.py`) ---------------
+
+
+def test_equals_none_matches_only_an_explicit_null_field():
+    """`FieldFilter("n", "==", None)` becomes an `IS_NULL` filter before this
+    fake ever sees it (real `FieldFilter.__init__` rewrites its own
+    `op_string`). It must match the document that explicitly stored `None`,
+    and neither the document missing the field entirely (no value to be
+    null) nor the document holding a real value.
+    """
+    db = FakeFirestore()
+    col = db.collection("c")
+    col.document("null-value").set({"n": None})
+    col.document("no-field").set({"other": 1})
+    col.document("has-value").set({"n": 5})
+
+    results = col.where(filter=FieldFilter("n", "==", None)).stream()
+
+    assert [s.id for s in results] == ["null-value"]
+
+
+def test_not_equals_none_matches_only_the_valued_document():
+    """`FieldFilter("n", "!=", None)` becomes an `IS_NOT_NULL` filter. It
+    must match the document holding a real value, and exclude BOTH the
+    explicit-null document (its field is present but null) and the
+    missing-field document (no value at all, so it cannot be "not null"
+    either) -- the same "no value, no match" rule as every other operator.
+    """
+    db = FakeFirestore()
+    col = db.collection("c")
+    col.document("null-value").set({"n": None})
+    col.document("no-field").set({"other": 1})
+    col.document("has-value").set({"n": 5})
+
+    results = col.where(filter=FieldFilter("n", "!=", None)).stream()
+
+    assert [s.id for s in results] == ["has-value"]
 
 
 # --- col.order_by() ------------------------------------------------------------
@@ -228,6 +340,70 @@ def test_order_by_rejects_an_invalid_direction():
         col.order_by("n", direction="DESC")
 
 
+# --- default and tie-break ordering: Firestore's implicit final ordering by
+# document id (`BaseQuery._comparator` in the installed `base_query.py`,
+# ~1221-1265) -----------------------------------------------------------------
+
+
+def test_stream_with_no_order_by_defaults_to_ascending_document_id():
+    """Real Firestore is never insertion-ordered: a query with no
+    `order_by()` at all still applies one, implicit ordering by document id,
+    ascending. A fake that instead returned whatever order the documents
+    happened to be written in would pass against toy data seeded in id
+    order and silently diverge from production, where write order has
+    nothing to do with query order.
+    """
+    db = FakeFirestore()
+    col = db.collection("c")
+    col.document("z").set({})
+    col.document("m").set({})
+    col.document("a").set({})
+
+    assert [s.id for s in col.stream()] == ["a", "m", "z"]
+
+
+def test_order_by_breaks_ties_on_equal_values_by_ascending_document_id():
+    """When `order_by()`'s own field has equal values, real Firestore still
+    doesn't fall back to an arbitrary or insertion order: it breaks the tie
+    by document id, ascending by default -- the same implicit final clause
+    as the no-`order_by()` case above, just applied after the caller's own
+    one instead of alone.
+    """
+    db = FakeFirestore()
+    col = db.collection("c")
+    col.document("z").set({"n": 1})
+    col.document("m").set({"n": 1})
+    col.document("a").set({"n": 1})
+
+    results = list(col.order_by("n").stream())
+
+    assert [s.id for s in results] == ["a", "m", "z"]
+
+
+def test_order_by_descending_breaks_ties_on_equal_values_by_descending_document_id():
+    """The tie-break direction follows the LAST `order_by()` clause, not a
+    fixed ascending default: `order_by("n", direction="DESCENDING")` with
+    equal `n` values must break ties by document id DESCENDING too.
+
+    Inserted in ASCENDING id order (a, m, z) deliberately: a fake that
+    forgot the id tie-break entirely would just preserve insertion order on
+    equal `n` values (a stable sort with no id key is a no-op here), which
+    would coincidentally look right if this test seeded documents in
+    descending id order instead. Seeding ascending forces the two to
+    disagree, so a fake that merely preserves insertion order on ties fails
+    this test instead of passing it by accident.
+    """
+    db = FakeFirestore()
+    col = db.collection("c")
+    col.document("a").set({"n": 1})
+    col.document("m").set({"n": 1})
+    col.document("z").set({"n": 1})
+
+    results = list(col.order_by("n", direction="DESCENDING").stream())
+
+    assert [s.id for s in results] == ["z", "m", "a"]
+
+
 # --- col.limit() ---------------------------------------------------------------
 
 
@@ -240,6 +416,73 @@ def test_limit_caps_the_number_of_results():
     results = list(col.order_by("n").limit(2).stream())
 
     assert [s.id for s in results] == ["d0", "d1"]
+
+
+def test_limit_applies_after_the_default_document_id_ordering():
+    """`limit()` must cap the ORDERED result, not the store's insertion
+    order: with no `order_by()`, `limit(1)` still has to return the
+    smallest document id, not whichever document happened to be written
+    first, because real Firestore orders before it limits.
+    """
+    db = FakeFirestore()
+    col = db.collection("c")
+    col.document("z").set({})
+    col.document("m").set({})
+    col.document("a").set({})
+
+    results = list(col.limit(1).stream())
+
+    assert [s.id for s in results] == ["a"]
+
+
+# --- queries on the document id (`FieldPath.document_id()`, i.e. `__name__`) --
+
+
+def test_a_document_id_range_filter_compares_ids_against_document_references():
+    """`where(__name__ >= ref)` and `where(__name__ < ref)` together: a
+    prefix range, compared by document id. The references need not name
+    existing documents -- `daily:` and `daily;` are bounds, not runs."""
+    db = FakeFirestore()
+    col = db.collection("runs")
+    for doc_id in ("daily:1", "daily:2", "dailyx:1", "sync:1", "daily", "da"):
+        col.document(doc_id).set({"n": 1})
+    doc_id_field = FieldPath.document_id()
+
+    query = col.where(filter=FieldFilter(doc_id_field, ">=", col.document("daily:"))).where(
+        filter=FieldFilter(doc_id_field, "<", col.document("daily;"))
+    )
+
+    assert [snapshot.id for snapshot in query.stream()] == ["daily:1", "daily:2"]
+
+
+def test_order_by_document_id_descending_with_a_limit_returns_the_highest_ids():
+    db = FakeFirestore()
+    col = db.collection("runs")
+    for n in range(5):
+        col.document(f"tick:{n}").set({"n": n})
+    doc_id_field = FieldPath.document_id()
+
+    query = (
+        col.where(filter=FieldFilter(doc_id_field, ">=", col.document("tick:")))
+        .order_by(doc_id_field, direction="DESCENDING")
+        .limit(2)
+    )
+
+    assert [snapshot.id for snapshot in query.stream()] == ["tick:4", "tick:3"]
+
+
+def test_a_document_id_filter_on_a_bare_string_is_refused_as_real_firestore_refuses_it():
+    """Real Firestore answers a `__name__` filter whose value is not a
+    document reference with InvalidArgument ("__key__ filter value must be
+    a Key") -- the client encodes a string as a string, not a reference."""
+    db = FakeFirestore()
+    col = db.collection("runs")
+    col.document("tick:1").set({})
+
+    query = col.where(filter=FieldFilter(FieldPath.document_id(), ">=", "tick:"))
+
+    with pytest.raises(InvalidArgument):
+        list(query.stream())
 
 
 # --- col.select() ----------------------------------------------------------
@@ -343,6 +586,44 @@ def test_get_all_order_matches_a_seeded_shuffle_not_request_order():
 
     # random.Random(1).shuffle(['a', 'b', 'c', 'd', 'e']) == ['c', 'd', 'e', 'a', 'b']
     assert [s.id for s in snapshots] == ["c", "d", "e", "a", "b"]
+
+
+def test_get_all_with_field_paths_projects_to_those_top_level_fields():
+    """`field_paths` mirrors the real client's `get_all(references,
+    field_paths=...)` parameter -- a top-level-only projection, the same
+    restriction `.select()` on a query already has. `pipeline.load_contacts`
+    relies on this against the real client; task 2e's `contacts.list_contacts`
+    needs it here for its one-call-per-page `extracted` batch read.
+
+    A fresh, unseeded `FakeFirestore()` on purpose -- `test_get_all_order_...`
+    above documents that its OWN seeded instance must see exactly one
+    `get_all` call, so this test must not share it.
+    """
+    db = FakeFirestore()
+    col = db.collection("c")
+    col.document("a").set({"keep": 1, "drop": 2})
+    col.document("b").set({"keep": 3})  # "drop" absent entirely on this one
+
+    snapshots = db.get_all([col.document("a"), col.document("b")], field_paths=["keep"])
+
+    by_id = {snapshot.id: snapshot.to_dict() for snapshot in snapshots}
+    assert by_id == {"a": {"keep": 1}, "b": {"keep": 3}}
+
+
+def test_get_all_with_field_paths_leaves_a_missing_document_not_existing():
+    """Projection must not change existence -- a document `get_all` cannot
+    find is still `exists=False`, `to_dict() is None`, whatever `field_paths`
+    asked for."""
+    db = FakeFirestore()
+    col = db.collection("c")
+    col.document("a").set({"keep": 1})
+
+    snapshots = db.get_all([col.document("a"), col.document("missing")], field_paths=["keep"])
+
+    by_id = {snapshot.id: snapshot for snapshot in snapshots}
+    assert by_id["a"].exists is True
+    assert by_id["missing"].exists is False
+    assert by_id["missing"].to_dict() is None
 
 
 # --- db.batch() ----------------------------------------------------------------
@@ -463,6 +744,46 @@ def test_contended_transaction_retries_and_only_the_winning_attempt_commits():
     assert winner == "A"
     assert attempts == ["A", "A"]  # ran twice: the forced abort caused a retry
     assert ref.get().to_dict() == {"holder": "A"}  # committed exactly once
+
+
+def test_contended_transaction_where_a_competitor_already_wrote_the_document():
+    """Closes a gap the test above leaves open: there, `contend_once()`
+    fires before any competing write exists, so the retried attempt still
+    finds the document absent and takes the `if not snapshot.exists` branch
+    -- it never proves a losing attempt actually defers to what a winner
+    already wrote. Here, the FIRST attempt writes a competitor's document
+    non-transactionally (`ref.set(...)`, bypassing the transaction entirely,
+    exactly as an unrelated concurrent request would) before its own commit
+    is forced to abort. The retried second attempt must then see that
+    document when it re-reads the ref, take the `exists` branch, and return
+    the competitor's value -- never its own buffered "A", which is
+    discarded on retry and never reaches the store.
+    """
+    db = FakeFirestore()
+    ref = db.collection("leases").document("job")
+    attempts = []
+
+    @firestore.transactional
+    def acquire(transaction, holder):
+        attempts.append(holder)
+        snapshot = next(transaction.get(ref))
+        if snapshot.exists:
+            return snapshot.to_dict()["holder"]
+        if len(attempts) == 1:
+            # Simulate a second caller's write landing, non-transactionally,
+            # in the gap between this attempt's read and its commit -- then
+            # force this attempt's own commit to abort so the retry has to
+            # look again.
+            ref.set({"holder": "B"})
+            db.contend_once()
+        transaction.set(ref, {"holder": holder})
+        return holder
+
+    winner = acquire(db.transaction(), "A")
+
+    assert winner == "B"
+    assert attempts == ["A", "A"]  # ran twice: the forced abort caused a retry
+    assert ref.get().to_dict() == {"holder": "B"}  # the competitor's write, never "A"
 
 
 def test_transaction_gives_up_after_max_attempts_instead_of_looping_forever():
