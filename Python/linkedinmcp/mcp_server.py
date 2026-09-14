@@ -1,15 +1,16 @@
 """The MCP server the Claude agent connects to.
 
-Twenty-seven tools, following the user's outreach process (MCP v2 design,
-`docs/superpowers/specs/2026-09-11-mcp-process-tools-design.md`):
+Twenty-eight tools, following the user's outreach process (MCP v2 design,
+`docs/superpowers/specs/2026-09-11-mcp-process-tools-design.md`, and
+`2026-09-14-send-messages-design.md`):
 
-- five PROCESS STEPS, each one of the user's own scripts with its settings
+- six PROCESS STEPS, each one of the user's own scripts with its settings
   as parameters -- `sync_messages` (`messages_sync.py`), `get_contacts`
   (`new-contacts.ipynb` A-D), `classify_contacts` (its Phase E),
-  `classify_stages` (`pipeline-classify.py`) and `send_intro`
-  (`send-intros.ipynb`). Each starts a job (`monitor.py`) and returns its id
-  at once; `get_job` follows it. They are human-side: the scheduled jobs run
-  the automatic parts of them already;
+  `classify_stages` (`pipeline-classify.py`), `send_intro`
+  (`send-intros.ipynb`) and `send_messages` (Phase E's sending). Each
+  starts a job (`monitor.py`) and returns its id at once; `get_job` follows
+  it. The agent decides when to run them: nothing runs on a schedule;
 - `get_status` and seven read-only tools over contacts, their conversations,
   the outbound queue, the decision inbox, job runs and jobs (`get_job`);
 - six agent-side write tools -- `send_follow_up`, `send_reply`,
@@ -21,10 +22,10 @@ Twenty-seven tools, following the user's outreach process (MCP v2 design,
   drives; a client that exposes this server to an unattended agent should
   withhold them.
 
-Only the process steps' jobs talk to LinkedIn, and only through the same
-code the scheduled jobs run. A queued message is sent later, by the scheduled
-tick, which runs every guard again at send time. The agent can hold a contact
-back (`set_handling`) but never lift a hold: `clear_handling` is human-side
+Only the process steps' jobs talk to LinkedIn. A queued message is sent
+later, by `send_messages`, which runs every guard again right before each
+send (the tick's send code, `jobs._tick_holding_lease`). The agent can hold
+a contact back (`set_handling`) but never lift a hold: `clear_handling` is human-side
 (ruling P2-25), so an unattended agent talked into it by a stranger's message
 cannot undo a person's `exclude`.
 
@@ -77,7 +78,6 @@ told only which tool failed.
 """
 
 import inspect
-import random
 import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -123,8 +123,8 @@ MAX_DOC_IDS = 50
 #: `none` here; the human-side `clear_handling` lifts a hold.
 HANDLING_VALUES = ("exclude", "manual")
 
-#: The kinds `pause` and `resume` act on: `sends` (the tick) or `fetches`
-#: (task 3b's idle-tick profile fetch).
+#: The kinds `pause` and `resume` act on: `sends` (`send_messages`) or
+#: `fetches` (`get_contacts`' profile fetches).
 PAUSE_KINDS = ("sends", "fetches")
 
 #: A Firestore document id may not contain "/", be "." or "..", or match
@@ -133,25 +133,6 @@ PAUSE_KINDS = ("sends", "fetches")
 #: applies the same rules to webhook ids).
 _RESERVED_DOCUMENT_ID = re.compile(r"^__.*__$")
 _MAX_DOCUMENT_ID_BYTES = 1500
-
-#: Ruling P5-3: a message `send_follow_up` or `send_reply` is given no `due_at` for is due
-#: this long from now, drawn at random between the two -- so what the agent
-#: queues in one session goes out spread apart, not at the tick's own
-#: machine rhythm of one every four minutes (the rhythm
-#: `lib/unipile/pacing.py` exists to avoid).
-DEFAULT_DELAY_MIN = timedelta(minutes=5)
-DEFAULT_DELAY_MAX = timedelta(minutes=45)
-
-#: The random source for that delay. A module attribute rather than a
-#: parameter -- a tool's parameters are its MCP schema -- read at call time,
-#: so a test can replace it.
-_random = random.Random()
-
-
-def _default_delay() -> timedelta:
-    """A delay drawn uniformly from `DEFAULT_DELAY_MIN` to
-    `DEFAULT_DELAY_MAX` with `_random`."""
-    return timedelta(seconds=_random.uniform(DEFAULT_DELAY_MIN.total_seconds(), DEFAULT_DELAY_MAX.total_seconds()))
 
 
 def _iso(value: datetime | None, tz: str) -> str | None:
@@ -527,15 +508,13 @@ def _run_row(doc_id: str, data: dict, tz: str) -> dict[str, Any]:
 @mcp.tool
 def get_run_report(job: str | None = None, limit: int = 5) -> dict[str, Any]:
     """List recent job runs from the `runs` collection, newest first: the
-    scheduled jobs (`sync`, `daily`, `tick`) and the process-step jobs
-    (`get_contacts`, `send_intro`, ...). A sync started with
-    `sync_messages` is recorded under that name, never as `sync`.
+    process-step jobs (`sync_messages`, `get_contacts`, `send_intro`,
+    `send_messages`, ...), each under its step's name.
 
     Without `job`, the most recent runs of every job. With `job`, that
     job's own most recent runs, however many runs of other jobs came after
-    them -- the way to see why the daily job raised a `job_failed` alert
-    this morning after a hundred ticks. Defaults to 5 runs; `limit` is
-    capped at 20.
+    them -- the way to find the job a `job_failed` alert names. Defaults to
+    5 runs; `limit` is capped at 20.
 
     Returns `{"runs": [...]}`, each with `id`, `job`, `started_at`,
     `finished_at`, `ok` (whether the run completed without error),
@@ -584,8 +563,7 @@ def get_run_report(job: str | None = None, limit: int = 5) -> dict[str, Any]:
 
 
 #: How far back `get_run_report(job=...)` looks, widening in turn until it has
-#: `limit` runs; `None` is the job's whole history. A tick runs ~15 times an
-#: hour, so the first window usually suffices; `daily` needs a week for 5.
+#: `limit` runs; `None` is the job's whole history.
 _RUN_REPORT_WINDOWS = (timedelta(hours=1), timedelta(days=1), timedelta(days=7), timedelta(days=31), None)
 
 
@@ -645,8 +623,8 @@ def _newest_chat_id(messages: list[dict]) -> str | None:
     contact and be their newest document, so without this filter the item
     would go into that group (final review FI2). Inbound messages count as
     much as ours: a one-to-one conversation the contact started must still
-    take a `reply`. The tick checks the chosen chat with LinkedIn again
-    before it sends (`jobs._chat_verdict`)."""
+    take a `reply`. `send_messages` checks the chosen chat with LinkedIn
+    again before it sends (`jobs._chat_verdict`)."""
     dated = [message for message in guards._usable_messages(messages) if message.get("chat_id")]
     if not dated:
         return None
@@ -734,17 +712,19 @@ def _wrong_state(current: dict | None, needed: str) -> dict[str, Any]:
 #: What `send_follow_up` and `send_reply` share, said once: what queueing
 #: means, `due_at`, the refusals and the one-a-day rule.
 _QUEUEING_RULES = """
-    The message is QUEUED, not sent now: the service's tick sends queued messages one
-    at a time and runs every check below again at send time, so a message
-    that was fine to queue can still be skipped later (a reply arrived,
-    sends were paused). `text` goes to a real person exactly as written.
-    `doc_id` is the contact's LinkedIn slug (as `list_contacts` returns it).
+    The message is QUEUED, not sent now: `send_messages` sends queued
+    messages that are due, one at a time, and runs every check below again
+    at send time, so a message that was fine to queue can still be skipped
+    later (a reply arrived, sends were paused). `text` goes to a real person
+    exactly as written. `doc_id` is the contact's LinkedIn slug (as
+    `list_contacts` returns it).
 
     `due_at` (optional) is an ISO 8601 date-time; one without an offset is
     in the service's timezone (`get_status`), one in the past means now, and
     one that cannot be read returns `{"queued": false, "reason":
-    "bad_due_at"}`. Without it the message is due at a random moment 5 to
-    45 minutes from now, so messages queued together go out spread apart.
+    "bad_due_at"}`. Without it the message is due now: the next
+    `send_messages` sends it. A message due later waits for a
+    `send_messages` call made after that time.
 
     `tags` (optional) label the message for campaign tracking, e.g.
     `["recovr", "stage-1"]`: lowercase letters, digits, `-`, `_` and `.`, at
@@ -818,11 +798,13 @@ def _queue_agent_message(
     tags: list[str] | None,
 ) -> dict[str, Any]:
     """Queue one message the agent wrote -- `send_follow_up` and
-    `send_reply` -- after every guard the tick will run again."""
+    `send_reply` -- after every guard `send_messages` will run again. With
+    no `due_at` it is due now: `send_messages` does the spacing (the user's
+    direction of 2026-09-14, replacing ruling P5-3's 5-45 minute delay)."""
     settings = cfg.get_settings()
     now = clock.utcnow()
     if due_at is None:
-        due = now + _default_delay()
+        due = now
     else:
         parsed = _parse_moment(due_at, settings.tz)
         if parsed is None:
@@ -852,7 +834,7 @@ def _queue_agent_message(
     runtime_fields = runtime.read()
 
     # The checks below work on what was just read about this contact, and
-    # follow the tick's rule (`jobs._check_item`): anything that raises on
+    # follow the send path's rule (`jobs._check_item`): anything that raises on
     # stored data -- a naive datetime, a field of the wrong type -- refuses
     # this item rather than failing the call. Firestore itself failing, in
     # the reads above or the one write below, still raises, as in every
@@ -1007,7 +989,7 @@ def mark_decision_applied(decision_id: str) -> dict[str, Any]:
 
 
 # =============================================================================
-# Human-side tools -- never on the scheduled agent's allowlist
+# Human-side tools -- never on an unattended agent's allowlist
 # =============================================================================
 
 
@@ -1037,11 +1019,11 @@ def answer_decision(decision_id: str, answer: str) -> dict[str, Any]:
 def approve_queued(queue_id: str) -> dict[str, Any]:
     """HUMAN-SIDE: call only on the explicit approval of the person driving
     this session. Moves a `pending` queue item to `approved`, marked as a
-    human's approval, so the tick may send it when it is due.
+    human's approval, so `send_messages` may send it once it is due.
 
     This is how a `reply` gets sent: a reply is always queued `pending` and
-    goes out only after a human approves it here. The tick still runs every
-    guard again before sending.
+    goes out only after a human approves it here. `send_messages` still runs
+    every guard again before sending.
 
     Returns `{"ok": true, "id", "status": "approved"}`, or `{"ok": false,
     "reason", "detail"}`: `not_found`, or `wrong_status` when the item is not
@@ -1078,11 +1060,9 @@ def pause(until: str, kind: str = "sends", reason: str = "paused by user") -> di
     """HUMAN-SIDE: call only at the direction of the person driving this
     session. Pauses sends or profile fetches until `until`.
 
-    `kind`: `sends` -- the tick sends nothing before `until`, and queued
-    items wait; profile fetches continue, since a tick that sends nothing
-    still fetches one queued profile (pause `kind="fetches"` as well to
-    stop those) -- or `fetches` -- task 3b's idle-tick profile fetch does
-    nothing before `until`. `until` is an ISO 8601 date-time in the future;
+    `kind`: `sends` -- `send_messages` sends nothing before `until`, and
+    queued items wait -- or `fetches` -- `get_contacts` views no profile
+    before `until`. `until` is an ISO 8601 date-time in the future;
     one without an offset is in the service's timezone.
 
     Returns `{"ok": true, "sends_paused_until", "pause_reason"}` for `kind =
@@ -1201,8 +1181,8 @@ _JOB_RULES = """
     result. One job per step at a time: starting a step whose job is still
     running returns `{"ok": false, "reason": "already_running", "job_id"}`
     -- follow that job instead. `dry_run` is true unless you pass false: a
-    dry run views no LinkedIn profile, calls no Gemini and writes nothing,
-    and its result says what a real run would do. Settings can narrow a run,
+    dry run sends no message, views no LinkedIn profile, calls no Gemini and
+    writes nothing, and its result says what a real run would do. Settings can narrow a run,
     never widen it: the service's daily caps and every rule about who may be
     messaged still apply. A setting out of range returns `{"ok": false,
     "reason": "invalid", "detail"}` and starts nothing.
@@ -1237,12 +1217,12 @@ def _launch(step: str, params: dict) -> dict[str, Any]:
 
 @mcp.tool(
     description=_job_description(
-        "HUMAN-SIDE: run at the direction of the person driving this session. `messages_sync.py`: "
-        "mirror the LinkedIn messages newer than the newest stored one, then react as the scheduled "
-        "sync does -- cancel queued items for anyone who replied, refresh the contact stats, settle "
-        "sends whose outcome was unknown and, with `classify` (default true), stage the new replies "
-        "with Gemini and raise one `lead` alert per new lead. The scheduled sync already does this "
-        "every 15 minutes; run it to see a reply that has only just arrived."
+        "`messages_sync.py`: mirror the LinkedIn messages newer than the newest stored one, then "
+        "react to them -- cancel queued items for anyone who replied, refresh the contact stats, "
+        "settle sends whose outcome was unknown and, with `classify` (default true), stage the new "
+        "replies with Gemini and raise one `lead` alert per new lead. Nothing runs this on a "
+        "schedule. `send_messages` refuses a message to someone whose reply is stored, so run this "
+        "before `send_messages` to catch replies that arrived since the last sync."
     )
 )
 def sync_messages(classify: bool = True, dry_run: bool = True) -> dict[str, Any]:
@@ -1251,14 +1231,13 @@ def sync_messages(classify: bool = True, dry_run: bool = True) -> dict[str, Any]
 
 @mcp.tool(
     description=_job_description(
-        "HUMAN-SIDE: run at the direction of the person driving this session. `new-contacts.ipynb` "
-        "Phases A-D: find the first-degree connections whose profile is not stored yet -- every "
+        "`new-contacts.ipynb` Phases A-D: find the first-degree connections whose profile is not stored yet -- every "
         "connection, or with `days`, only those made in the last `days` days -- and fetch and store "
         "up to `max_profiles` of them (0 to 10; 0 only lists them), the newest connection first, 20 "
         "to 40 seconds apart like the notebook. Profiles are "
         "stored, NOT classified: the result's `stored_slugs` are what to pass to "
         "`classify_contacts(doc_ids=...)`. Whatever this job does not fetch stays in the fetch queue "
-        "for the tick. Each profile fetched is a LinkedIn profile view and counts against the day's "
+        "for a later `get_contacts`. Each profile fetched is a LinkedIn profile view and counts against the day's "
         "profile limit; ten take about five minutes."
     )
 )
@@ -1274,8 +1253,7 @@ def get_contacts(days: int = 0, max_profiles: int = 10, dry_run: bool = True) ->
 
 @mcp.tool(
     description=_job_description(
-        "HUMAN-SIDE: run at the direction of the person driving this session. `new-contacts.ipynb` "
-        "Phase E: classify stored profiles that have no classification yet -- industry, function and "
+        "`new-contacts.ipynb` Phase E: classify stored profiles that have no classification yet -- industry, function and "
         "seniority -- with the notebook's Gemini classifier, and merge the result into the contact. "
         "Which profiles: `doc_ids` when given (e.g. `get_contacts`' `stored_slugs`), else every stored "
         "profile -- or with `days`, only those stored in the last `days` days -- the most recently "
@@ -1304,12 +1282,11 @@ def classify_contacts(
 
 @mcp.tool(
     description=_job_description(
-        "HUMAN-SIDE: run at the direction of the person driving this session. `pipeline-classify.py`: "
-        "the sales-pipeline stage (`lead`, `prospect`, `soft_no`, `reject`, `not_relevant`) of every "
+        "`pipeline-classify.py`: the sales-pipeline stage (`lead`, `prospect`, `soft_no`, `reject`, `not_relevant`) of every "
         "contact whose newest reply is not classified yet -- or of `doc_ids` only, with `force` to "
         "classify them again whatever is stored -- at most `limit` (1 to 50), newest conversations "
-        "first, with Gemini. A contact who becomes a `lead` raises one alert. The scheduled sync "
-        "already stages new replies; run this to re-stage a contact on demand."
+        "first, with Gemini. A contact who becomes a `lead` raises one alert. `sync_messages` "
+        "already stages new replies; run this for any it did not reach, or to re-stage a contact."
     )
 )
 def classify_stages(
@@ -1329,8 +1306,7 @@ def classify_stages(
 
 @mcp.tool(
     description=_job_description(
-        "HUMAN-SIDE: run at the direction of the person driving this session. `send-intros.ipynb`: "
-        "QUEUE the intro message (`templates/intro.md`, sent verbatim) to first-degree connections "
+        "`send-intros.ipynb`: QUEUE the intro message (`templates/intro.md`, sent verbatim) to first-degree connections "
         "in a target industry that no message has ever gone to -- no chat with them, no intro, no "
         "hold, nothing already queued -- every eligible connection, the newest first. Narrow it with "
         "`days` (only those connected within that many days), `industries` (some of the configured "
@@ -1338,12 +1314,10 @@ def classify_stages(
         "`Unknown`), `max` and `doc_ids`. `tags` (e.g. `[\"recovr\", \"stage-1\"]`; lowercase letters, "
         "digits, `-`, `_`, `.`; at most 10) label every intro it queues for campaign tracking -- "
         "`list_contacts(tags=..., replied=false)` later finds who has not answered. "
-        "The day's intro cap counts every intro queued today, the daily job's included; `cap` in the "
-        "result shows what is left. Queued intros are due a configured 1 to 5 minutes apart and the service's "
-        "tick sends them, one at a time, checking every rule again -- so nothing goes out while the "
-        "tick is not running, sends are paused or writes are blocked; the result's `sender` shows "
-        "when the tick last ran. With approval required (`get_status`), each intro waits for "
-        "`approve_queued`."
+        "The day's intro cap counts every intro queued today; `cap` in the result shows what is left. "
+        "Queued intros are due at once but NOT sent: run `send_messages` to send them, one a minute, "
+        "checking every rule again. The result's `sender` says whether sends are paused or writes "
+        "blocked. With approval required (`get_status`), each intro waits for `approve_queued`."
     )
 )
 def send_intro(
@@ -1391,6 +1365,33 @@ def send_intro(
     )
 
 
+@mcp.tool(
+    description=_job_description(
+        "SEND every approved message already due in the queue -- intros, follow-ups and approved "
+        "replies -- one at a time, `frequency` messages a minute (0.1 to 2, default 1), at most "
+        "`limit` (1 to 200, default 50), in due order. Right before each message every rule runs "
+        "again: the text, the contact's replies and touches, holds, pauses, blocked writes, the "
+        "day's message cap, the chat. Messages due later wait for a later call. It stops when the "
+        "limit is reached (`stopped: \"limit\"`), nothing due is left (`idle`), sends are paused or "
+        "writes blocked or the day's cap is spent (`sends_paused`, `writes_blocked`, `budget`), or "
+        "a send does not come back sent (`failed`, `unknown`, `released`, with `error`). One job "
+        "runs at most 30 minutes; with messages still due it starts the next job itself, with what "
+        "is left of `limit`, and names it in `next_job_id` -- follow that job with `get_job`. The "
+        "result lists each message sent (`messages`). A dry run lists who would be sent "
+        "(`would_send`) and who would be skipped and why (`would_skip`), without waiting. A reply "
+        "stored by `sync_messages` stops a message to that contact, so sync first."
+    )
+)
+def send_messages(frequency: float = 1.0, limit: int = 50, dry_run: bool = True) -> dict[str, Any]:
+    from linkedinmcp import steps
+
+    if not steps.MIN_FREQUENCY <= frequency <= steps.MAX_FREQUENCY:
+        return _invalid(f"frequency must be {steps.MIN_FREQUENCY} to {steps.MAX_FREQUENCY} messages a minute.")
+    if not 1 <= limit <= steps.MAX_SEND_LIMIT:
+        return _invalid(f"limit must be 1 to {steps.MAX_SEND_LIMIT}.")
+    return _launch("send_messages", {"frequency": float(frequency), "limit": limit, "dry_run": bool(dry_run)})
+
+
 def _job_row(job: dict, tz: str) -> dict[str, Any]:
     return {
         "job_id": job["id"],
@@ -1412,8 +1413,8 @@ def _job_row(job: dict, tz: str) -> dict[str, Any]:
 @mcp.tool
 def get_job(job_id: str, wait_seconds: int = 0) -> dict[str, Any]:
     """Follow a job a process step started (`sync_messages`,
-    `get_contacts`, `classify_contacts`, `classify_stages`, `send_intro`) --
-    or read any scheduled run by its id (`get_run_report` lists them).
+    `get_contacts`, `classify_contacts`, `classify_stages`, `send_intro`,
+    `send_messages`) by its id (`get_run_report` lists them).
 
     `wait_seconds` (0 to 45) waits for the job to finish before answering,
     checking every 2 seconds: call `get_job(job_id, wait_seconds=45)` again

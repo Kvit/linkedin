@@ -102,13 +102,11 @@ class OutreachSettings(BaseConfig):
     intro_daily_cap: int = Field(default=10, ge=1)
 
     #: The random gap between one queued intro's `due_at` and the next, in
-    #: minutes (ruling P5-3; bounds set by the user on 2026-09-11). Queued
-    #: intros are spread so the day's messages never leave in one burst.
-    #: The tick sends at most one due item per run, so a gap shorter than
-    #: its own interval -- `*/4` in working hours -- gives that interval
-    #: instead. Both `0` means every intro is due at once.
-    intro_gap_min_minutes: int = Field(default=1, ge=0)
-    intro_gap_max_minutes: int = Field(default=5, ge=0)
+    #: minutes (ruling P5-3). Both 0 by default since 2026-09-14, at the
+    #: user's direction (1 to 5 before): every intro is due at once, and
+    #: `send_messages` spaces the sends, one a minute by default.
+    intro_gap_min_minutes: int = Field(default=0, ge=0)
+    intro_gap_max_minutes: int = Field(default=0, ge=0)
 
     #: Minimum age, in days, of the newest outbound message before a follow-up
     #: may go out.

@@ -36,10 +36,13 @@ from linkedinmcp import clock
 STATE_COLLECTION = "runtime_state"
 STATE_DOCUMENT = "linkedin"
 
-#: How long a tick holds its lease. Shorter than the scheduler's four-minute
-#: tick interval (`outreach-tick`, `*/4`; ruling P5-4), so a lease a dead
-#: tick left behind has expired before the next tick is due -- it never
-#: turns that tick away as busy.
+#: How long the tick lease is held (ruling P5-4): by `send_messages` for one
+#: message at a time, by `get_contacts` for one profile, and by a tick run by
+#: hand. Each releases it as soon as its one LinkedIn write is done. A lease
+#: left behind by a job that died expires after 225 seconds; until then the
+#: next `send_messages` or `get_contacts` stops as `tick_busy`. It leaves
+#: `jobs.LEASE_FLOOR_SECONDS` for the write after a sweep, a requested sync
+#: and the chat check.
 LEASE_SECONDS = 225
 
 

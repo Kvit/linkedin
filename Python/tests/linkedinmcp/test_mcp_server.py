@@ -41,7 +41,6 @@ and must not be added.
 """
 
 import inspect
-import random
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -192,25 +191,25 @@ HUMAN_TOOLS = frozenset({
     "clear_writes_block", "set_require_approval", "clear_handling",
 })
 
-#: The process steps (MCP v2): each starts a job. Human-side too, since the
-#: scheduled Cloud Scheduler jobs are what run them.
+#: The process steps (MCP v2, and `send_messages` since 2026-09-14): each
+#: starts a job, and the agent decides when to run them.
 PROCESS_TOOLS = frozenset({
-    "sync_messages", "get_contacts", "classify_contacts", "classify_stages", "send_intro",
+    "sync_messages", "get_contacts", "classify_contacts", "classify_stages", "send_intro", "send_messages",
 })
 
 
 @pytest.mark.anyio
 async def test_tool_set_is_exact(env, fake_db):
-    """The service exposes exactly twenty-seven tools: `get_status` and seven
+    """The service exposes exactly twenty-eight tools: `get_status` and seven
     read-only tools, six agent-side write tools, eight human-side tools and
-    the five process steps (MCP v2). Ledger ruling P2-11: this pins the
+    the six process steps (MCP v2, and `send_messages`). Ledger ruling P2-11: this pins the
     exact set, so a task adding a tool has to change this line and justify
     it.
     """
     async with Client(mcp_server.mcp) as client:
         tools = await client.list_tools()
     assert {tool.name for tool in tools} == READ_TOOLS | AGENT_WRITE_TOOLS | HUMAN_TOOLS | PROCESS_TOOLS
-    assert len(tools) == 27
+    assert len(tools) == 28
     assert all(tool.description for tool in tools), "every tool's docstring is what the agent reads"
 
 
@@ -641,35 +640,13 @@ AGENT_ITEM = f"agent:a:{LOCAL_DAY}"
 FOLLOW_UP = "Checking back in on denial recovery -- is it still on your list this quarter?"
 
 
-class LowRandom:
-    """Stands in for `random.Random`: `uniform(low, high)` records the
-    bounds it was asked for and returns `low`."""
-
-    def __init__(self):
-        self.calls: list[tuple] = []
-
-    def uniform(self, low, high):
-        self.calls.append((low, high))
-        return low
-
-
-class HighRandom(LowRandom):
-    """`uniform(low, high)` returns `high`."""
-
-    def uniform(self, low, high):
-        super().uniform(low, high)
-        return high
-
-
 @pytest.fixture
 def write_db(env, fake_db, monkeypatch):
     """`env` with `OUTREACH_REQUIRE_APPROVAL=false` -- so a stored runtime
     override is what decides -- the clock fixed at `WRITE_NOW`, the empty
-    `FakeFirestore` every tool reaches, and `queue_message`'s random delay
-    fixed at its low bound, five minutes."""
+    `FakeFirestore` every tool reaches."""
     monkeypatch.setenv("OUTREACH_REQUIRE_APPROVAL", "false")
     monkeypatch.setattr(clock, "utcnow", lambda: WRITE_NOW)
-    monkeypatch.setattr(mcp_server, "_random", LowRandom())
     return fake_db
 
 
@@ -738,7 +715,7 @@ async def test_queue_message_creates_the_agent_item_for_the_local_day(write_db):
 
     payload = await call_tool("send_follow_up", {"doc_id": "a", "text": FOLLOW_UP})
 
-    assert payload == {"queued": True, "id": AGENT_ITEM, "status": "approved", "due_at": "2026-09-11T01:35:00+05:30"}
+    assert payload == {"queued": True, "id": AGENT_ITEM, "status": "approved", "due_at": "2026-09-11T01:30:00+05:30"}
     item = stored(write_db, "outreach_queue", AGENT_ITEM)
     assert item["contact_doc_id"] == "a"
     assert item["kind"] == "follow_up"
@@ -748,39 +725,19 @@ async def test_queue_message_creates_the_agent_item_for_the_local_day(write_db):
     assert item["profile_url"] == "https://www.linkedin.com/in/jane-doe"
     assert (item["campaign"], item["template_id"]) == (None, None)
     assert (item["created_by"], item["approved_by"]) == ("agent", "auto")
-    assert item["due_at"] == WRITE_NOW + timedelta(minutes=5)
+    assert item["due_at"] == WRITE_NOW
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(
-    "source, delay", [(LowRandom, timedelta(minutes=5)), (HighRandom, timedelta(minutes=45))], ids=["low", "high"]
-)
-async def test_queue_message_without_due_at_is_due_five_to_forty_five_minutes_from_now(
-    write_db, monkeypatch, source, delay
-):
-    """Ruling P5-3: with no `due_at`, the delay is drawn between 5 and 45
-    minutes (300 and 2,700 seconds) from the module's random source, so a
-    burst of queued messages does not go out at the tick's own rhythm."""
+async def test_queue_message_without_due_at_is_due_now(write_db):
+    """With no `due_at` the message is due at once: `send_messages` does the
+    spacing (2026-09-14, replacing ruling P5-3's 5-45 minute delay)."""
     seed_prospect(write_db)
-    rng = source()
-    monkeypatch.setattr(mcp_server, "_random", rng)
 
     payload = await call_tool("send_follow_up", {"doc_id": "a", "text": FOLLOW_UP})
 
-    assert rng.calls == [(300.0, 2700.0)]
-    assert stored(write_db, "outreach_queue", AGENT_ITEM)["due_at"] == WRITE_NOW + delay
-    assert payload["due_at"] == (WRITE_NOW + delay).astimezone(ZoneInfo(TZ)).isoformat()
-
-
-@pytest.mark.anyio
-async def test_queue_message_with_a_seeded_random_source_is_due_within_the_range(write_db, monkeypatch):
-    seed_prospect(write_db)
-    monkeypatch.setattr(mcp_server, "_random", random.Random(20260910))
-
-    await call_tool("send_follow_up", {"doc_id": "a", "text": FOLLOW_UP})
-
-    due = stored(write_db, "outreach_queue", AGENT_ITEM)["due_at"]
-    assert WRITE_NOW + timedelta(minutes=5) <= due <= WRITE_NOW + timedelta(minutes=45)
+    assert stored(write_db, "outreach_queue", AGENT_ITEM)["due_at"] == WRITE_NOW
+    assert payload["due_at"] == WRITE_NOW.astimezone(ZoneInfo(TZ)).isoformat()
 
 
 @pytest.mark.anyio
@@ -1620,16 +1577,17 @@ async def test_pause_refuses_an_unknown_kind_and_writes_nothing(write_db):
 
 
 @pytest.mark.anyio
-async def test_the_pause_description_says_a_sends_pause_leaves_profile_fetches_running(env):
-    """Ruling P5-4: under a sends pause the idle tick still fetches
-    profiles (ruling P3-6); the description says so, and that pausing
-    `fetches` is what stops them."""
+async def test_the_pause_description_names_the_steps_each_kind_stops(env):
+    """A sends pause stops `send_messages`, a fetches pause stops
+    `get_contacts`' profile views; nothing sends on a schedule, so no tool
+    description mentions a tick."""
     async with Client(mcp_server.mcp) as client:
         tools = {tool.name: tool for tool in await client.list_tools()}
 
     description = " ".join(tools["pause"].description.split())
-    assert "profile fetches continue" in description
-    assert 'kind="fetches"' in description
+    assert "`sends` -- `send_messages` sends nothing" in description
+    assert "`fetches` -- `get_contacts` views no profile" in description
+    assert not [name for name, tool in tools.items() if "tick" in (tool.description or "").lower()]
 
 
 @pytest.mark.anyio
@@ -1867,7 +1825,20 @@ async def test_a_process_step_refuses_settings_outside_its_range_and_starts_noth
     assert (refused["reason"], refused["refused"]) == ("industry_not_allowed", ["Hospital"])
     assert (await call_tool("get_contacts", {"max_profiles": 11}))["reason"] == "invalid"
     assert (await call_tool("classify_contacts", {"doc_ids": ["a/b"]}))["reason"] == "invalid"
+    assert (await call_tool("send_messages", {"frequency": 3}))["reason"] == "invalid"
+    assert (await call_tool("send_messages", {"limit": 0}))["reason"] == "invalid"
     assert list(fake_db.collection("runs").stream()) == []
+
+
+@pytest.mark.anyio
+async def test_send_messages_starts_a_dry_run_by_default_one_a_minute_fifty_at_most(env, fake_db, monkeypatch):
+    monkeypatch.setattr(clients, "unipile_client", lambda: FakeUnipile())
+
+    started = await call_tool("send_messages", {})
+
+    job = await call_tool("get_job", {"job_id": started["job_id"]})
+    assert job["params"] == {"frequency": 1.0, "limit": 50, "dry_run": True}
+    assert (job["status"], job["result"]["would_send"]) == ("succeeded", [])
 
 
 @pytest.mark.anyio

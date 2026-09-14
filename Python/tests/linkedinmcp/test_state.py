@@ -1,6 +1,6 @@
 """Tests for `linkedinmcp.state.RuntimeState`: the single
-`runtime_state/linkedin` document that coordinates the two scheduled tick
-jobs (a lease so only one sends at a time), a human's pause/block controls, a
+`runtime_state/linkedin` document that coordinates every LinkedIn write
+(a lease so only one send or fetch runs at a time), a human's pause/block controls, a
 webhook's sync request, and the require-approval override.
 
 Every method is exercised against `FakeFirestore` with a `MutableClock` the
@@ -22,7 +22,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from linkedinmcp import state
+from linkedinmcp import jobs, state
 from tests.linkedinmcp.fake_firestore import FakeFirestore
 
 
@@ -68,13 +68,12 @@ def test_now_is_the_states_own_clock_reading():
 # --- acquire_tick_lease() / release_tick_lease() / lease_remaining() -----
 
 
-def test_the_tick_lease_is_shorter_than_the_four_minute_tick_interval():
-    """Ruling P5-4: 225 seconds, under the scheduler's 240-second interval
-    (`outreach-tick`, `*/4`), so a lease a dead tick left behind has always
-    expired by the time the next tick comes due, however the scheduler's
-    timing wavers."""
+def test_the_tick_lease_lasts_225_seconds():
+    """Ruling P5-4: long enough for a sweep, a requested sync, the chat check
+    and `jobs.LEASE_FLOOR_SECONDS` for the write; short enough that a lease
+    a dead job left behind is gone within four minutes."""
     assert state.LEASE_SECONDS == 225
-    assert state.LEASE_SECONDS < 4 * 60
+    assert state.LEASE_SECONDS - jobs.LEASE_FLOOR_SECONDS >= 180
 
 
 def test_acquire_on_an_empty_database_returns_a_32_char_hex_owner_with_exact_expiry():

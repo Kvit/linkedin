@@ -87,6 +87,24 @@ def test_a_live_step_refuses_a_second_start_until_its_job_goes_quiet(db):
     assert lock_of(db, "demo")["job_id"] == second["job_id"]
 
 
+def test_a_running_job_hands_its_step_to_its_successor_and_its_own_finish_leaves_that_lock(db):
+    """`send_messages` chains jobs: near its time limit a running job starts
+    the next job of its own step. That successor takes the lock the running
+    job holds, the running job's finish leaves it alone, and anyone else is
+    still refused."""
+    first = monitor.start(db, "demo", {}, NOW)
+    monitor.claim(db, first["job_id"], NOW)
+    later = NOW + timedelta(minutes=27)
+
+    second = monitor.start(db, "demo", {"limit": 3}, later, created_by=first["job_id"], successor_of=first["job_id"])
+
+    assert second["ok"] is True
+    assert monitor.get(db, second["job_id"])["created_by"] == first["job_id"]
+    assert monitor.finish(db, first["job_id"], later, result={"sent": 28}) is True
+    assert lock_of(db, "demo")["job_id"] == second["job_id"]
+    assert monitor.start(db, "demo", {}, later)["reason"] == "already_running"
+
+
 def test_a_job_taken_over_as_lost_stops_at_its_next_report_and_keeps_its_lost_record(db, tmp_path, monkeypatch):
     """Silent past `LOST_AFTER`, the job's step is taken by a newer start.
     Its next report stops it, and its late end writes nothing over the

@@ -1,8 +1,8 @@
-"""The five steps of the outreach process, as the MCP tools run them.
+"""The six steps of the outreach process, as the MCP tools run them.
 
 Each is what one of the user's own scripts does, with that script's
-settings as the job's parameters, and each is built from the code the
-scheduled jobs already run -- nothing here re-implements a rule:
+settings as the job's parameters, and each is built from the service's
+existing job code -- nothing here re-implements a rule:
 
 | step                | the user's script                       | built on                              |
 |---------------------|-----------------------------------------|---------------------------------------|
@@ -10,7 +10,8 @@ scheduled jobs already run -- nothing here re-implements a rule:
 | `get_contacts`      | `new-contacts.ipynb` Phases A-D         | `fetch_queue`, `fetching.fetch_one`   |
 | `classify_contacts` | `new-contacts.ipynb` Phase E            | `profiles.classify_profile`           |
 | `classify_stages`   | `pipeline-classify.py`                  | `pipeline.run_pipeline`               |
-| `send_intro`        | `send-intros.ipynb` Phases B-E          | `jobs.plan_intros`                    |
+| `send_intro`        | `send-intros.ipynb` Phases B-D (queue)  | `jobs.plan_intros`                    |
+| `send_messages`     | `send-intros.ipynb` Phase E (send)      | `jobs._tick_holding_lease`            |
 
 A step is a plain function of one `monitor.Job` -- its `params`, the
 clients and settings, `report` for progress -- returning a result dict: a
@@ -21,8 +22,9 @@ can take minutes.
 A dry run views no LinkedIn profile, makes no Gemini call and writes
 nothing -- `get_contacts` lists who it would fetch, `classify_contacts` and
 `classify_stages` who they would classify, `send_intro` who would get the
-intro. That is stricter than the notebooks, whose dry runs still fetch and
-classify: here a dry run spends none of the day's budget.
+intro, `send_messages` who would be sent a message. That is stricter than
+the notebooks, whose dry runs still fetch and classify: here a dry run
+spends none of the day's budget.
 """
 
 import asyncio
@@ -31,7 +33,7 @@ import random
 import time
 from datetime import UTC, datetime, timedelta
 
-from linkedinmcp import clients, fetch_queue, fetching, jobs
+from linkedinmcp import clients, fetch_queue, fetching, jobs, monitor, queue
 
 EXTRACTED_COLLECTION = "extracted"
 ANALYSIS_COLLECTION = "analysis"
@@ -47,14 +49,13 @@ MAX_PROFILES = 10
 #: The gap between two profile fetches: `new-contacts.ipynb`'s own
 #: `HumanCadence` bounds, `UNIPILE_MIN_DELAY_SECONDS` and
 #: `UNIPILE_MAX_DELAY_SECONDS` by default. The service forces the Unipile
-#: client's own pacing to zero (`settings.SERVICE_PACING`) because the
-#: scheduler spaces its ticks; a job fetching several profiles in a row must
-#: space them itself.
+#: client's own pacing to zero (`settings.SERVICE_PACING`), so a job doing
+#: several LinkedIn calls in a row spaces them itself.
 FETCH_GAP_MIN_SECONDS = 20.0
 FETCH_GAP_MAX_SECONDS = 40.0
 
-#: How often, and how long apart, `get_contacts` tries for the tick lease a
-#: scheduled tick may be holding for a few seconds.
+#: How often, and how long apart, `get_contacts` and `send_messages` try for
+#: the tick lease another job may be holding for a few seconds.
 LEASE_TRIES = 3
 LEASE_RETRY_SECONDS = 5.0
 
@@ -81,8 +82,7 @@ def _iso(value):
 
 def sync_messages(job) -> dict:
     """`messages_sync.py`: mirror the messages LinkedIn holds past the newest
-    stored one, then react to them exactly as the scheduled sync does
-    (`jobs._sync`) -- cancel queued items for anyone who replied, refresh
+    stored one, then react to them (`jobs._sync`) -- cancel queued items for anyone who replied, refresh
     the contact stats, resolve `unknown` sends and, with `classify`, stage
     the new replies with Gemini (`pipeline-classify`) and raise one `lead`
     alert per new lead. It heartbeats between those phases. A dry run only
@@ -137,14 +137,14 @@ def get_contacts(job) -> dict:
 
     1. List the relations and drop those already in `extracted`, those
        outside the window, and slugs no Firestore document can have.
-    2. Add each to `fetch_queue` (create-only) -- the queue the tick works
-       through too, so whatever this job does not fetch, the tick will.
+    2. Add each to `fetch_queue` (create-only), so whatever this job does
+       not fetch, a later `get_contacts` will.
     3. Fetch up to `max_profiles` of the connections step 1 listed -- never
        the rest of the queue, so `days` bounds the profile views too -- in
        the fetch queue's order, the newest connection first
        (`fetch_queue.next_queued`), 20 to 40 s apart: each through
        `fetching.fetch_one` with `classify=False`, holding the tick lease
-       for that one profile so a scheduled tick never fetches beside it.
+       for that one profile so no `send_messages` send runs beside it.
        Stored, not classified -- `classify_contacts` does that. A connection
        the fetch queue is done with (a profile too short to store, one given
        up) is not fetched again. Stops early when none is left, fetches are
@@ -347,7 +347,7 @@ def classify_stages(job) -> dict:
     newest inbound message is not classified yet -- or of `doc_ids` only,
     `force` classifying them again whatever is stored -- at most `limit`,
     newest conversations first, through `pipeline.run_pipeline`. A new
-    `lead` raises one alert, as the scheduled sync does. A dry run plans
+    `lead` raises one alert, as `sync_messages` does. A dry run plans
     with `pipeline.plan_pipeline` alone: it lists who would be classified
     and calls no Gemini."""
     import pipeline
@@ -396,15 +396,15 @@ def classify_stages(job) -> dict:
 def send_intro(job) -> dict:
     """`send-intros.ipynb` Phases B-E, QUEUED: pick who gets the intro with
     `functions.select_intro_candidates` and queue `templates/intro.md` for
-    each (`jobs.plan_intros`). The tick sends them, one at a time, a random
-    `OUTREACH_INTRO_GAP_MIN_MINUTES` to `OUTREACH_INTRO_GAP_MAX_MINUTES`
-    apart (1 to 5), running every guard again first -- so nothing goes out
-    while the tick is not running, sends are paused or writes are blocked.
+    each (`jobs.plan_intros`), due at once (`OUTREACH_INTRO_GAP_*_MINUTES`,
+    0 by default). `send_messages` sends them, one at a time, running every
+    guard again first -- nothing goes out until it runs, nor while sends
+    are paused or writes are blocked.
 
     Holds the `send_intro` lock for the whole job (`monitor.start` took it),
     which the daily job also takes: the per-day cap is counted once. The
-    result says whether anything will actually send (`sender`): when the
-    tick last ran, and whether sends are paused or blocked.
+    result says whether sends would go out now (`sender`): whether sends
+    are paused or blocked, and whether each waits for approval.
     """
     params = job.params
     dry_run = bool(params.get("dry_run", True))
@@ -428,7 +428,6 @@ def send_intro(job) -> dict:
         tags=params.get("tags"),
     )
     fields = job.state.read()
-    last_tick = _last_run(db, "tick", job.state.now())
     result = {
         "candidates": planned["candidates"],
         "open_items": planned["open_items"],
@@ -438,7 +437,6 @@ def send_intro(job) -> dict:
         "cap": planned["cap"],
         "intros": planned["rows"][:MAX_ROWS],
         "sender": {
-            "last_tick_at": _iso(last_tick),
             "sends_paused_until": _iso(fields.get("sends_paused_until")),
             "writes_blocked": job.state.writes_blocked(),
             "require_approval": job.state.require_approval(settings.require_approval),
@@ -446,29 +444,165 @@ def send_intro(job) -> dict:
     }
     if dry_run:
         return {"dry_run": True, "would_queue": len(planned["created"]), **result}
-    return {"queued": len(planned["created"]), **result}
+    return {"queued": len(planned["created"]), "send_with": "send_messages", **result}
 
 
-def _last_run(db, job_name: str, now: datetime):
-    """When the newest run of `job_name` in the day before `now` started, or
-    `None` -- one ascending id-range query, the only order Firestore serves
-    an id range in without a composite index (see
-    `mcp_server.get_run_report`)."""
-    from google.cloud.firestore_v1.base_query import FieldFilter
-    from google.cloud.firestore_v1.field_path import FieldPath
+# =============================================================================
+# send_messages
+# =============================================================================
 
-    runs = db.collection(jobs.RUNS_COLLECTION)
-    since = (now - timedelta(days=1)).astimezone(UTC)
-    run_id = FieldPath.document_id()
-    query = runs.where(filter=FieldFilter(run_id, ">=", runs.document(f"{job_name}:{since:%Y%m%dT%H%M%S%fZ}"))).where(
-        filter=FieldFilter(run_id, "<", runs.document(f"{job_name};"))
+#: Messages per minute `send_messages` may be set to, and its default.
+MIN_FREQUENCY, MAX_FREQUENCY, DEFAULT_FREQUENCY = 0.1, 2.0, 1.0
+
+#: Messages one `send_messages` call may send, and its default. 200 is the
+#: day's message cap as configured (`UNIPILE_MAX_MESSAGES_PER_DAY`).
+MAX_SEND_LIMIT, DEFAULT_SEND_LIMIT = 200, 50
+
+#: Seconds a job keeps in hand beyond one wait before its dispatch deadline
+#: (`monitor.DISPATCH_DEADLINE_SECONDS`): enough for one send and for
+#: starting the next job.
+HANDOVER_MARGIN_SECONDS = 150
+
+#: The longest a wait between two sends goes without a heartbeat, far under
+#: `monitor.LOST_AFTER`.
+HEARTBEAT_SECONDS = 60
+
+#: The clock the time limit is measured with; replaced in tests.
+_monotonic = time.monotonic
+
+
+def send_messages(job) -> dict:
+    """Send every approved message already due in the queue, one at a time,
+    `frequency` a minute, at most `limit` -- intros, follow-ups and replies
+    alike, in due order.
+
+    Each message is one pass of the tick's own send code
+    (`jobs._tick_holding_lease`, without its profile fetch) holding the tick
+    lease for that message only, so every guard runs again right before it
+    goes: the text, the contact's touches and replies, pauses, blocked
+    writes, the day's message budget, the chat. Messages due later wait for
+    a later call.
+
+    Stops when `limit` is reached (`limit`), nothing due is left (`idle`),
+    the account stops sends (`writes_blocked`, `sends_paused`, `budget`), or
+    a send does not come back `sent` (its outcome: `released`, `failed`,
+    `unknown`, with `error`). A job has 30 minutes (the dispatch deadline);
+    when the next wait would not leave `HANDOVER_MARGIN_SECONDS` of them, it
+    starts the next `send_messages` job with what is left of `limit` and
+    stops as `handed_over`, naming it `next_job_id` -- or, when that job
+    cannot be started, as `handover_failed` with `next_job_error`.
+
+    A dry run waits for nothing and writes nothing: `jobs.preview_sends`
+    lists who would be sent (`would_send`) and who skipped, and why.
+    """
+    params = job.params
+    frequency = float(params.get("frequency", DEFAULT_FREQUENCY))
+    limit = int(params.get("limit", DEFAULT_SEND_LIMIT))
+    dry_run = bool(params.get("dry_run", True))
+    db, settings, client = job.db, job.settings, job.client()
+    settings_used = {"frequency": frequency, "limit": limit}
+
+    if dry_run:
+        preview = jobs.preview_sends(db, client, settings, job.state.now(), state=job.state, limit=limit)
+        preview["would_send"] = preview["would_send"][:MAX_ROWS]
+        return {"dry_run": True, **settings_used, **preview}
+
+    gap = 60.0 / frequency
+    started = _monotonic()
+    sent: list[dict] = []
+    skipped = 0
+    stopped = None
+    extra: dict = {}
+    wait = 0.0
+    while len(sent) < limit:
+        if queue.next_due(db, job.state.now()) is None:
+            stopped = "idle"
+            break
+        if _monotonic() - started + wait + HANDOVER_MARGIN_SECONDS > monitor.DISPATCH_DEADLINE_SECONDS:
+            extra = _hand_over(job, frequency, limit - len(sent))
+            stopped = "handed_over" if "next_job_id" in extra else "handover_failed"
+            break
+        _wait(job, wait, done=len(sent), total=limit)
+        owner = _acquire_tick_lease(job.state)
+        if owner is None:
+            stopped = "tick_busy"
+            break
+        try:
+            outcome = jobs._tick_holding_lease(
+                db, client, settings, job.state.now(), state=job.state, owner=owner, fetch=False,
+            )
+        finally:
+            job.state.release_tick_lease(owner)
+        skipped += outcome.get("items_skipped", 0)
+        if outcome.get("outcome") == "sent":
+            sent.append(_sent_row(db, outcome))
+            job.report(done=len(sent), total=limit, note=outcome["item"])
+            wait = gap
+            continue
+        if outcome.get("stopped") == "max_attempts":
+            # Ten due items refused in a row, each now marked skipped: look again at once.
+            wait = 0.0
+            continue
+        stopped, extra = _send_stop(outcome)
+        break
+    else:
+        stopped = "limit"
+
+    return {
+        **settings_used,
+        "sent": len(sent),
+        "skipped": skipped,
+        "stopped": stopped,
+        **extra,
+        "messages": sent[:MAX_ROWS],
+        "queue": queue.counts(db),
+    }
+
+
+def _wait(job, seconds: float, *, done: int, total: int) -> None:
+    """Sleep `seconds`, heartbeating at least every `HEARTBEAT_SECONDS`."""
+    while seconds > 0:
+        chunk = min(seconds, HEARTBEAT_SECONDS)
+        _sleep(chunk)
+        seconds -= chunk
+        job.report(done=done, total=total, note="waiting before the next message")
+
+
+def _sent_row(db, outcome: dict) -> dict:
+    item = queue.get(db, outcome["item"]) or {}
+    return {
+        "queue_id": outcome["item"],
+        "doc_id": item.get("contact_doc_id"),
+        "name": item.get("name"),
+        "kind": outcome.get("kind"),
+        "message_id": outcome.get("message_id"),
+        "sent_at": _iso(item.get("sent_at")),
+    }
+
+
+def _send_stop(outcome: dict) -> tuple[str, dict]:
+    """Why a send pass that sent nothing stops `send_messages`, and what to
+    report with it."""
+    if "outcome" in outcome:
+        details = {key: outcome[key] for key in ("item", "error", "paused_until", "writes_blocked") if key in outcome}
+        return outcome["outcome"], details
+    if outcome.get("idle"):
+        return "idle", {}
+    if "skipped" in outcome:
+        return outcome["skipped"], {"until": outcome["until"]} if "until" in outcome else {}
+    return outcome.get("stopped") or "unexpected", {}
+
+
+def _hand_over(job, frequency: float, remaining: int) -> dict:
+    """Start the next `send_messages` job with `remaining` of the limit,
+    taking over this job's lock (`monitor.start`'s `successor_of`)."""
+    launched = monitor.launch(
+        job.db, job.step, {"frequency": frequency, "limit": remaining, "dry_run": False}, job.settings,
+        job.state.now(), created_by=job.id, successor_of=job.id,
     )
-    newest = None
-    for snapshot in query.stream():
-        started = (snapshot.to_dict() or {}).get("started_at")
-        if started is not None and (newest is None or started > newest):
-            newest = started
-    return newest
+    if launched["ok"]:
+        return {"next_job_id": launched["job_id"]}
+    return {"next_job_error": launched.get("error") or launched.get("reason")}
 
 
 #: Every step a job can run, by the name its tool and its job id carry.
@@ -478,4 +612,5 @@ STEPS = {
     "classify_contacts": classify_contacts,
     "classify_stages": classify_stages,
     jobs.INTRO_STEP: send_intro,
+    "send_messages": send_messages,
 }

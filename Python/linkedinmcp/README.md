@@ -4,8 +4,8 @@ This is the service a Claude agent talks to when it works your LinkedIn
 outreach. It runs on Google Cloud Run as `linkedin-outreach`, speaks the Model
 Context Protocol (MCP), and keeps every rule about what may be sent to whom in
 code the agent cannot argue with. You drive it from a Claude chat session, from
-Claude Code, or -- once you switch that on -- from an unattended agent that runs
-every weekday morning.
+Claude Code, or from an agent run. Nothing runs on a schedule: every step,
+sending included, happens when a session calls its tool.
 
 It is internal: no outside users, one API key, one LinkedIn account.
 
@@ -26,21 +26,19 @@ and the service decides whether it may. That split is deliberate:
   are a prompt-injection surface. Anything a message could persuade the agent to
   do still has to pass the same code-level checks as everything else.
 
-**One rule that will bite you:** once the `outreach-tick` schedule is running,
-this service queues and sends intros itself, so do not run `send-intros.ipynb`
-Phase E at the same time. The notebook works from a snapshot it took earlier in
-its own run, so an intro the tick sends meanwhile can reach the same contact
-twice. Pause the schedule first -- see
-[Turning the schedules on](#turning-the-schedules-on).
+**One rule that will bite you:** do not run `send-intros.ipynb` Phase E while a
+`send_messages` job is running. The notebook works from a snapshot it took
+earlier in its own run, so an intro `send_messages` sends meanwhile can reach
+the same contact twice. `get_job` on the `send_messages` job says whether it
+is still running.
 
 - [Where things stand](#where-things-stand)
 - [A normal day](#a-normal-day)
-- [The 27 tools, and when to reach for each](#the-27-tools-and-when-to-reach-for-each)
+- [The 28 tools, and when to reach for each](#the-28-tools-and-when-to-reach-for-each)
 - [Connecting to it](#connecting-to-it)
 - [When something stops](#when-something-stops)
 - [Settings you might change](#settings-you-might-change)
 - [Deploying](#deploying)
-- [Turning the schedules on](#turning-the-schedules-on)
 - [How it works inside](#how-it-works-inside)
 - [Working on the code](#working-on-the-code)
 - [Rules for changing this code](#rules-for-changing-this-code)
@@ -50,21 +48,23 @@ twice. Pause the schedule first -- see
 
 ## Where things stand
 
-**Everything is built; the automation is not switched on.** The send path, the
-daily load of new connections and MCP v2 (27 tools, the five process steps
-running as jobs) all exist, are tested (**1207 passed, 15 deselected** across the
-repo) and have been verified against the live service.
-All six phases of the original plan are done; the design notes behind them are
-`docs/superpowers/specs/2026-09-09-outreach-agent-design.md` (the service) and
-`2026-09-11-mcp-process-tools-design.md` (MCP v2 and everything since).
+**Everything is built, and a session drives it.** The send path, the load of
+new connections and MCP v2 (28 tools, the six process steps running as jobs)
+all exist, are tested and have been verified against the live service. The
+design notes behind them are
+`docs/superpowers/specs/2026-09-09-outreach-agent-design.md` (the service),
+`2026-09-11-mcp-process-tools-design.md` (MCP v2) and
+`2026-09-14-send-messages-design.md` (`send_messages`, no schedule).
 
-**What is running right now:** `v2.1.1`, revision `linkedin-outreach-00013-xkz`,
-100% of traffic, deployed 2026-09-11 and checked read-only straight after:
-`/health` answering, `tools/list` returning exactly 27 tools, `get_status`
-reporting Firestore and Unipile healthy with nothing paused or blocked, and the
-default `list_contacts` page including contacts whose newest activity is a send
-rather than a reply -- which the version before it could not show. To confirm the
-revision for yourself:
+**What is running right now:** `v2.2.0`, revision `linkedin-outreach-00014-bgd`,
+100% of traffic, deployed 2026-09-14 and checked straight after: `/health`
+answering, `tools/list` returning exactly 28 tools with `send_messages` among
+them and no description mentioning a tick, `send_messages(frequency=3)` refused
+as `invalid`, two dry-run `send_messages` jobs followed to `succeeded` on Cloud
+Tasks (0 messages due, nothing sent), a dry `send_intro` whose `sender` no longer
+carries `last_tick_at`, and `get_status` reporting Firestore and Unipile `ok`
+with nothing paused or blocked. No real `send_messages` has run yet: nothing was
+due. To confirm the revision for yourself:
 
 ```powershell
 gcloud run services describe linkedin-outreach --region us-central1 --project vk-linkedin --format "value(status.latestReadyRevisionName)"
@@ -76,14 +76,19 @@ gcloud run services describe linkedin-outreach --region us-central1 --project vk
 direction:
 
 - `get_contacts(days=0, max_profiles=10)` viewed and stored 10 profiles, and
-  queued the other 610 unstored connections in the fetch queue, where the tick
-  will work through them once it runs.
+  queued the other 610 unstored connections in the fetch queue, for later
+  `get_contacts` runs.
 - `send_intro` queued five intros and five hand-driven ticks (one
   `POST /jobs/tick` per intro as it came due) sent them -- **the first messages
   this service has ever sent.** Every other message any contact has received
   came from a notebook, by hand.
 - A one-time backfill gave every existing queue item (5) and `messages`
   document (7,332) an empty `tags` list, so campaign filters read cleanly.
+
+On 2026-09-14 `send_intro` queued ten more intros; with no scheduler running,
+they were sent by ten hand-driven `POST /jobs/tick` calls 240 seconds apart,
+11:35 to 12:12 Chicago time. That is what `send_messages` now does from a
+single call.
 
 Everything else verified against the live service has been dry runs and
 read-only calls.
@@ -92,6 +97,7 @@ read-only calls.
 
 | Version | Revision | What it changed |
 |---|---|---|
+| `v2.2.0` | `linkedin-outreach-00014-bgd` | `send_messages`: sends every due message from one call, one a minute by default, at most 50, chaining jobs past 30 minutes. No schedule: `scheduler.cmd` removed, intros and agent messages due at once, every tool description naming `send_messages` instead of the tick. 28 tools. |
 | `v2.1.1` | `linkedin-outreach-00013-xkz` | Five fixes from the 2026-09-11 code review -- `get_contacts` fetching only the connections it listed, `send_intro` reporting blocked writes truthfully, a lost job stopping at its next heartbeat, a reply stored exactly on the sync watermark cancelling queued sends, and the default contact page counting a send as activity -- and intro spacing became a setting (1-5 minutes, was a fixed 10-30). |
 | `v2.1.0` | `linkedin-outreach-00012-vd7` | Campaign tags on `send_intro`, `send_follow_up` and `send_reply`, stored on every queue item and copied onto the message; `list_contacts(tags=..., replied=...)` finds non-responders. 11 of 11 live checks. |
 | `v2.0.2` | `linkedin-outreach-00011-x6p` | Every process step limits by a count of contacts, and takes every contact by default (`days=0`). |
@@ -102,56 +108,53 @@ read-only calls.
 **What is deliberately not switched on** -- each of these is yours to do, and
 [What is left to switch on](#what-is-left-to-switch-on) is the checklist:
 
-- **No Cloud Scheduler jobs exist.** `scheduler.cmd` is written and tested
-  against a `gcloud` stand-in, never run for real, and the Cloud Scheduler API
-  is not enabled in `vk-linkedin` yet. Until the tick runs, an intro
-  `send_intro` queues just waits -- the result's `sender.last_tick_at` tells you
-  that.
-- **The Unipile webhook is not registered.** Once `outreach-sync` exists it
-  polls every 15 minutes anyway, so the webhook is a latency improvement, not a
-  requirement.
+- **Nothing runs on a schedule.** There are no Cloud Scheduler jobs (the
+  Cloud Scheduler API was enabled in `vk-linkedin` on 2026-09-14 and nothing
+  uses it). A queued message goes out only when a session runs
+  `send_messages`; new replies arrive only when it runs `sync_messages`.
+- **The Unipile webhook is not registered.** Nothing would act on it: it only
+  asks for a sync, which a session runs itself.
 - **`require_approval` is `false`.** Consider `set_require_approval(true)` for
   the first few days of real operation, so every follow-up and reply waits for
   you.
 
 ## A normal day
 
-Nothing here is running yet, but this is the shape of it once the schedules are
-on.
+A session -- you in a chat, or an agent run -- works through the process
+steps in order. Each starts a job and returns its id; `get_job` follows it.
 
-| When | What runs | What it does |
+| Step | Tool | What it does |
 |---|---|---|
-| 6:30am, Mon-Fri | `outreach-daily` | Plans the day: queues the day's intros (spread minutes apart) and lists the new connections whose profiles need fetching. |
-| Every weekday morning | You, in a Claude session | Apply your answered decisions, draft replies for leads and for prospects who wrote back, and queue follow-ups for prospects who are due one. |
-| Every 4 minutes, 7am-9pm, Mon-Fri | `outreach-tick` | Sends **one** due message, re-running every guard first. If nothing is due, it fetches one queued profile instead. |
-| Every 15 minutes, all week | `outreach-sync` | Mirrors new LinkedIn messages into Firestore, cancels queued sends to anyone who replied, refreshes contact stats, settles sends whose outcome was unknown, and stages new replies. A new lead raises an alert for you. |
+| 1 | `get_status` | Is the service reachable, are sends paused, are writes blocked. |
+| 2 | `sync_messages` | Mirrors new LinkedIn messages into Firestore, cancels queued sends to anyone who replied, refreshes contact stats, settles sends whose outcome was unknown, and stages new replies. A new lead raises an alert. |
+| 3 | `get_contacts`, `classify_contacts` | Stores the newest connections' profiles (up to 10 a call) and classifies them. |
+| 4 | `send_intro` | Queues the intro for eligible connections, up to the day's intro cap. Queued, not sent. |
+| 5 | `send_messages` | Sends every approved message already due -- intros, follow-ups, approved replies -- one a minute by default, at most 50 a call, checking every rule again before each. |
+| 6 | `list_decisions`, `list_contacts(stage="lead")` | The leads and questions waiting for a person. |
 
-**Your part of the day** is short:
+**Your part** is short:
 
-1. `get_status` -- is the service healthy, are sends paused, is anything blocked.
-2. `list_decisions()` -- the inbox: new leads to look at, questions a session
+1. `list_decisions()` -- the inbox: new leads to look at, questions a session
    left you through `ask_user`, alerts the service raised. Answer with
    `answer_decision`.
-3. `list_queue(status="pending")` -- anything waiting on you. `approve_queued`
+2. `list_queue(status="pending")` -- anything waiting on you. `approve_queued`
    releases it, `reject_queued` kills it. Replies always wait here, whatever the
-   approval setting says.
-4. Run a process step by hand when you want the increment now rather than
-   tomorrow: `sync_messages`, `get_contacts`, `classify_contacts`,
-   `classify_stages`, `send_intro`. Each starts a job; `get_job` follows it.
+   approval setting says. An approved item goes out on the next
+   `send_messages`.
 
 **Two things worth internalising:**
 
 - **Queueing is not sending.** Every tool that produces a message only queues
-  it. One tick, holding its own lease, is the only thing in the system that ever
-  calls LinkedIn to send -- and it re-runs every check at that moment, so a
-  message that was fine when queued can still be skipped (they replied
-  meanwhile, sends were paused, the day's cap is spent).
-- **A dry run costs nothing.** The five process steps default to
-  `dry_run=True`: no profile view, no Gemini call, nothing written but the job's
-  own record. Run the dry one first, read what it says it would do, then run it
-  for real.
+  it. `send_messages`, holding the send lease for one message at a time, is the
+  only thing that calls LinkedIn to send -- and it re-runs every check at that
+  moment, so a message that was fine when queued can still be skipped (they
+  replied meanwhile, sends were paused, the day's cap is spent).
+- **A dry run costs nothing.** The six process steps default to
+  `dry_run=True`: no message, no profile view, no Gemini call, nothing written
+  but the job's own record. Run the dry one first, read what it says it would
+  do, then run it for real.
 
-## The 27 tools, and when to reach for each
+## The 28 tools, and when to reach for each
 
 Every signature below is the real one, defaults included. Three things hold for
 all of them:
@@ -214,27 +217,26 @@ left. Defaults to `pending` -- what is waiting on you. Pass `status=None` for
 every status, or `"answered"` to pick up answers waiting to be acted on.
 
 **`get_run_report(job=None, limit=5)`**
-Recent runs of the scheduled jobs (`sync`, `daily`, `tick`) and of process-step
-jobs, newest first, with each run's summary. This is how you see whether the tick
-is actually running, and what failed. With `job` given you get that job's own
-recent runs, however many other runs came after them. A sync you started with
-`sync_messages` is recorded under that name, never as `sync`.
+Recent runs of the process-step jobs, newest first, with each run's summary --
+what ran and what failed. With `job` given you get that job's own recent runs,
+however many other runs came after them.
 
 **`get_job(job_id, wait_seconds=0)`**
-Follows a job a process step started, or reads any scheduled run by its id.
+Follows a job a process step started, by its id.
 `wait_seconds` (up to 45) waits for the job to finish instead of answering
 immediately -- call `get_job(job_id, wait_seconds=45)` again while the status is
 `queued` or `running`. A failed job carries the error's class name.
 
 ### Queueing a message, and the inbox
 
-These are what the morning agent is allowed to do. None of them sends anything.
+These are what an agent run is allowed to do. None of them sends anything:
+`send_messages` does.
 
 **`send_follow_up(doc_id, text, template_id=None, campaign=None, due_at=None, tags=None)`**
 A nudge to a contact who has not replied since your last message. `template_id`
 and `campaign` are labels stored with the item; `tags` are the campaign tags that
-make `list_contacts(tags=..., replied=False)` work later. Without `due_at` it
-becomes due at a random moment 5 to 45 minutes out. Refused if they wrote back
+make `list_contacts(tags=..., replied=False)` work later. Without `due_at` it is
+due at once and the next `send_messages` sends it. Refused if they wrote back
 since (`follow_up:reply_pending` -- send a reply instead), if it is too soon, if
 they are at the touch cap, or if they already have something queued.
 
@@ -261,22 +263,22 @@ an existing question before asking: never ask the same thing twice.
 **`mark_decision_applied(decision_id)`**
 Marks an answered decision as acted on, so it stops showing as outstanding.
 
-### The process steps (you only)
+### The process steps
 
 One tool per script you run by hand, with that script's settings as its
-parameters. Each **starts a job** and answers at once with its id, because the
+parameters. You or an agent run decides when to run each. Each **starts a job** and answers at once with its id, because the
 work takes minutes -- follow it with `get_job(job_id, wait_seconds=45)`. One job
 per step at a time; a second start is refused with the live job's id. `dry_run`
-defaults to true everywhere, and a dry run views no profile, calls no Gemini and
-writes nothing but its own job record. Settings only ever narrow a run: every cap
+defaults to true everywhere, and a dry run sends no message, views no profile,
+calls no Gemini and writes nothing but its own job record. Settings only ever narrow a run: every cap
 and guard still applies.
 
 **`sync_messages(classify=True, dry_run=True)`** -- your `messages_sync.py`
-Mirrors the LinkedIn messages newer than the newest one stored, then reacts the
-way the scheduled sync does: cancels queued sends for anyone who replied,
-refreshes contact stats, settles sends whose outcome was unknown, and (with
-`classify`) stages the new replies and raises one alert per new lead. Run it when
-you want to see a reply that has only just arrived.
+Mirrors the LinkedIn messages newer than the newest one stored, then reacts:
+cancels queued sends for anyone who replied, refreshes contact stats, settles
+sends whose outcome was unknown, and (with `classify`) stages the new replies and
+raises one alert per new lead. Nothing else pulls replies in, so run it before
+`send_messages`: a reply only stops a message once it is stored.
 
 **`get_contacts(days=0, max_profiles=10, dry_run=True)`** -- `new-contacts.ipynb` A-D
 Finds first-degree connections with no stored profile -- all of them, or with
@@ -304,17 +306,28 @@ A contact who becomes a `lead` raises an alert for you.
 Queues `templates/intro.md`, sent verbatim, to eligible first-degree connections
 -- no chat with them, no intro before, no hold, nothing already queued -- newest
 connection first. Narrow with `days`, `industries`, `seniority`, `max` or
-`doc_ids`; `tags` label every intro for campaign tracking. It queues; the tick
-sends, minutes apart (`OUTREACH_INTRO_GAP_MIN_MINUTES` to
-`OUTREACH_INTRO_GAP_MAX_MINUTES`). The result's `cap` shows what is left of
-today's intro allowance and `sender` shows when the tick last ran -- if that is
-`null`, nothing will actually go out yet.
+`doc_ids`; `tags` label every intro for campaign tracking. It only queues; the
+intros are due at once and `send_messages` sends them. The result's `cap` shows
+what is left of today's intro allowance, and `sender` whether sends are paused or
+writes blocked.
+
+**`send_messages(frequency=1.0, limit=50, dry_run=True)`** -- `send-intros.ipynb` E
+Sends every approved message already due -- intros, follow-ups, approved replies
+-- one at a time, `frequency` a minute (0.1 to 2), at most `limit` (1 to 200), in
+due order. Every rule runs again right before each message. It stops when the
+limit is reached (`limit`), nothing due is left (`idle`), sends are paused, writes
+blocked or the day's cap spent, or a send does not come back `sent` (`failed`,
+`unknown`, `released`, with `error`). A job has 30 minutes, about 28 messages at
+one a minute; with messages still due it starts the next job itself with what is
+left of `limit` and names it in `next_job_id`. A message due later waits for a
+later call. The dry run lists who would be sent (`would_send`) and who skipped,
+and why (`would_skip`).
 
 ### The controls only you have
 
 **`approve_queued(queue_id)`**
-Releases a `pending` item so the tick may send it when due. The only way a reply
-ever goes out.
+Releases a `pending` item so `send_messages` may send it once due. The only way
+a reply ever goes out.
 
 **`reject_queued(queue_id, reason='rejected by user')`**
 Cancels a `pending` or `approved` item, whoever queued it -- the agent, the daily
@@ -331,9 +344,8 @@ an agent can do: a stranger's message must never be able to talk an unattended
 agent into re-enabling outreach to someone you excluded.
 
 **`pause(until, kind='sends', reason='paused by user')`**
-Stops sending until an ISO timestamp. `kind="fetches"` stops profile fetches
-instead. Note that a tick which sends nothing still fetches one profile, so pause
-both to stop all LinkedIn activity.
+Stops `send_messages` until an ISO timestamp. `kind="fetches"` stops
+`get_contacts`' profile views instead; pause both to stop all LinkedIn activity.
 
 **`resume(kind='sends')`**
 Lifts a pause -- including one the service set itself after a rate limit, a
@@ -350,8 +362,8 @@ wait regardless. Items already queued keep the status they have.
 
 ### The approval flow
 
-Every queued item is either `pending` (waiting for you) or `approved` (the tick
-may send it when due). Which one it gets depends on `require_approval` and on the
+Every queued item is either `pending` (waiting for you) or `approved`
+(`send_messages` may send it once due). Which one it gets depends on `require_approval` and on the
 kind: **a reply is always `pending`**, whatever the setting. `approve_queued` is
 the only way a `pending` item becomes `approved`, and `clear_handling` is the
 only way a hold is lifted -- an agent can hold a contact back but can never undo
@@ -400,7 +412,7 @@ Every client needs the same two values:
 | **Key** | `OUTREACH_API_KEY` in `Python/.env`. |
 
 The key goes in one of exactly two headers: `x-api-key: <key>`, or
-`Authorization: Bearer <key>`. `tools/list` returns exactly 27 tools. **A
+`Authorization: Bearer <key>`. `tools/list` returns exactly 28 tools. **A
 connector keeps the tool list it read when it connected** -- after a deploy that
 adds or renames tools, reconnect it.
 
@@ -424,9 +436,10 @@ Add the service as a custom connector that sends the key as a request header.
    **Customize -> Connectors**.
 7. **Set the write tools to "Ask", not "Always allow"** in the connector's tool
    permissions: the six queueing and inbox tools, all eight of your own controls,
-   and the five process steps. The service refuses whatever its guards refuse
-   either way, and nothing actually sends until a tick runs -- this is about
-   keeping you in the loop for what a chat session asks the service to do.
+   and the six process steps. The service refuses whatever its guards refuse
+   either way, and nothing sends until `send_messages` runs with
+   `dry_run=false` -- this is about keeping you in the loop for what a chat
+   session asks the service to do.
 
 **Request headers are in beta and not every organization has them.** If the
 dialog has no Request headers section, the Claude app cannot connect to this
@@ -469,16 +482,17 @@ fixes it.
 
 | Check | How you see it | What fixes it |
 |---|---|---|
-| Is the tick running at all? | `get_run_report(job="tick")`, or `sender.last_tick_at` in a `send_intro` result. No runs means no Cloud Scheduler job yet. | [Turning the schedules on](#turning-the-schedules-on) |
+| Has anything sent it? | `get_run_report(job="send_messages")`. Nothing sends on a schedule. | Run `send_messages(dry_run=false)`; its dry run first lists who it would send and who it would skip |
 | Are sends paused? | `get_status` shows `sends_paused_until`. The service pauses itself after a rate limit (for its Retry-After, or an hour) or a disconnected account. | `resume()` once the cause is gone |
 | Are writes blocked? | `get_status` shows it. Only set when LinkedIn actually restricted the account; it stops sends **and** profile fetches. | `clear_writes_block()`, after you have checked the account |
 | Is everything sitting in `pending`? | `list_queue(status="pending")` | `approve_queued(id)`, or `set_require_approval(false)` |
-| Is the day's message budget spent? | `get_status` reports the caps; the tick stops on `budget` | Nothing -- it resumes on its own |
+| Is the day's message budget spent? | `get_status` reports the caps; `send_messages` stops on `budget` | Nothing -- a later `send_messages` sends once the 24-hour count drops |
+| Is it due yet? | `list_queue` shows its `due_at` | Nothing -- a `send_messages` run after that time sends it |
 | Did a guard skip the item? | The item's status is `skipped` with a reason in `list_queue` | Read the reason: usually they replied, or the contact is held |
 
 ### A job failed
 
-Any failed run -- scheduled or one you started -- raises a `job_failed` alert in
+Any failed job raises a `job_failed` alert in
 the decision inbox, once per job per day however many times it fails. So:
 `list_decisions()` tells you something failed, `get_run_report(job="...")` shows
 which runs, and `get_job(job_id)` gives the error's class name. Error messages
@@ -493,7 +507,7 @@ the step's lock never disagree.
 ### What the alerts mean
 
 Every alert is create-only and keyed, so a condition that persists for hours
-raises exactly one -- never one per tick.
+raises exactly one -- never one per message or per job.
 
 | Alert | What happened | What to do |
 |---|---|---|
@@ -572,11 +586,10 @@ LinkedIn account. A test fails if anyone reintroduces one.
 ### Pacing is forced to zero, on purpose
 
 The notebooks sleep between LinkedIn calls so their traffic looks human -- 20 to
-40 seconds a call by default, plus longer breaks. That is wrong here: a tick
-holds a 225-second lease (shorter than the four-minute tick interval, so a lease
-a dead tick left behind has expired before the next tick is due) and claims a
-message before calling LinkedIn, so a multi-minute sleep inside that window can
-outlast the lease. Startup therefore loads `Python/.env`, force-writes
+40 seconds a call by default, plus longer breaks. That is wrong inside a send:
+`send_messages` holds a 225-second lease for each message and claims it before
+calling LinkedIn, so a multi-minute sleep inside that window can outlast the
+lease. Startup therefore loads `Python/.env`, force-writes
 `UNIPILE_MIN_DELAY_SECONDS=0`, `UNIPILE_MAX_DELAY_SECONDS=0`,
 `UNIPILE_LONG_PAUSE_EVERY=0` and `UNIPILE_THROTTLE_RETRIES=0`, and only then
 loads the optional `linkedinmcp/.env` with override -- which is the one place a
@@ -584,8 +597,9 @@ deliberately non-zero pacing for the service can still be set. That file carries
 no credentials and no caps; `linkedinmcp/.env.example` is its template, and no
 such file exists in this tree today.
 
-What looks human here is the *spacing of the queue*, not a sleep inside a
-request: intros are due minutes apart and the tick sends one at a time.
+The spacing happens between messages instead: `send_messages` waits
+`60/frequency` seconds after each send, outside the lease, and `get_contacts`
+waits 20 to 40 seconds between profiles.
 
 ### The settings
 
@@ -594,10 +608,10 @@ All optional. The default applies unless you set the variable in `Python/.env`.
 | Variable | Default | What it does |
 |---|---|---|
 | `OUTREACH_API_KEY` | *required* | The one credential. At least 16 characters. |
-| `OUTREACH_TZ` | `UTC` | IANA timezone for every reported date and the working-hours schedule. UTC is deliberately wrong for a person, so forgetting to set it is visible. |
+| `OUTREACH_TZ` | `UTC` | IANA timezone for every reported date and for "today" in the daily caps. UTC is deliberately wrong for a person, so forgetting to set it is visible. The live service runs `America/Chicago`. |
 | `OUTREACH_INTRO_DAILY_CAP` | `10` | Intros one planning run may queue. |
-| `OUTREACH_INTRO_GAP_MIN_MINUTES` | `1` | Shortest random gap between one queued intro's due time and the next. |
-| `OUTREACH_INTRO_GAP_MAX_MINUTES` | `5` | Longest one. May not be below the minimum. The tick's own interval still applies: with a gap under four minutes, the tick is what paces the sends. |
+| `OUTREACH_INTRO_GAP_MIN_MINUTES` | `0` | Shortest random gap between one queued intro's due time and the next. |
+| `OUTREACH_INTRO_GAP_MAX_MINUTES` | `0` | Longest one. May not be below the minimum. Both 0 (since 2026-09-14; 1 to 5 before) makes intros due at once, a millisecond apart to keep their order; `send_messages` spaces the sends. |
 | `OUTREACH_MIN_DAYS_BETWEEN_TOUCHES` | `5` | Minimum days between messages to one contact. |
 | `OUTREACH_MAX_TOUCHES` | `3` | Most outbound messages one contact may ever receive, the intro included. |
 | `OUTREACH_MESSAGE_MAX_CHARS` | `1200` | Longest message the service will send. |
@@ -605,7 +619,7 @@ All optional. The default applies unless you set the variable in `Python/.env`.
 | `OUTREACH_TARGET_INDUSTRIES` | `RCM,Pathology,Medical Lab,Physician Practice` | Industries eligible for an intro. |
 | `OUTREACH_TEMPLATES_DIR` | `templates` | Where message templates (`intro.md`) are read from, relative to the working directory. |
 | `OUTREACH_REQUIRE_APPROVAL` | `false` | Hold every newly queued message for a human; a reply waits regardless. |
-| `OUTREACH_BUDGET_SNAPSHOT_MAX_AGE_MINUTES` | `60` | How stale the cached account-wide send count may get before a tick recounts it. |
+| `OUTREACH_BUDGET_SNAPSHOT_MAX_AGE_MINUTES` | `60` | How stale the cached account-wide send count may get before a send recounts it. |
 | `OUTREACH_ALLOW_HTTP_DRY_RUN` | `true` | Honour `?dry_run=1` on the job endpoints. |
 | `OUTREACH_NEW_CONNECTION_DAYS` | `14` | How many days back the daily job looks for new connections whose profile is not stored yet. |
 | `OUTREACH_INTRO_CONNECTION_DAYS` | `14` | How recently a connection must have been made to get the daily job's intro. `0` means any age. |
@@ -617,12 +631,6 @@ All optional. The default applies unless you set the variable in `Python/.env`.
 - **An empty `OUTREACH_TARGET_INDUSTRIES` is a kill switch.** No contact becomes
   eligible for an intro, and the service keeps running and looking healthy while
   doing nothing. Leave it unset to get the default four.
-- **`OUTREACH_TZ` appears in two places** and they must agree: here, and the
-  Cloud Scheduler jobs' time zone in `scheduler.cmd`. One decides when a
-  scheduled run starts, the other what the service calls "today" once it has.
-  **They do not agree today:** the live service reports `America/Chicago`, and
-  `scheduler.cmd` says `America/New_York`. Settle it before creating the
-  scheduler jobs.
 - **A bad value stops the service at startup** with an error naming the field.
   The error never repeats the value, so a mistyped key never reaches a log.
 
@@ -662,66 +670,14 @@ gcloud run deploy linkedin-outreach --image us-central1-docker.pkg.dev/vk-linked
 
 The build fails, rather than producing a broken image, if any shared module the
 service imports is missing from the package. Those imports are lazy, so without
-that check a packaging mistake would not show up until a scheduled job failed.
+that check a packaging mistake would not show up until a job failed.
 
-## Turning the schedules on
+## The Unipile webhook (optional)
 
-Three Cloud Scheduler jobs drive the service. **None of them exist yet**, and the
-Cloud Scheduler API is not enabled in `vk-linkedin`. Enable it once, then:
-
-```powershell
-gcloud services enable cloudscheduler.googleapis.com --project vk-linkedin
-linkedinmcp\scheduler.cmd create
-linkedinmcp\scheduler.cmd pause
-linkedinmcp\scheduler.cmd resume
-```
-
-| Job | Schedule | Calls |
-|---|---|---|
-| `outreach-tick` | `*/4 7-20 * * 1-5` (every 4 min, 7am-8:59pm, Mon-Fri) | `POST /jobs/tick` |
-| `outreach-sync` | `*/15 * * * *` (every 15 min, every day) | `POST /jobs/sync` |
-| `outreach-daily` | `30 6 * * 1-5` (6:30am, Mon-Fri) | `POST /jobs/daily` |
-
-All three are written to run in `America/New_York`, with a 600-second attempt
-deadline and no retries -- a failed run is never retried; the next comes
-on its own schedule. That mattered most for `outreach-daily`, whose intro cap
-once counted only what a single run created; since `v2.0.0` the cap counts every
-intro queued that local day, so even a retried run cannot queue a second batch.
-
-**Settle the time zone before you create them.** `scheduler.cmd` says
-`America/New_York`, while the live service runs with
-`OUTREACH_TZ=America/Chicago` -- so as written, the tick's working
-hours would be Eastern while the service's "today", its per-day intro cap and
-every date it reports are Central. Nothing is broken while the jobs do not exist.
-Pick one zone and change both together.
-
-**`create` cannot make a job that is already paused** -- `gcloud` has no such
-flag -- so it creates each job and pauses it immediately, leaving a few seconds
-where a job is technically live. For `outreach-tick` that means: run `create`
-outside 07:00-20:59 New York on a weekday, or pause sends first with the `pause`
-tool. The script prints this warning itself and stops if a pause fails.
-
-**Resuming `outreach-tick` is the switch that starts autonomous sending.**
-`resume` brings the jobs up in the safe order (`sync`, then `daily`, then `tick`
-last); `pause` reverses it, tick first, since it is the one that sends. Until
-`outreach-tick` is resumed, nothing this service does on its own reaches
-LinkedIn.
-
-**Do not run `send-intros.ipynb` Phase E while `outreach-tick` is resumed** --
-the reason is at the top of this file. To run the notebook's intros by hand,
-`scheduler.cmd pause` first and resume when Phase E has finished.
-
-**The key is stored in each job's configuration.** Anyone who can read this
-project's Cloud Scheduler jobs can read `OUTREACH_API_KEY` out of them, and
-`gcloud` may log its own command lines. It is the same key that unlocks every
-tool, yours included -- there is one shared key for the whole service today, not
-a separate one scoped to `/jobs/*`.
-
-### The Unipile webhook (optional)
-
-Once `outreach-sync` exists, the service polls LinkedIn's message history every
-15 minutes anyway, so registering the webhook only shortens the gap between a
-reply arriving and the agent seeing it. It changes latency, not correctness.
+Not registered, and not needed: `sync_messages` reads LinkedIn's message history
+whenever a session runs it. If registered, a new message only records that a
+sync is wanted, and the next `send_messages` runs that sync before its first
+send.
 
 Register it from the Unipile dashboard or API with `request_url`
 `https://<service>/webhooks/unipile`, source *messaging*, and a custom header
@@ -745,24 +701,25 @@ ignored events included, answers `200`. Unipile's own docs:
  Claude connectors    ──┴── POST /mcp/ ──▶  linkedin-outreach  (Cloud Run)
                             x-api-key or        │
                             Bearer              ├──▶ Firestore   vk-linkedin / linkedin
- Cloud Scheduler ───── POST /jobs/*             ├──▶ Unipile     LinkedIn API
+ a tick by hand ────── POST /jobs/*             ├──▶ Unipile     LinkedIn API
  Unipile webhook ───── POST /webhooks/unipile   └──▶ Gemini      classification
 ```
 
 One service, one API key, short requests. Each request does its work and
-returns; nothing sleeps in-process trying to look human -- the schedule's
-interval is the pacing.
+returns, except a process step's job, which runs inside a request of its own
+that Cloud Tasks makes (`POST /jobs/run/{job_id}`).
 
-**One schedule drives it.** Cloud Scheduler calls
-`POST /jobs/{tick,sync,daily}`: deterministic Python, no LLM involved. `daily`
-decides *who gets an intro*, `sync` pulls new messages in, and `tick` is the one
-thing that ever calls LinkedIn to send. Everything else -- replies, follow-ups,
-acting on the decision inbox -- happens when you drive the MCP tools yourself
-from a Claude session.
+**Sessions drive it; nothing runs on a schedule.** Every process step is an
+MCP tool that starts a job: deterministic Python, no LLM involved. `send_intro`
+decides *who gets an intro*, `sync_messages` pulls new messages in, and
+`send_messages` is the one thing that calls LinkedIn to send -- through the
+tick's send code (`jobs._tick_holding_lease`), one message per pass of it.
+The `POST /jobs/{tick,sync,daily}` endpoints still exist and are what that code
+was built for; nothing calls them on a schedule.
 
-A session and the schedules write to the same Firestore collections and never
-step on each other: a session can only queue a message, and only a tick, holding
-its own lease, ever calls LinkedIn to send one.
+Tools write to the same Firestore collections and never step on each other: a
+tool can only queue a message, and only a send pass holding the tick lease ever
+calls LinkedIn to send one.
 
 ### Package layout
 
@@ -783,13 +740,12 @@ linkedinmcp/
   fetch_queue.py    fetch_queue: the daily-connections-to-fetch queue
   fetching.py       fetch_one()/preview(): one profile per idle tick
   jobs.py           sync(), daily(), tick(), plan_intros(), handle_unipile_webhook()
-  steps.py          the five process steps the MCP tools start as jobs
+  steps.py          the six process steps the MCP tools start as jobs
   monitor.py        the job monitor: start, run, follow; Cloud Tasks executor
-  mcp_server.py     the FastMCP server and its 27 tools
+  mcp_server.py     the FastMCP server and its 28 tools
   run_jobs.py       the CLI, and the run() the HTTP endpoint shares with it
   Dockerfile        the container image
   deploy.cmd        build, push and deploy to Cloud Run
-  scheduler.cmd     create/pause/resume the three Cloud Scheduler jobs
   .env.example      the optional service-override template
   platform/ids.env  the deployed service URL, rewritten by every deploy
 
@@ -871,7 +827,7 @@ unknown       -> sent/failed (resolve: sync found the message, or 48h passed)
   definitely rejected it -- releases the claim back to `approved`.
 - **Never silently lost.** A claim that is never settled (the process died
   mid-send) is swept to `unknown` with an alert after ten minutes, by the next
-  tick, daily or sync -- and sync runs every 15 minutes, all week. Sync then
+  send pass or sync -- which a session runs; nothing runs it on a schedule. Sync then
   resolves every `unknown` against LinkedIn's own history: a stored outbound
   message at or after the attempt (minus five minutes) means it went through;
   nothing found within 48 hours means it did not.
@@ -907,15 +863,15 @@ any claim. A chat LinkedIn will not show is skipped too, and the queue moves on.
 Any other failure there leaves the item `approved` and stops the tick: nothing
 goes into a chat nobody could check.
 
-**Send rhythm.** The tick runs every four minutes and sends at most one due
-message, so the due times and the tick interval together set the pace. `daily`
-gives its intros due times spread by random gaps of
-`OUTREACH_INTRO_GAP_MIN_MINUTES` to `OUTREACH_INTRO_GAP_MAX_MINUTES` (1 to 5),
-the first one gap after the run, and your own `send_intro` spaces them the same
-way; a follow-up or reply queued without a `due_at` is due at a random moment 5
-to 45 minutes later. A gap shorter than the tick's interval gives that interval
-instead -- to send faster than one message every four minutes, the tick has to
-run more often.
+**Send rhythm.** `send_messages` sends one due message per pass and waits
+`60/frequency` seconds before the next -- one a minute by default. Queued
+messages are due at once unless given a `due_at`: `send_intro` and `daily` space
+intros by `OUTREACH_INTRO_GAP_MIN_MINUTES` to `OUTREACH_INTRO_GAP_MAX_MINUTES`
+(both 0, so a millisecond apart, which keeps them newest connection first), and a
+follow-up or reply without a `due_at` is due now. A job stops starting sends
+when fewer than 150 seconds plus one wait remain of its 30 minutes, and starts
+the next `send_messages` job with what is left of its limit, handing it the
+step's lock (`monitor.start(successor_of=...)`).
 
 **The budget is one cap:** `UNIPILE_MAX_MESSAGES_PER_DAY`. The service snapshots
 LinkedIn's own 24-hour count (re-taken when the snapshot is older than
@@ -940,7 +896,7 @@ entry per slug not already stored and connected within
 `OUTREACH_NEW_CONNECTION_DAYS` -- the day's increment, distinct from the
 historical backlog `new-contacts.ipynb` loads by hand.
 
-A tick fetches **at most one** queued profile per run, and only when nothing was
+`get_contacts` fetches up to ten profiles a call. A tick run by hand fetches **at most one** queued profile, and only when nothing was
 due to send, or the only reason it stopped was about sending specifically (a
 sends pause or the message budget) -- an account over its message cap must still
 be able to fetch profiles. It never fetches while writes are blocked. It takes
@@ -964,7 +920,7 @@ stored from that fact alone, with no LinkedIn call.
 ### Authentication
 
 There is exactly one credential, `OUTREACH_API_KEY`, and everything presents it:
-connectors, Claude Code, Cloud Scheduler and the Unipile webhook. The same key
+connectors, Claude Code, the Cloud Tasks that deliver jobs, and the Unipile webhook. The same key
 unlocks every tool, yours included -- holding a client back to a subset is that
 client's own job, not the key's.
 
@@ -989,9 +945,9 @@ client's own job, not the key's.
   to the Artifact Registry repository can pull the image and read them.
 - **Keys never reach a log.** Verified in a running container: the logs contain
   neither the outreach key nor the Unipile key.
-- **The one API key also lives in the Cloud Scheduler jobs' configuration** once
-  they are created, and in `gcloud`'s local logs. Anyone who can read those jobs
-  can call every tool this service exposes, yours included.
+- **The one API key also travels in every Cloud Task** that delivers a job, in
+  the task's headers. Anyone who can read this project's Cloud Tasks queue can
+  call every tool this service exposes, yours included.
 - **The link allowlist denies by default and is Unicode-hardened.** An empty
   `OUTREACH_ALLOWED_LINK_DOMAINS` refuses every link a queued message could
   contain. Before a host is checked against the allowlist, the text is stripped
@@ -1018,7 +974,7 @@ client's own job, not the key's.
 | `POST /mcp/` with no key or a wrong one | `401` | |
 | `POST /mcp`, without the trailing slash | same as `/mcp/` | Rewritten before routing, not redirected. |
 | `GET /mcp/` | `405` | Stateless mode serves POST only. |
-| `POST /jobs/{tick,sync,daily}` (`?dry_run=1`) | `200` job summary; `404` unknown job; `400` if `dry_run` is asked for and it is disabled; `401` without the key | What Cloud Scheduler calls. A dry run writes nothing and never calls Gemini. |
+| `POST /jobs/{tick,sync,daily}` (`?dry_run=1`) | `200` job summary; `404` unknown job; `400` if `dry_run` is asked for and it is disabled; `401` without the key | Built for Cloud Scheduler, which is not set up; call by hand only. A dry run writes nothing and never calls Gemini. |
 | `POST /jobs/run/{job_id}` | `200` whatever the job's outcome (it is recorded in the job); `401` without the key | Where a Cloud Task delivers a job a process step started. Claims it first, so a job delivered twice runs once. |
 | `POST /webhooks/unipile` | `200` always, accepted or ignored (Unipile retries anything else); `400` for a non-JSON body; `401` without the key | Records that a sync is wanted; does no sync work inside the request. |
 
@@ -1108,10 +1064,10 @@ uv run pytest tests/linkedinmcp
 | `test_app.py` | 37 | Every row of the endpoint table, `/mcp` served without a redirect and still behind the key, `/jobs/*` and `/webhooks/unipile` auth and routing, and that no route ends in `z`. |
 | `test_clients.py` | 3 | Each client factory returns a fresh instance per call. |
 | `test_clock.py` | 3 | UTC "now", local-date conversion, and naive-input rejection. |
-| `test_mcp_server.py` | 168 | All 27 tools: happy paths, refusal shapes and reason codes, the chat and delay the queueing tools choose, a process step's job followed by `get_job`, campaign tags stored and found again, and that nothing ever returns an email or phone field. |
-| `test_monitor.py` | 7 | A job runs once and reports its result, a live step refuses a second start until its job goes quiet, a failed job frees its lock and raises the alert, a job taken for lost stops at its next report and keeps that record. |
-| `test_steps.py` | 9 | Each process step: a dry run spends nothing, settings narrow the run, the day's intro cap holds, `get_contacts` fetches only the connections it listed, `send_intro` says when writes are blocked. |
-| `test_state.py` | 37 | Every `RuntimeState` method, including lease and throttle-back-off contention, and the lease staying under the tick interval. |
+| `test_mcp_server.py` | 165 | All 28 tools: happy paths, refusal shapes and reason codes, the chat the queueing tools choose and a message without `due_at` being due now, a process step's job followed by `get_job`, campaign tags stored and found again, and that nothing ever returns an email or phone field. |
+| `test_monitor.py` | 8 | A job runs once and reports its result, a live step refuses a second start until its job goes quiet, a running job hands its lock to its successor, a failed job frees its lock and raises the alert, a job taken for lost stops at its next report and keeps that record. |
+| `test_steps.py` | 15 | Each process step: a dry run spends nothing, settings narrow the run, the day's intro cap holds, `get_contacts` fetches only the connections it listed, `send_intro` says when writes are blocked; `send_messages` sends what is due a wait apart, stops at its limit, on a pause and on an unknown send, and starts the next job near its time limit. |
+| `test_state.py` | 37 | Every `RuntimeState` method, including lease and throttle-back-off contention, and the lease length. |
 | `test_ledger.py` | 17 | Entry validation per kind, `record`, `count_since`. |
 | `test_queue.py` | 72 | Every legal transition, the create-only ids, the atomic settle, campaign tags. |
 | `test_decisions.py` | 24 | Questions, create-only alerts, answering and marking applied. |
@@ -1126,7 +1082,7 @@ uv run pytest tests/linkedinmcp
 | `test_run_jobs.py` | 17 | The CLI and the `run()` it shares with `POST /jobs/{job}`. |
 | `test_fake_firestore.py` | 60 | The in-memory Firestore itself: real transactions, simulated contention, ordering rules, document-id queries, and `array_contains`. |
 
-**937 tests** in this package; **1209 passed, 15 deselected** for the whole repo
+**941 tests** in this package; **1213 passed, 15 deselected** for the whole repo
 (`uv run --no-sync pytest -q`). No test touches Firestore, Unipile, Gemini or the
 network, and none reads your `.env`.
 
@@ -1178,13 +1134,9 @@ bug or a near miss.
 
 ## What is left to switch on
 
-None of this is code -- it is all yours to do, in this order:
+None of this is code -- it is yours to do if you want it:
 
-1. Enable the Cloud Scheduler API and run `linkedinmcp\scheduler.cmd create`,
-   then leave the jobs paused until you are ready.
-2. Consider `set_require_approval(true)` for the first few days, so every
+1. Consider `set_require_approval(true)` for the first few days, so every
    follow-up and reply waits for you.
-3. Run `linkedinmcp\scheduler.cmd resume` when ready -- resuming `outreach-tick`
-   is what starts autonomous sending.
-4. Optionally register the Unipile webhook. It is not required: sync polls
-   regardless.
+2. Optionally register the Unipile webhook. It is not required: `sync_messages`
+   reads new messages whenever a session runs it.

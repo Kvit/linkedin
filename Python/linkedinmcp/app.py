@@ -165,7 +165,8 @@ def create_app(settings: cfg.OutreachSettings | None = None) -> FastAPI:
     def run_job(job: str, dry_run: bool = False) -> JSONResponse:
         """Run one job -- `tick`, `sync` or `daily` -- and answer its summary.
 
-        Cloud Scheduler calls this. Any other job is a 404. `?dry_run=1`
+        Built for Cloud Scheduler, which is not set up: call it by hand.
+        Any other job is a 404. `?dry_run=1`
         writes nothing and sends nothing, and is honoured only when the
         settings this app was built with allow it (`allow_http_dry_run`);
         otherwise it is a 400. `run_jobs.run` builds the clients, closes the

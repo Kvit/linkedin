@@ -94,7 +94,8 @@ def test_daily_enqueues_at_most_the_cap_of_new_intros_newest_connection_first(tm
     client = FakeUnipile(relations=three_new_connections(db))
     write_template(tmp_path, TEMPLATE)
 
-    summary = jobs.daily(db, client, make_settings(tmp_path, intro_daily_cap=2), NOW, rng=EdgeRandom())
+    settings = make_settings(tmp_path, intro_daily_cap=2, intro_gap_min_minutes=1, intro_gap_max_minutes=5)
+    summary = jobs.daily(db, client, settings, NOW, rng=EdgeRandom())
 
     assert queued_ids(db) == ["intro:middle", "intro:newest"]
     item = queue.get(db, "intro:newest")
@@ -122,12 +123,12 @@ def test_daily_enqueues_at_most_the_cap_of_new_intros_newest_connection_first(tm
 
 
 def test_daily_spreads_its_intros_with_cumulative_gaps_from_the_settings(tmp_path, stats):
-    """Ruling P5-3: each intro is due one random gap after the one before
-    it, the first one gap after `now` -- never all at once. The gap is
-    drawn between `intro_gap_min_minutes` and `intro_gap_max_minutes`, 1
-    and 5 by default; with draws at the two bounds in turn, the three
-    intros are due 1, 6 and 7 minutes after `now`, newest connection
-    first."""
+    """Ruling P5-3: each intro is due one gap after the one before it, the
+    first one gap after `now`. The gap is drawn between
+    `intro_gap_min_minutes` and `intro_gap_max_minutes`, both 0 by default
+    since 2026-09-14 (`send_messages` spaces the sends), and is never under
+    `MIN_INTRO_GAP`: the three intros are due a millisecond apart, in
+    `queue.next_due`'s order newest connection first."""
     db = FakeFirestore()
     client = FakeUnipile(relations=three_new_connections(db))
     write_template(tmp_path, TEMPLATE)
@@ -135,9 +136,10 @@ def test_daily_spreads_its_intros_with_cumulative_gaps_from_the_settings(tmp_pat
 
     jobs.daily(db, client, make_settings(tmp_path), NOW, rng=rng)
 
-    assert rng.calls == [(60.0, 300.0)] * 3
+    assert rng.calls == [(0.0, 0.0)] * 3
     due = [queue.get(db, f"intro:{slug}")["due_at"] for slug in ("newest", "middle", "oldest")]
-    assert due == [NOW + timedelta(minutes=1), NOW + timedelta(minutes=6), NOW + timedelta(minutes=7)]
+    assert due == [NOW + jobs.MIN_INTRO_GAP * n for n in (1, 2, 3)]
+    assert queue.next_due(db, NOW + timedelta(seconds=1))["id"] == "intro:newest"
 
 
 def test_the_intro_gap_bounds_are_the_settings_bounds(tmp_path, stats):
@@ -168,7 +170,8 @@ def test_with_a_seeded_random_source_every_gap_is_between_the_configured_bounds(
     client = FakeUnipile(relations=relations)
     write_template(tmp_path, TEMPLATE)
 
-    jobs.daily(db, client, make_settings(tmp_path, intro_daily_cap=10), NOW, rng=random.Random(20260910))
+    settings = make_settings(tmp_path, intro_daily_cap=10, intro_gap_min_minutes=1, intro_gap_max_minutes=5)
+    jobs.daily(db, client, settings, NOW, rng=random.Random(20260910))
 
     due = sorted(queue.get(db, f"intro:c{n}")["due_at"] for n in range(10))
     gaps = [later - earlier for earlier, later in zip([NOW, *due], due)]
@@ -187,7 +190,8 @@ def test_an_intro_id_passed_over_takes_no_gap(tmp_path, stats):
     queue.cancel(db, "intro:middle", "not now", NOW - timedelta(hours=20))
     write_template(tmp_path, TEMPLATE)
 
-    jobs.daily(db, client, make_settings(tmp_path), NOW, rng=EdgeRandom())
+    settings = make_settings(tmp_path, intro_gap_min_minutes=1, intro_gap_max_minutes=1)
+    jobs.daily(db, client, settings, NOW, rng=EdgeRandom())
 
     assert queue.get(db, "intro:newest")["due_at"] == NOW + timedelta(minutes=1)
     assert queue.get(db, "intro:oldest")["due_at"] == NOW + timedelta(minutes=2)

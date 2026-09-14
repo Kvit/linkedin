@@ -578,16 +578,22 @@ _CANDIDATE_FIELDS = ["industry", "seniority", "handling", "sent_total", "intro_s
 
 def _intro_gap(rng, settings) -> timedelta:
     """Ruling P5-3: one random gap between a queued intro's `due_at` and
-    the next one's -- the first measured from the daily run's `now` --
-    drawn uniformly between `settings.intro_gap_min_minutes` and
-    `settings.intro_gap_max_minutes` (1 to 5 by default, the user's
-    spacing of 2026-09-11).
+    the next one's -- the first measured from the run's `now` -- drawn
+    uniformly between `settings.intro_gap_min_minutes` and
+    `settings.intro_gap_max_minutes`.
 
-    Without a gap the day's intros are all due at once and the tick sends
-    them as fast as it runs, exactly the machine rhythm
-    `lib/unipile/pacing.py` exists to avoid.
+    Both are 0 by default since 2026-09-14: the intros are due at once and
+    `steps.send_messages` spaces the sends. The gap is never under
+    `MIN_INTRO_GAP`, so intros one run queues keep its newest-connection-
+    first order in `queue.next_due`, which would otherwise break the tie
+    by id.
     """
-    return timedelta(seconds=rng.uniform(settings.intro_gap_min_minutes * 60, settings.intro_gap_max_minutes * 60))
+    drawn = timedelta(seconds=rng.uniform(settings.intro_gap_min_minutes * 60, settings.intro_gap_max_minutes * 60))
+    return max(drawn, MIN_INTRO_GAP)
+
+
+#: The smallest gap between two intros' due times (`_intro_gap`).
+MIN_INTRO_GAP = timedelta(milliseconds=1)
 
 
 def daily(db, client, settings, now, *, dry_run=False, state=None, rng=None) -> dict:
@@ -749,7 +755,7 @@ def plan_intros(
        intro cancelled or failed earlier -- is passed over and does not
        count: a contact gets one intro, ever. Each is due one random gap
        (`_intro_gap`: `settings.intro_gap_min_minutes` to
-       `intro_gap_max_minutes`, 1 to 5 by default) after the last one
+       `intro_gap_max_minutes`, both 0 by default) after the last one
        queued, the first one gap after `now` (ruling P5-3). Each carries `tags`
        (already cleaned; `[]` without them) for campaign tracking.
 
@@ -955,7 +961,7 @@ def tick(db, client, settings, now, *, dry_run=False, state=None) -> dict:
 
     1. sweep stale claims (`sweep_stale`);
     2. skip while writes are blocked -- before the requested sync, whose
-       reads a restricted account must not see every four minutes (ruling
+       reads a restricted account must not see every minute (ruling
        P5-4); the request waits for the block to be cleared;
     3. run a requested sync first (no classification) and clear exactly the
        request it served (ruling P2-17). A sync that raises stops the tick:
@@ -1010,7 +1016,10 @@ def _tick(db, client, settings, now, *, state) -> dict:
         state.release_tick_lease(owner)
 
 
-def _tick_holding_lease(db, client, settings, now, *, state, owner) -> dict:
+def _tick_holding_lease(db, client, settings, now, *, state, owner, fetch=True) -> dict:
+    """`tick`'s steps 1 to 7 for a caller holding the tick lease. With
+    `fetch` false -- `steps.send_messages`, which sends and never fetches --
+    step 7 is left out: a pass that sends nothing just says why."""
     summary: dict = {"stale_swept": len(sweep_stale(db, now)), "synced": False}
 
     # Before the requested sync: its forward pass reads LinkedIn, and a
@@ -1027,6 +1036,8 @@ def _tick_holding_lease(db, client, settings, now, *, state, owner) -> dict:
 
     def fetch_instead(stop: dict) -> dict:
         """Nothing will be sent: fetch at most one profile instead."""
+        if not fetch:
+            return {**summary, **stop}
         return {**summary, **stop, **fetching.fetch_one(db, client, settings, now, state=state, owner=owner)}
 
     stopped = _stopped_by_state(state)
@@ -1491,6 +1502,44 @@ def _dry_tick(db, client, settings, now, *, state) -> dict:
     if len(due) >= MAX_ATTEMPTS:
         return {**summary, "stopped": "max_attempts"}
     return preview_instead({"idle": True})
+
+
+def preview_sends(db, client, settings, now, *, state, limit) -> dict:
+    """What `steps.send_messages` would send, writing nothing: the state and
+    budget checks, then the approved items already due, in send order
+    (`_due_items`), each checked as `_tick` checks it -- its chat check asks
+    LinkedIn -- until `limit` would be sent or the day's message budget
+    would run out.
+
+    Returns `would_send` (rows) and `would_skip` (queue id -> reason), or a
+    `stopped` reason when the account would stop every send. A preview marks
+    nothing sent, so a second due message to a contact who would get one
+    earlier in the run is listed too; the real run refuses it.
+    """
+    stopped = _stopped_by_state(state)
+    if stopped is not None:
+        return {"stopped": stopped.pop("skipped"), **stopped, "would_send": [], "would_skip": {}}
+    sent_24h = messages_last_24h(db, client, state, settings, now, dry_run=True)
+    client.budget.reconcile(message=sent_24h)
+    room = min(limit, max(0, client.budget.remaining("message")))
+    due = _due_items(db, now)
+    would_send: list[dict] = []
+    would_skip: dict[str, str] = {}
+    for item in due:
+        if len(would_send) >= room:
+            break
+        verdict = _check_item(db, client, item, settings, now, state)
+        if verdict.ok:
+            would_send.append({
+                "queue_id": item["id"], "doc_id": item.get("contact_doc_id"), "name": item.get("name"),
+                "kind": item.get("kind"), "route": "start_chat" if _opens_chat(item) else "send_message",
+            })
+        elif verdict.reason.startswith("state:"):
+            refusal = _state_refusal(verdict, state)
+            return {"stopped": refusal.pop("skipped"), **refusal, "would_send": would_send, "would_skip": would_skip}
+        else:
+            would_skip[item["id"]] = verdict.reason
+    return {"sent_24h": sent_24h, "due": len(due), "would_send": would_send, "would_skip": would_skip}
 
 
 def _due_items(db, now) -> list[dict]:

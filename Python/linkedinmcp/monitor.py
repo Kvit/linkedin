@@ -119,15 +119,19 @@ def _is_quiet(run: dict | None, since: datetime | None, now: datetime) -> bool:
     return stamp is None or now - stamp > LOST_AFTER
 
 
-def _take_lock(transaction, db, step: str, holder: str, now: datetime) -> dict | None:
+def _take_lock(
+    transaction, db, step: str, holder: str, now: datetime, successor_of: str | None = None
+) -> dict | None:
     """Inside `transaction`: take `step`'s lock for `holder`, or return the
     live holder that keeps it (`{"job_id", "status"}`). A quiet holder's
-    live job is marked failed/lost in the same transaction."""
+    live job is marked failed/lost in the same transaction. A holder named
+    as `successor_of` hands the lock over, live or not: it is the job
+    starting `holder`, and is still running while it does."""
     locks_ref = _locks_ref(db)
     runs = db.collection(RUNS_COLLECTION)
     held = (locks_ref.get(transaction=transaction).to_dict() or {}).get(step) or {}
     current = held.get("job_id")
-    if current:
+    if current and current != successor_of:
         current_ref = runs.document(current)
         snapshot = current_ref.get(transaction=transaction)
         run = (snapshot.to_dict() or {}) if snapshot.exists else None
@@ -173,21 +177,29 @@ def release_lock(db, step: str, holder: str) -> bool:
     return _release(db.transaction())
 
 
-def start(db, step: str, params: dict, now: datetime, *, created_by: str = "tool") -> dict:
+def start(
+    db, step: str, params: dict, now: datetime, *, created_by: str = "tool", successor_of: str | None = None
+) -> dict:
     """Take `step`'s lock and write a `queued` job, in one transaction.
 
     Returns `{"ok": True, "job_id", "status": "queued"}`, or `{"ok": False,
     "reason": "already_running", "job_id", "status"}` naming the live job
     that holds the step, having written nothing.
+
+    `successor_of` is the running job of the same step that starts this one
+    to carry on its work (`steps.send_messages`): the lock passes from it to
+    the new job, and its own `finish` then leaves the lock alone.
     """
     from google.cloud import firestore
 
     new_id = job_id(step, now)
+    if new_id == successor_of:
+        new_id = job_id(step, now + timedelta(microseconds=1))
     reference = db.collection(RUNS_COLLECTION).document(new_id)
 
     @firestore.transactional
     def _start(transaction):
-        holder = _take_lock(transaction, db, step, new_id, now)
+        holder = _take_lock(transaction, db, step, new_id, now, successor_of)
         if holder is not None:
             return {"ok": False, "reason": "already_running", **holder}
         transaction.set(
@@ -470,13 +482,15 @@ def _submit_cloud_task(job: str, settings) -> None:
     client.create_task(parent=parent, task=task)
 
 
-def launch(db, step: str, params: dict, settings, now: datetime, *, created_by: str = "tool") -> dict:
+def launch(
+    db, step: str, params: dict, settings, now: datetime, *, created_by: str = "tool", successor_of: str | None = None
+) -> dict:
     """`start` the job, then `submit` it. Returns `{"ok": True, "job_id",
     "status"}` -- `queued` from Cloud Tasks, already finished from the
     inline executor -- or `start`'s refusal, or `{"ok": False, "reason":
     "not_started", "job_id", "error"}` when the executor refused it (the job
     is then recorded failed and its lock freed)."""
-    started = start(db, step, params, now, created_by=created_by)
+    started = start(db, step, params, now, created_by=created_by, successor_of=successor_of)
     if not started["ok"]:
         return started
     try:

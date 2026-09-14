@@ -23,6 +23,7 @@ from tests.linkedinmcp.fake_unipile import (
     seed_contact,
     seed_item,
     seed_message,
+    store_snapshot,
     write_template,
 )
 
@@ -229,9 +230,7 @@ def test_send_intro_queues_new_target_connections_within_the_days_and_the_days_c
     assert [row["doc_id"] for row in result["intros"]] == ["new1"]
     item = queue.get(db, "intro:new1")
     assert (item["kind"], item["created_by"], item["text"]) == ("intro", "tool", TEMPLATE.strip())
-    assert result["sender"] == {
-        "last_tick_at": None, "sends_paused_until": None, "writes_blocked": False, "require_approval": False,
-    }
+    assert result["sender"] == {"sends_paused_until": None, "writes_blocked": False, "require_approval": False}
 
 
 def test_a_dry_send_intro_queues_nothing(db, tmp_path):
@@ -251,6 +250,145 @@ def test_send_intro_says_when_writes_are_blocked(db, tmp_path):
     job.state.block_writes("LinkedIn restricted the account")
 
     assert steps.send_intro(job)["sender"]["writes_blocked"] is True
+
+
+# =============================================================================
+# send_messages
+# =============================================================================
+
+INTRO = "Thanks for connecting! I help labs recover denied claims with AI."
+
+
+class FakeTime:
+    """`steps._sleep` and `steps._monotonic`: every sleep is recorded and
+    moves the monotonic clock on by its length."""
+
+    def __init__(self):
+        self.elapsed = 0.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.elapsed
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.elapsed += seconds
+
+
+@pytest.fixture
+def fake_time(monkeypatch) -> FakeTime:
+    fake = FakeTime()
+    monkeypatch.setattr(steps, "_sleep", fake.sleep)
+    monkeypatch.setattr(steps, "_monotonic", fake.monotonic)
+    return fake
+
+
+def intro_due(db, doc_id, *, hours_ago, due_at=None) -> str:
+    """An intro every guard passes, queued `hours_ago` hours before `NOW`."""
+    seed_contact(db, doc_id, industry="RCM", firstName=doc_id.title())
+    queue_id = f"intro:{doc_id}"
+    seed_item(
+        db, queue_id, doc_id, kind="intro", now=NOW - timedelta(hours=hours_ago), chat_id=None,
+        provider_id=f"ACoAA{doc_id}", text=INTRO, due_at=due_at,
+    )
+    return queue_id
+
+
+def send_job(db, tmp_path, client, **params):
+    return make_job(db, make_settings(tmp_path), "send_messages", {"dry_run": False, **params}, client)
+
+
+def test_send_messages_sends_every_due_message_one_gap_apart_and_leaves_what_is_not_due(db, tmp_path, fake_time):
+    client = FakeUnipile()
+    first, second, third = (intro_due(db, slug, hours_ago=hours) for slug, hours in (("ann", 3), ("bob", 2), ("cy", 1)))
+    later = intro_due(db, "dee", hours_ago=1, due_at=NOW + timedelta(days=1))
+
+    result = steps.send_messages(send_job(db, tmp_path, client, frequency=2))
+
+    assert [attempt[1] for attempt in client.messaging.attempts] == [("ACoAAann",), ("ACoAAbob",), ("ACoAAcy",)]
+    assert [queue.get(db, queue_id)["status"] for queue_id in (first, second, third)] == [queue.SENT] * 3
+    assert queue.get(db, later)["status"] == queue.APPROVED
+    assert fake_time.sleeps == [30.0, 30.0]
+    assert (result["sent"], result["stopped"]) == (3, "idle")
+    assert [row["queue_id"] for row in result["messages"]] == [first, second, third]
+    assert state.RuntimeState(db, clock=lambda: NOW).read().get("tick_lease_owner") is None
+
+
+def test_send_messages_stops_at_its_limit(db, tmp_path, fake_time):
+    client = FakeUnipile()
+    queued = [intro_due(db, slug, hours_ago=hours) for slug, hours in (("ann", 3), ("bob", 2), ("cy", 1))]
+
+    result = steps.send_messages(send_job(db, tmp_path, client, limit=2))
+
+    assert (result["sent"], result["stopped"]) == (2, "limit")
+    assert queue.get(db, queued[2])["status"] == queue.APPROVED
+    assert fake_time.sleeps == [60.0]
+
+
+def test_send_messages_sends_nothing_while_sends_are_paused(db, tmp_path, fake_time):
+    client = FakeUnipile()
+    queue_id = intro_due(db, "ann", hours_ago=1)
+    job = send_job(db, tmp_path, client)
+    job.state.pause_sends(NOW + timedelta(hours=1), "paused by user")
+
+    result = steps.send_messages(job)
+
+    assert (result["sent"], result["stopped"]) == (0, "sends_paused")
+    assert client.messaging.attempts == []
+    assert queue.get(db, queue_id)["status"] == queue.APPROVED
+
+
+def test_send_messages_stops_at_a_send_whose_outcome_is_unknown(db, tmp_path, fake_time):
+    client = FakeUnipile()
+    first = intro_due(db, "ann", hours_ago=2)
+    second = intro_due(db, "bob", hours_ago=1)
+    client.messaging.send_error = RuntimeError("unexpected")
+
+    result = steps.send_messages(send_job(db, tmp_path, client))
+
+    assert len(client.messaging.attempts) == 1
+    assert (queue.get(db, first)["status"], queue.get(db, second)["status"]) == (queue.UNKNOWN, queue.APPROVED)
+    assert (result["sent"], result["stopped"], result["error"]) == (0, "unknown", "RuntimeError")
+
+
+def test_send_messages_near_its_time_limit_starts_the_next_job_with_what_is_left(db, tmp_path, fake_time, monkeypatch):
+    """One message every ten minutes: sends at 0, 600 and 1,200 s; a fourth
+    wait would end past 1,800 s less the margin, so the job starts its
+    successor with the rest of the limit instead."""
+    launched: list[tuple] = []
+
+    def launch(db, step, params, settings, now, *, created_by, successor_of):
+        launched.append((step, params, created_by, successor_of))
+        return {"ok": True, "job_id": "send_messages:2", "status": "queued"}
+
+    monkeypatch.setattr(monitor, "launch", launch)
+    client = FakeUnipile()
+    for n in range(5):
+        intro_due(db, f"c{n}", hours_ago=5 - n)
+    job = send_job(db, tmp_path, client, frequency=0.1, limit=50)
+
+    result = steps.send_messages(job)
+
+    assert len(client.messaging.attempts) == 3
+    assert (result["sent"], result["stopped"], result["next_job_id"]) == (3, "handed_over", "send_messages:2")
+    assert launched == [("send_messages", {"frequency": 0.1, "limit": 47, "dry_run": False}, job.id, job.id)]
+    assert max(fake_time.sleeps) <= steps.HEARTBEAT_SECONDS
+
+
+def test_a_dry_send_messages_lists_who_would_be_sent_and_writes_nothing(db, tmp_path, fake_time):
+    client = FakeUnipile()
+    intro_due(db, "ann", hours_ago=2)
+    intro_due(db, "bob", hours_ago=1)
+    job = make_job(db, make_settings(tmp_path), "send_messages", {"limit": 1}, client)
+    before = store_snapshot(db)
+
+    result = steps.send_messages(job)
+
+    assert result["dry_run"] is True
+    assert [row["queue_id"] for row in result["would_send"]] == ["intro:ann"]
+    assert client.messaging.attempts == []
+    assert fake_time.sleeps == []
+    assert store_snapshot(db) == before
 
 
 # =============================================================================
