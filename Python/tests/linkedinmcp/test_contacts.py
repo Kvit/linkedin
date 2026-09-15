@@ -390,6 +390,145 @@ def test_list_contacts_rows_never_carry_email_phone_or_summary_keys():
     assert "summary" not in rows[0]
 
 
+# --- contact_report() --------------------------------------------------------
+
+
+def _report_ids(report):
+    return [row[0] for row in report["rows"]]
+
+
+def test_contact_report_filters_combine():
+    db = FakeFirestore()
+    seed_analysis(db, "match", industry="RCM", handling="manual", pipeline_stage="lead")
+    seed_analysis(db, "wrong-industry", industry="Hospital", handling="manual", pipeline_stage="lead")
+    seed_analysis(db, "wrong-handling", industry="RCM", pipeline_stage="lead")
+    seed_analysis(db, "wrong-stage", industry="RCM", handling="manual", pipeline_stage="prospect")
+
+    report = contacts.contact_report(
+        db, SETTINGS, categories=["RCM", "Pathology"], handling=["manual"], stages=["lead"],
+    )
+
+    assert _report_ids(report) == ["match"]
+    assert report["total"] == 1
+
+
+def test_contact_report_none_matches_a_blank_or_missing_field():
+    db = FakeFirestore()
+    seed_analysis(db, "missing")
+    seed_analysis(db, "blank", industry="", handling=" ", pipeline_stage="")
+    seed_analysis(db, "set", industry="RCM", handling="exclude", pipeline_stage="lead")
+
+    report = contacts.contact_report(db, SETTINGS, categories=["none"], handling=["none"], stages=["none"])
+
+    assert sorted(_report_ids(report)) == ["blank", "missing"]
+
+
+def test_contact_report_handling_matches_after_trimming_and_lowercasing():
+    db = FakeFirestore()
+    seed_analysis(db, "a", handling=" Exclude ")
+
+    report = contacts.contact_report(db, SETTINGS, handling=["exclude"])
+
+    assert _report_ids(report) == ["a"]
+    assert report["rows"][0][3] == "exclude"
+
+
+def test_contact_report_sorts_by_activity_then_doc_id_and_pages_with_offset():
+    db = FakeFirestore()
+    seed_analysis(db, "b-idle")
+    seed_analysis(db, "a-idle")
+    seed_analysis(db, "sent", last_sent_date=NOW - timedelta(days=1))
+    seed_analysis(db, "replied", last_reply_date=NOW)
+
+    first = contacts.contact_report(db, SETTINGS, limit=3)
+    second = contacts.contact_report(db, SETTINGS, offset=3, limit=3)
+
+    assert _report_ids(first) == ["replied", "sent", "a-idle"]
+    assert (first["total"], first["offset"], first["next_offset"]) == (4, 0, 3)
+    assert _report_ids(second) == ["b-idle"]
+    assert (second["total"], second["offset"], second["next_offset"]) == (4, 3, None)
+
+
+def test_contact_report_date_connected_comes_from_the_fetch_queue():
+    db = FakeFirestore()
+    seed_analysis(db, "new", last_reply_date=NOW)
+    seed_analysis(db, "old")
+    db.collection("fetch_queue").document("new").set({"connected_at": datetime(2026, 9, 1, 3, 0, tzinfo=UTC)})
+
+    report = contacts.contact_report(db, SETTINGS)
+
+    by_id = {row[0]: row for row in report["rows"]}
+    assert by_id["new"][5] == "2026-09-01T08:30:00+05:30"
+    assert by_id["old"][5] is None
+
+
+def test_contact_report_row_holds_the_eight_report_columns_in_order():
+    db = FakeFirestore()
+    seed_analysis(
+        db, "jane", firstName="Jane", lastName="Doe", industry="RCM", handling="manual",
+        pipeline_stage="prospect", last_sent_date=datetime(2026, 9, 2, tzinfo=UTC),
+        last_reply_date=datetime(2026, 9, 3, tzinfo=UTC), email1="jane@example.com", summary="x" * 100,
+    )
+
+    report = contacts.contact_report(db, SETTINGS)
+
+    assert report["columns"] == [
+        "doc_id", "name", "category", "handling", "pipeline_stage",
+        "date_connected", "last_sent_date", "last_received_date",
+    ]
+    assert report["rows"] == [[
+        "jane", "Jane Doe", "RCM", "manual", "prospect",
+        None, "2026-09-02T05:30:00+05:30", "2026-09-03T05:30:00+05:30",
+    ]]
+
+
+def test_contact_report_name_falls_back_to_extracted_full_name():
+    db = FakeFirestore()
+    seed_analysis(db, "new-contact", industry="RCM")
+    seed_extracted(db, "new-contact", fullName="Sam Lee")
+
+    report = contacts.contact_report(db, SETTINGS)
+
+    assert report["rows"][0][1] == "Sam Lee"
+
+
+def test_contact_report_counts_appear_on_the_first_page_only_naming_every_requested_value():
+    db = FakeFirestore()
+    seed_analysis(db, "a", industry="RCM", pipeline_stage="lead")
+    seed_analysis(db, "b", industry="RCM")
+
+    first = contacts.contact_report(db, SETTINGS, categories=["RCM", "Pathlogy"], limit=1)
+    second = contacts.contact_report(db, SETTINGS, categories=["RCM", "Pathlogy"], offset=1, limit=1)
+
+    assert first["counts"] == {
+        "by_category": {"RCM": 2, "Pathlogy": 0},
+        "by_stage": {"lead": 1, "none": 1},
+        "by_handling": {"none": 2},
+    }
+    assert "counts" not in second
+
+
+def test_report_filter_reads_all_a_single_value_and_a_list():
+    assert contacts.report_filter("All", "categories") is None
+    assert contacts.report_filter(["all"], "categories") is None
+    assert contacts.report_filter("RCM", "categories") == ["RCM"]
+    assert contacts.report_filter(["Lead", "NONE"], "pipeline_stage", allowed=contacts.REPORT_STAGES) == [
+        "lead", "none",
+    ]
+
+
+@pytest.mark.parametrize("value, checked", [(["hot"], True), ([], False), ([" "], False)])
+def test_report_filter_refuses_an_unknown_value_or_an_empty_list(value, checked):
+    with pytest.raises(ValueError):
+        contacts.report_filter(value, "pipeline_stage", allowed=contacts.REPORT_STAGES if checked else None)
+
+
+@pytest.mark.parametrize("offset, limit", [(-1, 10), (0, 0), (0, 501)])
+def test_contact_report_refuses_an_offset_or_limit_out_of_range(offset, limit):
+    with pytest.raises(ValueError):
+        contacts.contact_report(FakeFirestore(), SETTINGS, offset=offset, limit=limit)
+
+
 # --- get_contact() -----------------------------------------------------------
 
 

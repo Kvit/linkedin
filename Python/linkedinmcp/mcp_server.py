@@ -359,6 +359,57 @@ def list_contacts(
 
 
 @mcp.tool
+def contact_report(
+    categories: str | list[str] = "All",
+    handling: str | list[str] = "All",
+    pipeline_stage: str | list[str] = "All",
+    offset: int = 0,
+    limit: int = contacts.REPORT_MAX_ROWS,
+) -> dict[str, Any]:
+    """A report of every contact in the `analysis` collection matching all
+    three filters, most recently active first (the later of when they last
+    replied and when they were last messaged), one page of `limit` rows (1
+    to 500) from `offset`.
+
+    Each filter is `"All"`, one value, or a list. `categories` are exact
+    industry labels (`RCM`, `Pathology`, `Medical Lab`, `Physician Practice`,
+    `Hospital`, ...); `handling` is `exclude`, `manual` or `none` (no hold);
+    `pipeline_stage` is `lead`, `prospect`, `soft_no`, `reject`,
+    `not_relevant`, `unknown` or `none`. `none` matches a contact with that
+    field empty.
+
+    Returns `total` (contacts matching), `offset`, `next_offset` (pass it as
+    `offset` for the next page; `null` on the last), `columns` and `rows` --
+    one list per contact in `columns` order: `doc_id`, `name`, `category`,
+    `handling`, `pipeline_stage`, `date_connected`, `last_sent_date`,
+    `last_received_date`, dates in the service's timezone. `date_connected`
+    is known only for connections `get_contacts` found, and `null` for the
+    rest. The first page (`offset` 0) also carries `counts`: how many of
+    ALL matching contacts hold each category, stage and handling -- every
+    value you named listed, even at 0, so a misspelt category shows as 0.
+    A row never holds an email address or phone number.
+
+    A filter value outside those lists, an empty list, a negative `offset` or
+    a `limit` outside 1 to 500 returns `{"ok": false, "reason": "invalid",
+    "detail"}`. A page is read fresh on each call, so a contact whose
+    activity changes between calls can move to another page.
+    """
+    try:
+        wanted = {
+            "categories": contacts.report_filter(categories, "categories"),
+            "handling": contacts.report_filter(handling, "handling", allowed=contacts.REPORT_HANDLING),
+            "stages": contacts.report_filter(pipeline_stage, "pipeline_stage", allowed=contacts.REPORT_STAGES),
+        }
+    except ValueError as error:
+        return _invalid(str(error))
+    db = clients.firestore_client()
+    try:
+        return contacts.contact_report(db, cfg.get_settings(), **wanted, offset=offset, limit=limit)
+    except ValueError as error:
+        return _invalid(str(error))
+
+
+@mcp.tool
 def get_contact(doc_id: str, full: bool = False) -> dict[str, Any]:
     """One contact's full detail: everything `list_contacts` shows for them,
     plus when they were last classified and when an intro was last sent, a

@@ -175,7 +175,7 @@ async def call_tool(name: str, args: dict) -> dict:
 #: `get_status` and the read-only tools (task 2e; `get_job`, MCP v2).
 READ_TOOLS = frozenset({
     "get_status", "list_contacts", "get_contact", "get_conversation",
-    "list_queue", "list_decisions", "get_run_report", "get_job",
+    "list_queue", "list_decisions", "get_run_report", "get_job", "contact_report",
 })
 
 #: The agent-side write tools (task 2g; `queue_message` split into
@@ -200,16 +200,17 @@ PROCESS_TOOLS = frozenset({
 
 @pytest.mark.anyio
 async def test_tool_set_is_exact(env, fake_db):
-    """The service exposes exactly twenty-eight tools: `get_status` and seven
+    """The service exposes exactly twenty-nine tools: `get_status` and eight
     read-only tools, six agent-side write tools, eight human-side tools and
-    the six process steps (MCP v2, and `send_messages`). Ledger ruling P2-11: this pins the
+    the six process steps (MCP v2, `send_messages`, and `contact_report`
+    since 2026-09-15). Ledger ruling P2-11: this pins the
     exact set, so a task adding a tool has to change this line and justify
     it.
     """
     async with Client(mcp_server.mcp) as client:
         tools = await client.list_tools()
     assert {tool.name for tool in tools} == READ_TOOLS | AGENT_WRITE_TOOLS | HUMAN_TOOLS | PROCESS_TOOLS
-    assert len(tools) == 28
+    assert len(tools) == 29
     assert all(tool.description for tool in tools), "every tool's docstring is what the agent reads"
 
 
@@ -428,6 +429,38 @@ async def test_list_contacts_tool_reports_an_unparseable_since_without_raising(e
     payload = await call_tool("list_contacts", {"since": "not-a-date"})
 
     assert payload == {"ok": False, "reason": "invalid_since"}
+
+
+# --- contact_report ------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_contact_report_tool_returns_columns_rows_and_counts(env, fake_db):
+    fake_db.collection("analysis").document("a").set({"industry": "RCM", "pipeline_stage": "lead"})
+    fake_db.collection("analysis").document("b").set({"industry": "Hospital"})
+
+    payload = await call_tool("contact_report", {"categories": ["RCM"], "pipeline_stage": "lead"})
+
+    assert payload["total"] == 1
+    assert payload["next_offset"] is None
+    assert payload["columns"][0] == "doc_id"
+    assert [row[0] for row in payload["rows"]] == ["a"]
+    assert payload["counts"]["by_category"] == {"RCM": 1}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("args", [
+    {"pipeline_stage": ["hot"]},
+    {"handling": "held"},
+    {"categories": []},
+    {"limit": 501},
+    {"offset": -1},
+])
+async def test_contact_report_tool_refuses_a_value_out_of_range(env, fake_db, args):
+    payload = await call_tool("contact_report", args)
+
+    assert payload["ok"] is False
+    assert payload["reason"] == "invalid"
 
 
 # --- get_contact ---------------------------------------------------------------

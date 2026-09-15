@@ -29,14 +29,41 @@ import itertools
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from linkedinmcp import queue
+from linkedinmcp import fetch_queue, queue
 
 ANALYSIS_COLLECTION = "analysis"
 EXTRACTED_COLLECTION = "extracted"
 
-#: `list_contacts(tags=...)` reads the tagged contacts by id, this many per
-#: `get_all` -- as `pipeline.load_contacts` pages `analysis`.
-_TAGGED_PAGE = 250
+#: Documents read by id, this many per `get_all` -- the tagged contacts of
+#: `list_contacts(tags=...)` and a `contact_report` page's joins -- as
+#: `pipeline.load_contacts` pages `analysis`.
+_ID_PAGE = 250
+
+#: The pipeline stages `contact_report` filters on -- `pipeline.Stage`,
+#: written out because importing `pipeline` costs ~0.8 s.
+REPORT_STAGES = frozenset({"lead", "prospect", "soft_no", "reject", "not_relevant", "unknown"})
+
+#: The `handling` values `contact_report` filters on: the two holds
+#: `functions.HANDLING_HOLDS` names.
+REPORT_HANDLING = frozenset({"exclude", "manual"})
+
+#: What `contact_report` calls an empty or missing field, in a filter and in
+#: `counts`.
+NONE = "none"
+
+REPORT_COLUMNS = (
+    "doc_id", "name", "category", "handling", "pipeline_stage",
+    "date_connected", "last_sent_date", "last_received_date",
+)
+
+REPORT_MAX_ROWS = 500
+
+#: The most values one Firestore `in` filter takes.
+_IN_MAX = 30
+
+_REPORT_FIELDS = (
+    "firstName", "lastName", "industry", "handling", "pipeline_stage", "last_sent_date", "last_reply_date",
+)
 
 #: What `list_contacts` ever asks Firestore for -- exactly the row's source
 #: fields, and every field every Python-side filter (`industry`, `since`,
@@ -238,7 +265,7 @@ def list_contacts(
 
     if tagged is not None:
         rows = []
-        for chunk in itertools.batched(sorted(tagged), _TAGGED_PAGE):
+        for chunk in itertools.batched(sorted(tagged), _ID_PAGE):
             snapshots = db.get_all([collection.document(doc_id) for doc_id in chunk], field_paths=fields)
             rows.extend((snapshot.id, snapshot.to_dict() or {}) for snapshot in snapshots if snapshot.exists)
         if replied is not None:
@@ -286,6 +313,141 @@ def list_contacts(
                 "replied": _replied_after(data, tagged[doc_id]),
             }
     return result
+
+
+def report_filter(value, name: str, *, allowed=None) -> list[str] | None:
+    """One `contact_report` filter as the tool received it -- `"All"`, one
+    value or a list -- as the list of values to keep, or `None` for all.
+
+    `"all"` in any case, alone or in the list, means all. Every value is
+    trimmed, and `none` in any case stands for an empty field. With
+    `allowed`, values are lowercased and each must be `none` or one of
+    `allowed`. Raises `ValueError` for an empty list, a blank value, or a
+    value `allowed` does not hold.
+    """
+    items = [str(item).strip() for item in ([value] if isinstance(value, str) else value)]
+    if any(item.lower() == "all" for item in items):
+        return None
+    if not items or not all(items):
+        raise ValueError(f'{name}: name at least one value, or pass "All".')
+    if allowed is None:
+        return list(dict.fromkeys(NONE if item.lower() == NONE else item for item in items))
+    items = list(dict.fromkeys(item.lower() for item in items))
+    unknown = [item for item in items if item != NONE and item not in allowed]
+    if unknown:
+        raise ValueError(f"{name}: {', '.join(unknown)} is not one of {', '.join(sorted(allowed | {NONE}))}.")
+    return items
+
+
+def _report_values(analysis: dict) -> tuple[str | None, str | None, str | None]:
+    """The contact's category, handling (trimmed and lowercased) and
+    pipeline stage, each `None` when empty."""
+    handling = str(analysis.get("handling") or "").strip().lower()
+    return analysis.get("industry") or None, handling or None, analysis.get("pipeline_stage") or None
+
+
+def _field_by_id(db, collection_name: str, doc_ids: list[str], field: str) -> dict:
+    """`{doc_id: value}` of one field, for each of `doc_ids` whose document
+    exists and holds it -- `get_all` in pages of `_ID_PAGE`."""
+    collection = db.collection(collection_name)
+    found = {}
+    for chunk in itertools.batched(doc_ids, _ID_PAGE):
+        for snapshot in db.get_all([collection.document(doc_id) for doc_id in chunk], field_paths=[field]):
+            value = (snapshot.to_dict() or {}).get(field) if snapshot.exists else None
+            if value is not None:
+                found[snapshot.id] = value
+    return found
+
+
+def _tally(values, requested: list[str] | None) -> dict[str, int]:
+    """How many of `values` hold each value, an empty one counted as
+    `none` -- every `requested` value listed, even at 0."""
+    counts = dict.fromkeys(requested or (), 0)
+    for value in values:
+        counts[value or NONE] = counts.get(value or NONE, 0) + 1
+    return counts
+
+
+def contact_report(
+    db, settings, *, categories=None, handling=None, stages=None, offset: int = 0, limit: int = REPORT_MAX_ROWS,
+) -> dict:
+    """Every `analysis` contact matching all three filters -- each a list
+    from `report_filter`, or `None` for all -- most recently active first
+    (`_activity_key`), ties by `doc_id`, one page of `limit` rows from
+    `offset`.
+
+    ONE `analysis` query, `select`ing `_REPORT_FIELDS`: `industry in
+    categories` when that is a list of at most `_IN_MAX` without `none`,
+    else the whole collection; every filter is then applied in Python. For
+    the page only, `date_connected` is `fetch_queue.connected_at` (set for
+    the connections `get_contacts` queued) and the name falls back to
+    `extracted.fullName` for a row with no `firstName`/`lastName` -- one
+    `get_all` each.
+
+    Returns `total`, `offset`, `next_offset` (`None` on the last page),
+    `counts` (by category, stage and handling over the whole filtered set;
+    only when `offset` is 0), `columns` (`REPORT_COLUMNS`) and `rows`, one
+    list per contact in that column order, dates in `settings.tz`. Raises
+    `ValueError` for a negative `offset` or a `limit` outside 1 to
+    `REPORT_MAX_ROWS`.
+    """
+    if offset < 0:
+        raise ValueError("offset must be 0 or more.")
+    if not 1 <= limit <= REPORT_MAX_ROWS:
+        raise ValueError(f"limit must be 1 to {REPORT_MAX_ROWS}.")
+
+    from google.cloud.firestore_v1.base_query import FieldFilter
+
+    query = db.collection(ANALYSIS_COLLECTION)
+    if categories is not None and NONE not in categories and len(categories) <= _IN_MAX:
+        query = query.where(filter=FieldFilter("industry", "in", categories))
+
+    matched = []
+    for snapshot in query.select(list(_REPORT_FIELDS)).stream():
+        data = snapshot.to_dict() or {}
+        category, hold, stage = _report_values(data)
+        if categories is not None and (category or NONE) not in categories:
+            continue
+        if handling is not None and (hold or NONE) not in handling:
+            continue
+        if stages is not None and (stage or NONE) not in stages:
+            continue
+        matched.append((snapshot.id, data))
+
+    # Two stable sorts: `doc_id` breaks every tie in activity.
+    matched.sort(key=lambda pair: pair[0])
+    matched.sort(key=lambda pair: _activity_key(pair[1]), reverse=True)
+
+    page = matched[offset:offset + limit]
+    connected = _field_by_id(db, fetch_queue.FETCH_COLLECTION, [doc_id for doc_id, _data in page], "connected_at")
+    unnamed = [doc_id for doc_id, data in page if _name(data, {}) is None]
+    full_names = _field_by_id(db, EXTRACTED_COLLECTION, unnamed, "fullName")
+
+    rows = []
+    for doc_id, data in page:
+        category, hold, stage = _report_values(data)
+        rows.append([
+            doc_id, _name(data, {"fullName": full_names.get(doc_id)}), category, hold, stage,
+            _iso_local(connected.get(doc_id), settings.tz),
+            _iso_local(data.get("last_sent_date"), settings.tz),
+            _iso_local(data.get("last_reply_date"), settings.tz),
+        ])
+
+    report = {
+        "total": len(matched),
+        "offset": offset,
+        "next_offset": offset + limit if offset + limit < len(matched) else None,
+    }
+    if offset == 0:
+        values = [_report_values(data) for _doc_id, data in matched]
+        report["counts"] = {
+            "by_category": _tally((value[0] for value in values), categories),
+            "by_stage": _tally((value[2] for value in values), stages),
+            "by_handling": _tally((value[1] for value in values), handling),
+        }
+    report["columns"] = list(REPORT_COLUMNS)
+    report["rows"] = rows
+    return report
 
 
 def get_contact(db, settings, doc_id: str, *, full: bool = False) -> dict | None:

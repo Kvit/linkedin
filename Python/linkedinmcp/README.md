@@ -34,7 +34,7 @@ is still running.
 
 - [Where things stand](#where-things-stand)
 - [A normal day](#a-normal-day)
-- [The 28 tools, and when to reach for each](#the-28-tools-and-when-to-reach-for-each)
+- [The 29 tools, and when to reach for each](#the-29-tools-and-when-to-reach-for-each)
 - [Connecting to it](#connecting-to-it)
 - [When something stops](#when-something-stops)
 - [Settings you might change](#settings-you-might-change)
@@ -49,21 +49,25 @@ is still running.
 ## Where things stand
 
 **Everything is built, and a session drives it.** The send path, the load of
-new connections and MCP v2 (28 tools, the six process steps running as jobs)
+new connections and MCP v2 (29 tools, the six process steps running as jobs)
 all exist, are tested and have been verified against the live service. The
 design notes behind them are
 `docs/superpowers/specs/2026-09-09-outreach-agent-design.md` (the service),
 `2026-09-11-mcp-process-tools-design.md` (MCP v2) and
 `2026-09-14-send-messages-design.md` (`send_messages`, no schedule).
 
-**What is running right now:** `v2.2.0`, revision `linkedin-outreach-00014-bgd`,
-100% of traffic, deployed 2026-09-14 and checked straight after: `/health`
-answering, `tools/list` returning exactly 28 tools with `send_messages` among
-them and no description mentioning a tick, `send_messages(frequency=3)` refused
-as `invalid`, two dry-run `send_messages` jobs followed to `succeeded` on Cloud
-Tasks (0 messages due, nothing sent), a dry `send_intro` whose `sender` no longer
-carries `last_tick_at`, and `get_status` reporting Firestore and Unipile `ok`
-with nothing paused or blocked. No real `send_messages` has run yet: nothing was
+**What is running right now:** `v2.3.0`, revision `linkedin-outreach-00015-k68`,
+100% of traffic, deployed 2026-09-15 and checked straight after, read-only:
+`tools/list` returning exactly 29 tools with `contact_report` among them;
+`contact_report()` with every filter at `All` answering in 19.4 s (13.1 s on a
+second call) with `total` 28,655, 500 rows (64,822 bytes) and `next_offset` 500;
+`categories=["RCM"]` answering in 1.2 s (670 contacts) and the four target
+industries with `pipeline_stage="lead"` in 3.1 s (45); `offset=1, limit=1`
+returning page one's second row without `counts`; `pipeline_stage=["hot"]`
+refused as `invalid`; and four rows matching `get_contact` field for field, two
+carrying the same `date_connected` as their `fetch_queue` document and two with
+no `fetch_queue` document showing `null`. `v2.2.0`'s checks (2026-09-14) still
+describe `send_messages`: no real `send_messages` had run then, nothing being
 due. To confirm the revision for yourself:
 
 ```powershell
@@ -97,6 +101,7 @@ read-only calls.
 
 | Version | Revision | What it changed |
 |---|---|---|
+| `v2.3.0` | `linkedin-outreach-00015-k68` | `contact_report(categories, handling, pipeline_stage, offset, limit)`: every `analysis` contact matching the filters, 500 rows a page, with `date_connected` from the fetch queue and counts on the first page. 29 tools. |
 | `v2.2.0` | `linkedin-outreach-00014-bgd` | `send_messages`: sends every due message from one call, one a minute by default, at most 50, chaining jobs past 30 minutes. No schedule: `scheduler.cmd` removed, intros and agent messages due at once, every tool description naming `send_messages` instead of the tick. 28 tools. |
 | `v2.1.1` | `linkedin-outreach-00013-xkz` | Five fixes from the 2026-09-11 code review -- `get_contacts` fetching only the connections it listed, `send_intro` reporting blocked writes truthfully, a lost job stopping at its next heartbeat, a reply stored exactly on the sync watermark cancelling queued sends, and the default contact page counting a send as activity -- and intro spacing became a setting (1-5 minutes, was a fixed 10-30). |
 | `v2.1.0` | `linkedin-outreach-00012-vd7` | Campaign tags on `send_intro`, `send_follow_up` and `send_reply`, stored on every queue item and copied onto the message; `list_contacts(tags=..., replied=...)` finds non-responders. 11 of 11 live checks. |
@@ -154,7 +159,7 @@ steps in order. Each starts a job and returns its id; `get_job` follows it.
   but the job's own record. Run the dry one first, read what it says it would
   do, then run it for real.
 
-## The 28 tools, and when to reach for each
+## The 29 tools, and when to reach for each
 
 Every signature below is the real one, defaults included. Three things hold for
 all of them:
@@ -203,6 +208,22 @@ The whole message history with one contact as a single dated transcript, oldest
 first, cut to its last 20,000 characters. Read it before drafting a reply: it is
 what tells you what they actually asked. Message dates here are UTC; every other
 date this service reports is in `OUTREACH_TZ`.
+
+**`contact_report(categories="All", handling="All", pipeline_stage="All", offset=0, limit=500)`**
+The report on contacts in `analysis`: one row per contact with `doc_id`, `name`,
+`category`, `handling`, `pipeline_stage`, `date_connected`, `last_sent_date` and
+`last_received_date`, most recently active first. Each filter is `"All"`, one
+value or a list; `none` matches an empty field (`categories=["none"]` is
+everyone not yet classified). `handling` takes `exclude`, `manual`, `none`;
+`pipeline_stage` the six stages and `none`. Rows come a page at a time, up to
+500 -- pass `next_offset` back as `offset` until it is `null`. The first page
+adds `counts` by category, stage and handling over every matching contact, with
+each category you named listed even at 0. `date_connected` comes from the fetch
+queue, so it is known only for connections `get_contacts` found; older contacts
+show `null`. With every filter at `"All"` the report was 28,655 contacts on
+2026-09-15 -- 58 pages, each call taking 13 to 20 s because it reads the whole
+collection; a list of categories reads only those (670 RCM contacts in 1.2 s).
+Narrow it when reading it in a chat.
 
 ### Reading the queue, the inbox and past runs
 
@@ -412,7 +433,7 @@ Every client needs the same two values:
 | **Key** | `OUTREACH_API_KEY` in `Python/.env`. |
 
 The key goes in one of exactly two headers: `x-api-key: <key>`, or
-`Authorization: Bearer <key>`. `tools/list` returns exactly 28 tools. **A
+`Authorization: Bearer <key>`. `tools/list` returns exactly 29 tools. **A
 connector keeps the tool list it read when it connected** -- after a deploy that
 adds or renames tools, reconnect it.
 
@@ -742,7 +763,7 @@ linkedinmcp/
   jobs.py           sync(), daily(), tick(), plan_intros(), handle_unipile_webhook()
   steps.py          the six process steps the MCP tools start as jobs
   monitor.py        the job monitor: start, run, follow; Cloud Tasks executor
-  mcp_server.py     the FastMCP server and its 28 tools
+  mcp_server.py     the FastMCP server and its 29 tools
   run_jobs.py       the CLI, and the run() the HTTP endpoint shares with it
   Dockerfile        the container image
   deploy.cmd        build, push and deploy to Cloud Run
@@ -1064,7 +1085,7 @@ uv run pytest tests/linkedinmcp
 | `test_app.py` | 37 | Every row of the endpoint table, `/mcp` served without a redirect and still behind the key, `/jobs/*` and `/webhooks/unipile` auth and routing, and that no route ends in `z`. |
 | `test_clients.py` | 3 | Each client factory returns a fresh instance per call. |
 | `test_clock.py` | 3 | UTC "now", local-date conversion, and naive-input rejection. |
-| `test_mcp_server.py` | 165 | All 28 tools: happy paths, refusal shapes and reason codes, the chat the queueing tools choose and a message without `due_at` being due now, a process step's job followed by `get_job`, campaign tags stored and found again, and that nothing ever returns an email or phone field. |
+| `test_mcp_server.py` | 171 | All 29 tools: happy paths, refusal shapes and reason codes, the chat the queueing tools choose and a message without `due_at` being due now, a process step's job followed by `get_job`, campaign tags stored and found again, and that nothing ever returns an email or phone field. |
 | `test_monitor.py` | 8 | A job runs once and reports its result, a live step refuses a second start until its job goes quiet, a running job hands its lock to its successor, a failed job frees its lock and raises the alert, a job taken for lost stops at its next report and keeps that record. |
 | `test_steps.py` | 15 | Each process step: a dry run spends nothing, settings narrow the run, the day's intro cap holds, `get_contacts` fetches only the connections it listed, `send_intro` says when writes are blocked; `send_messages` sends what is due a wait apart, stops at its limit, on a pause and on an unknown send, and starts the next job near its time limit. |
 | `test_state.py` | 37 | Every `RuntimeState` method, including lease and throttle-back-off contention, and the lease length. |
@@ -1072,7 +1093,7 @@ uv run pytest tests/linkedinmcp
 | `test_queue.py` | 72 | Every legal transition, the create-only ids, the atomic settle, campaign tags. |
 | `test_decisions.py` | 24 | Questions, create-only alerts, answering and marking applied. |
 | `test_guards.py` | 58 | All 22 reason codes, checking order, purity, DST handling, and the Unicode link-detection hardening. |
-| `test_contacts.py` | 36 | `list_contacts` filters (the default page counting a send as activity), `needs_touch`, `get_contact`, `get_conversation`, and that no PII leaks. |
+| `test_contacts.py` | 51 | `list_contacts` filters (the default page counting a send as activity), `needs_touch`, `get_contact`, `get_conversation`, `contact_report` filters, `none`, paging, the connection date and name joins, counts and refusals, and that no PII leaks. |
 | `test_fetch_queue.py` | 44 | Create-only enqueue, the slug rules, fetch ordering, and the three outcome recorders. |
 | `test_fetching.py` | 104 | The full fetch/store/classify outcome table, budget reconciliation, charging rules, and no fetch while writes are blocked. |
 | `test_jobs.py` | 48 | Shared job helpers: run records, the failure alert, the webhook, the default classifier. |
