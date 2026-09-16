@@ -486,6 +486,25 @@ def test_contact_report_date_connected_comes_from_the_fetch_queue():
     assert by_id["old"][5] is None
 
 
+def test_contact_report_date_connected_falls_back_to_linkedin_helper():
+    db = FakeFirestore()
+    helper_ms = int(datetime(2020, 6, 22, 15, 1, 13, tzinfo=UTC).timestamp() * 1000)
+    seed_analysis(db, "helper")
+    seed_analysis(db, "queued")
+    seed_analysis(db, "text")
+    seed_extracted(db, "helper", connect={"connectedAt": helper_ms, "connectedAtISO": "2020-06-22T15:01:13.000Z"})
+    seed_extracted(db, "queued", connect={"connectedAt": helper_ms})
+    seed_extracted(db, "text", connect={"connectedAt": "2020-06-22T15:01:13.000Z"})
+    db.collection("fetch_queue").document("queued").set({"connected_at": datetime(2026, 9, 1, 3, 0, tzinfo=UTC)})
+
+    report = contacts.contact_report(db, SETTINGS)
+
+    by_id = {row[0]: row for row in report["rows"]}
+    assert by_id["helper"][5] == "2020-06-22T20:31:13+05:30"
+    assert by_id["queued"][5] == "2026-09-01T08:30:00+05:30"
+    assert by_id["text"][5] is None
+
+
 def test_contact_report_row_holds_the_eight_report_columns_in_order():
     db = FakeFirestore()
     seed_analysis(

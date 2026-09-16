@@ -11,7 +11,9 @@ so a test can replace it.
 The headline comes from the frame, not from `get_contact`: that reader
 reads only `extracted.occupation`, which LinkedIn Helper documents lack
 (see `projection`'s docstring), so the Contact screen shows what the list
-shows.
+shows. The connection date is read from `fetch_queue` each time, as the
+service's `contact_report` reads it, else taken from the frame, which also
+holds LinkedIn Helper's date.
 """
 
 from fastapi import APIRouter, HTTPException, Request
@@ -36,6 +38,8 @@ def contact_screen(request: Request, doc_id: str):
     conversation = reads.get_conversation(db, doc_id)
     fetch = db.collection(FETCH_COLLECTION).document(doc_id).get()
     connected_at = (fetch.to_dict() or {}).get("connected_at") if fetch.exists else None
+    if connected_at is None and listed is not None:
+        connected_at = listed["connected_at"]
     return render.templates.TemplateResponse(
         request, "contact.html",
         render.page_context(request, contact=contact, conversation=conversation, connected_at=connected_at),

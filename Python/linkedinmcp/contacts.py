@@ -26,7 +26,7 @@ even though neither is actually heavy on its own.
 """
 
 import itertools
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from linkedinmcp import fetch_queue, queue
@@ -363,17 +363,34 @@ def _report_values(analysis: dict) -> tuple[str | None, str | None, str | None]:
     return analysis.get("industry") or None, handling or None, analysis.get("pipeline_stage") or None
 
 
-def _field_by_id(db, collection_name: str, doc_ids: list[str], field: str) -> dict:
-    """`{doc_id: value}` of one field, for each of `doc_ids` whose document
-    exists and holds it -- `get_all` in pages of `_ID_PAGE`."""
+def _fields_by_id(db, collection_name: str, doc_ids: list[str], fields: list[str]) -> dict[str, dict]:
+    """`{doc_id: {field: value}}` of `fields`, for each of `doc_ids` whose
+    document exists -- `get_all` in pages of `_ID_PAGE`."""
     collection = db.collection(collection_name)
     found = {}
     for chunk in itertools.batched(doc_ids, _ID_PAGE):
-        for snapshot in db.get_all([collection.document(doc_id) for doc_id in chunk], field_paths=[field]):
-            value = (snapshot.to_dict() or {}).get(field) if snapshot.exists else None
-            if value is not None:
-                found[snapshot.id] = value
+        for snapshot in db.get_all([collection.document(doc_id) for doc_id in chunk], field_paths=fields):
+            if snapshot.exists:
+                found[snapshot.id] = snapshot.to_dict() or {}
     return found
+
+
+def _lh_connected_at(extracted: dict) -> datetime | None:
+    """LinkedIn Helper's `connect.connectedAt` from `extracted`, milliseconds
+    since the epoch, as a UTC datetime -- `None` for a value that is not an
+    integer or is out of range, the values `webapp/projection.py`'s
+    `load_frame` drops too. The whole `connect` map is read, not the nested
+    path: `tests/linkedinmcp/fake_firestore.py` projects top-level fields
+    only.
+    """
+    connect = extracted.get("connect")
+    value = connect.get("connectedAt") if isinstance(connect, dict) else None
+    if not isinstance(value, int) or isinstance(value, bool):
+        return None
+    try:
+        return datetime.fromtimestamp(value / 1000, UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _tally(values, requested: list[str] | None) -> dict[str, int]:
@@ -396,10 +413,13 @@ def contact_report(
     ONE `analysis` query, `select`ing `_REPORT_FIELDS`: `industry in
     categories` when that is a list of at most `_IN_MAX` without `none`,
     else the whole collection; every filter is then applied in Python. For
-    the page only, `date_connected` is `fetch_queue.connected_at` (set for
-    the connections `get_contacts` queued) and the name falls back to
-    `extracted.fullName` for a row with no `firstName`/`lastName` -- one
-    `get_all` each.
+    the page only, `fetch_queue` and `extracted` are read with one `get_all`
+    each: `date_connected` is `fetch_queue.connected_at` (set for the
+    connections `get_contacts` queued), else LinkedIn Helper's
+    `connect.connectedAt` (`_lh_connected_at`), the order
+    `webapp/projection.py`'s `load_frame` uses -- on 2026-09-16 the first
+    covered 648 contacts and the second 2,158, none in both. The name falls
+    back to `extracted.fullName` for a row with no `firstName`/`lastName`.
 
     Returns `total`, `offset`, `next_offset` (`None` on the last page),
     `counts` (by category, stage and handling over the whole filtered set;
@@ -436,16 +456,20 @@ def contact_report(
     matched.sort(key=lambda pair: _activity_key(pair[1]), reverse=True)
 
     page = matched[offset:offset + limit]
-    connected = _field_by_id(db, fetch_queue.FETCH_COLLECTION, [doc_id for doc_id, _data in page], "connected_at")
-    unnamed = [doc_id for doc_id, data in page if _name(data, {}) is None]
-    full_names = _field_by_id(db, EXTRACTED_COLLECTION, unnamed, "fullName")
+    page_ids = [doc_id for doc_id, _data in page]
+    queued_by_id = _fields_by_id(db, fetch_queue.FETCH_COLLECTION, page_ids, ["connected_at"])
+    extracted_by_id = _fields_by_id(db, EXTRACTED_COLLECTION, page_ids, ["fullName", "connect"])
 
     rows = []
     for doc_id, data in page:
         category, hold, stage = _report_values(data)
+        extracted = extracted_by_id.get(doc_id, {})
+        connected_at = queued_by_id.get(doc_id, {}).get("connected_at")
+        if connected_at is None:
+            connected_at = _lh_connected_at(extracted)
         rows.append([
-            doc_id, _name(data, {"fullName": full_names.get(doc_id)}), category, hold, stage,
-            _iso_local(connected.get(doc_id), settings.tz),
+            doc_id, _name(data, extracted), category, hold, stage,
+            _iso_local(connected_at, settings.tz),
             _iso_local(data.get("last_sent_date"), settings.tz),
             _iso_local(data.get("last_reply_date"), settings.tz),
         ])

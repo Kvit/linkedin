@@ -219,7 +219,9 @@ everyone not yet classified). `handling` takes `exclude`, `manual`, `none`;
 500 -- pass `next_offset` back as `offset` until it is `null`. The first page
 adds `counts` by category, stage and handling over every matching contact, with
 each category you named listed even at 0. `date_connected` comes from the fetch
-queue, so it is known only for connections `get_contacts` found; older contacts
+queue for connections `get_contacts` found, else from LinkedIn Helper's
+`connect.connectedAt` in `extracted`; on 2026-09-16 the fetch queue had a date
+for 648 contacts and LinkedIn Helper for 2,158, none in both, and the rest
 show `null`. With every filter at `"All"` the report was 28,655 contacts on
 2026-09-15 -- 58 pages, each call taking 13 to 20 s because it reads the whole
 collection; a list of categories reads only those (670 RCM contacts in 1.2 s).
@@ -1093,7 +1095,7 @@ uv run pytest tests/linkedinmcp
 | `test_queue.py` | 72 | Every legal transition, the create-only ids, the atomic settle, campaign tags. |
 | `test_decisions.py` | 24 | Questions, create-only alerts, answering and marking applied. |
 | `test_guards.py` | 58 | All 22 reason codes, checking order, purity, DST handling, and the Unicode link-detection hardening. |
-| `test_contacts.py` | 51 | `list_contacts` filters (the default page counting a send as activity), `needs_touch`, `get_contact`, `get_conversation`, `contact_report` filters, `none`, paging, the connection date and name joins, counts and refusals, and that no PII leaks. |
+| `test_contacts.py` | 53 | `list_contacts` filters (the default page counting a send as activity), `needs_touch`, `get_contact`, `get_conversation`, `contact_report` filters, `none`, paging, the connection date (fetch queue, then LinkedIn Helper) and name joins, counts and refusals, and that no PII leaks. |
 | `test_fetch_queue.py` | 44 | Create-only enqueue, the slug rules, fetch ordering, and the three outcome recorders. |
 | `test_fetching.py` | 104 | The full fetch/store/classify outcome table, budget reconciliation, charging rules, and no fetch while writes are blocked. |
 | `test_jobs.py` | 48 | Shared job helpers: run records, the failure alert, the webhook, the default classifier. |
@@ -1103,7 +1105,7 @@ uv run pytest tests/linkedinmcp
 | `test_run_jobs.py` | 17 | The CLI and the `run()` it shares with `POST /jobs/{job}`. |
 | `test_fake_firestore.py` | 60 | The in-memory Firestore itself: real transactions, simulated contention, ordering rules, document-id queries, and `array_contains`. |
 
-**941 tests** in this package; **1213 passed, 15 deselected** for the whole repo
+**964 tests** in this package; **1213 passed, 15 deselected** for the whole repo
 (`uv run --no-sync pytest -q`). No test touches Firestore, Unipile, Gemini or the
 network, and none reads your `.env`.
 

@@ -1,15 +1,34 @@
 """One in-memory frame of every contact, built from Firestore on demand.
 
 Built from `analysis` (the contact universe; one row per document) joined
-with `extracted` (names and headlines), with `.select()` on exactly the
-fields below: never `summary` (up to 35 KB each), never `email*` or
-`phone*`. A headline is `occupation` on a profile fetched through Unipile
+with `extracted` (names, headlines, LinkedIn Helper's connection dates),
+`fetch_queue` (the service's connection dates) and `messages` (what each
+contact wrote to us), with `.select()` on exactly the fields below: never
+`summary` (up to 35 KB each), never `email*` or `phone*`.
+
+A headline is `occupation` on a profile fetched through Unipile
 (`lib.unipile.compat.to_lh_document`), else `miniProfile.headline` on a
 LinkedIn Helper document -- 28,336 of 28,559 `extracted` documents have
 one of the two, only 1,156 the first (2026-09-16). The whole `miniProfile`
-map is selected, not just its headline: 0.8 s more per build, and it works
+and `connect` maps are selected, not the fields inside them: that works
 with `tests/linkedinmcp/fake_firestore.py`, which selects top-level fields
-only. About 57,000 document reads and 10 to 15 seconds a build (measured
+only.
+
+`connected_at` is `fetch_queue.connected_at` -- what the service's
+`contact_report` calls `date_connected`, set for the connections
+`get_contacts` queued -- else LinkedIn Helper's `connect.connectedAt`,
+milliseconds since the epoch. On 2026-09-16 they covered 648 and 2,158
+contacts, none in both: 2,806 of 28,675, so most contacts have none.
+
+`inbound_total` counts the readable messages a contact sent us, by
+`pipeline.build_transcripts`' rule, the transcript the Contact screen
+shows. It is not `replied_total`, which counts only answers in a
+conversation we opened: 159 contacts had a readable message from them and
+a `replied_total` of 0 on 2026-09-16, most of them people who wrote first.
+`sent_total` needs no such care: the contacts with one above 0 are exactly
+the 1,985 with a stored outbound message.
+
+About 65,000 document reads and 14 to 17 seconds a build (measured
 2026-09-16), so it is built at startup and rebuilt only when asked (the
 Refresh button, and later after a job the webapp started).
 
@@ -28,8 +47,10 @@ subclass polars stores to the microsecond.
 
 import logging
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Self
 
 import polars as pl
 
@@ -37,6 +58,8 @@ logger = logging.getLogger(__name__)
 
 ANALYSIS_COLLECTION = "analysis"
 EXTRACTED_COLLECTION = "extracted"
+FETCH_COLLECTION = "fetch_queue"
+MESSAGES_COLLECTION = "messages"
 
 ANALYSIS_FIELDS = [
     "firstName", "lastName", "industry", "function", "seniority",
@@ -44,8 +67,9 @@ ANALYSIS_FIELDS = [
     "sent_total", "replied_total", "last_sent_date", "last_reply_date",
     "intro_sent_at", "handling", "hand_set", "profileUrl",
 ]
-EXTRACTED_SELECT = ["fullName", "occupation", "miniProfile"]
-EXTRACTED_FIELDS = ["fullName", "headline"]
+EXTRACTED_SELECT = ["fullName", "occupation", "miniProfile", "connect"]
+#: The columns filled from outside `analysis`, null until a source has them.
+JOINED_FIELDS = ["fullName", "headline", "connected_at"]
 
 _DATETIME = pl.Datetime("us", "UTC")
 _TEXT_LIST = pl.List(pl.String)
@@ -57,17 +81,29 @@ SCHEMA: dict[str, pl.DataType] = {
     "sent_total": pl.Int64, "replied_total": pl.Int64,
     "last_sent_date": _DATETIME, "last_reply_date": _DATETIME, "intro_sent_at": _DATETIME,
     "handling": pl.String, "hand_set": _TEXT_LIST, "profileUrl": pl.String,
+    "connected_at": _DATETIME, "inbound_total": pl.Int64,
 }
 
 #: Columns a page may sort on. Anything else falls back to `activity_at`.
 SORTABLE = (
     "name", "headline", "industry", "function", "seniority", "pipeline_stage", "handling",
-    "sent_total", "replied_total", "last_sent_date", "last_reply_date", "activity_at",
+    "sent_total", "replied_total", "connected_at", "last_sent_date", "last_reply_date", "activity_at",
 )
+
+#: The Contacts screen's value filters: query parameter, and the column it
+#: matches through `normalized`.
+VALUE_FILTERS = {
+    "industry": "industry", "function": "function", "seniority": "seniority",
+    "stage": "pipeline_stage", "handling": "handling",
+}
 
 #: What an empty or missing value is called in counts and filters, as
 #: `linkedinmcp.contacts.NONE` names it for `contact_report`.
 NONE = "none"
+
+#: The Message Sent and Message Received filters' query values; a missing
+#: or other value is Any.
+YES_NO = {"yes": True, "no": False}
 
 
 def _typed(field: str, value):
@@ -101,22 +137,54 @@ def _fields(data: dict, fields: list[str], dropped: Counter) -> dict:
     return row
 
 
+def _epoch_ms(value):
+    """LinkedIn Helper's `connect.connectedAt`, milliseconds since the epoch,
+    as a datetime. Any other value is returned as it is, for `_typed` to
+    drop and count."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        try:
+            return datetime.fromtimestamp(value / 1000, UTC)
+        except (OverflowError, OSError, ValueError):
+            return value
+    return value
+
+
 def load_frame(db) -> pl.DataFrame:
-    """Stream the two collections and build the frame."""
+    """Stream the four collections and build the frame."""
+    import pipeline  # about 0.8 s, once per process, as `linkedinmcp.contacts.get_conversation` imports it
+
     dropped: Counter = Counter()
     rows: dict[str, dict] = {}
     for snapshot in db.collection(ANALYSIS_COLLECTION).select(ANALYSIS_FIELDS).stream():
-        rows[snapshot.id] = {"doc_id": snapshot.id, **_fields(snapshot.to_dict() or {}, ANALYSIS_FIELDS, dropped)}
-    empty = dict.fromkeys(EXTRACTED_FIELDS)
-    for row in rows.values():
-        row.update(empty)
+        rows[snapshot.id] = {
+            "doc_id": snapshot.id,
+            **_fields(snapshot.to_dict() or {}, ANALYSIS_FIELDS, dropped),
+            **dict.fromkeys(JOINED_FIELDS),
+            "inbound_total": 0,
+        }
     for snapshot in db.collection(EXTRACTED_COLLECTION).select(EXTRACTED_SELECT).stream():
         row = rows.get(snapshot.id)
-        if row is not None:
-            data = snapshot.to_dict() or {}
-            mini = data.get("miniProfile")
-            headline = data.get("occupation") or (mini.get("headline") if isinstance(mini, dict) else None)
-            row.update(_fields({"fullName": data.get("fullName"), "headline": headline}, EXTRACTED_FIELDS, dropped))
+        if row is None:
+            continue
+        data = snapshot.to_dict() or {}
+        mini, connect = data.get("miniProfile"), data.get("connect")
+        joined = {
+            "fullName": data.get("fullName"),
+            "headline": data.get("occupation") or (mini.get("headline") if isinstance(mini, dict) else None),
+            "connected_at": _epoch_ms(connect.get("connectedAt")) if isinstance(connect, dict) else None,
+        }
+        row.update(_fields(joined, JOINED_FIELDS, dropped))
+    for snapshot in db.collection(FETCH_COLLECTION).select(["connected_at"]).stream():
+        row = rows.get(snapshot.id)
+        if row is None:
+            continue
+        queued = _fields(snapshot.to_dict() or {}, ["connected_at"], dropped)
+        if queued["connected_at"] is not None:
+            row.update(queued)
+    transcripts = pipeline.build_transcripts(pipeline.load_messages(db.collection(MESSAGES_COLLECTION)))
+    for doc_id, entry in transcripts.items():
+        if doc_id in rows:
+            rows[doc_id]["inbound_total"] = entry["inbound_total"]
     if dropped:
         logger.warning("dropped values of the wrong type, by field: %s", dict(dropped))
     return _derive(pl.from_dicts(list(rows.values()), schema=SCHEMA))
@@ -145,25 +213,6 @@ def contact_row(frame: pl.DataFrame | None, doc_id: str) -> dict | None:
     return found.row(0, named=True) if found.height else None
 
 
-def query(
-    frame: pl.DataFrame, *, q: str = "", sort: str = "activity_at", descending: bool = True,
-    page: int = 1, per_page: int = 100,
-) -> tuple[pl.DataFrame, int]:
-    """One page of `frame` after the text search, and the total matched.
-    `literal=True`: the needle is text, never a regex."""
-    found = frame
-    needle = q.strip().lower()
-    if needle:
-        found = found.filter(
-            pl.col("name").fill_null("").str.to_lowercase().str.contains(needle, literal=True)
-            | pl.col("headline").fill_null("").str.to_lowercase().str.contains(needle, literal=True)
-        )
-    column = sort if sort in SORTABLE else "activity_at"
-    found = found.sort([column, "doc_id"], descending=[descending, False], nulls_last=True)
-    start = max(page - 1, 0) * per_page
-    return found.slice(start, per_page), found.height
-
-
 def normalized(column: str) -> pl.Expr:
     """`column` with an empty value read as `NONE`. `handling` is a
     hand-maintained field that collects stray capitals and padding, so it
@@ -183,6 +232,79 @@ def counts(frame: pl.DataFrame, column: str) -> list[tuple[str, int]]:
         .sort(["len", "value"], descending=[True, False])
     )
     return list(zip(tally["value"].to_list(), tally["len"].to_list(), strict=True))
+
+
+def choices(frame: pl.DataFrame) -> dict[str, list[str]]:
+    """Each value filter's values as `frame` holds them, most frequent
+    first. Read from the data, not from `profiles`' `Literal` types, so a
+    stray stored value can be found too."""
+    return {name: [value for value, _count in counts(frame, column)] for name, column in VALUE_FILTERS.items()}
+
+
+@dataclass(frozen=True)
+class Filters:
+    """What the Contacts list is narrowed to. A value filter holds a value
+    as `normalized` reads it (`none` for unset), or `None` for all. `sent`
+    is `True` for the contacts with a message from us (`sent_total` above
+    0), `False` for those with none, `None` for any; `received` the same
+    over `inbound_total`."""
+
+    industry: str | None = None
+    function: str | None = None
+    seniority: str | None = None
+    stage: str | None = None
+    handling: str | None = None
+    sent: bool | None = None
+    received: bool | None = None
+
+    @classmethod
+    def from_params(cls, params: Mapping[str, str], known: dict[str, list[str]]) -> Self:
+        """Filters from a query string. A value `known` (from `choices`)
+        does not hold is ignored, and so is a `sent` or `received` other
+        than `yes` or `no`, so the page never shows one filter and applies
+        another."""
+        return cls(
+            **{name: value for name in VALUE_FILTERS if (value := params.get(name)) in known[name]},
+            sent=YES_NO.get(params.get("sent")),
+            received=YES_NO.get(params.get("received")),
+        )
+
+    def apply(self, frame: pl.DataFrame) -> pl.DataFrame:
+        """`frame` narrowed to the contacts matching every filter that is set."""
+        conditions = [
+            normalized(column) == getattr(self, name)
+            for name, column in VALUE_FILTERS.items()
+            if getattr(self, name) is not None
+        ]
+        for wanted, has in ((self.sent, pl.col("sent_total").fill_null(0) > 0), (self.received, pl.col("inbound_total") > 0)):
+            if wanted is not None:
+                conditions.append(has if wanted else ~has)
+        return frame.filter(*conditions) if conditions else frame
+
+    def params(self) -> dict[str, str]:
+        """The filters that are set, as query parameters for a link."""
+        chosen = {name: getattr(self, name) for name in VALUE_FILTERS if getattr(self, name) is not None}
+        flags = {name: "yes" if wanted else "no" for name in ("sent", "received") if (wanted := getattr(self, name)) is not None}
+        return chosen | flags
+
+
+def query(
+    frame: pl.DataFrame, *, q: str = "", filters: Filters = Filters(), sort: str = "activity_at",
+    descending: bool = True, page: int = 1, per_page: int = 100,
+) -> tuple[pl.DataFrame, int]:
+    """One page of `frame` after the filters and the text search, and the
+    total matched. `literal=True`: the needle is text, never a regex."""
+    found = filters.apply(frame)
+    needle = q.strip().lower()
+    if needle:
+        found = found.filter(
+            pl.col("name").fill_null("").str.to_lowercase().str.contains(needle, literal=True)
+            | pl.col("headline").fill_null("").str.to_lowercase().str.contains(needle, literal=True)
+        )
+    column = sort if sort in SORTABLE else "activity_at"
+    found = found.sort([column, "doc_id"], descending=[descending, False], nulls_last=True)
+    start = max(page - 1, 0) * per_page
+    return found.slice(start, per_page), found.height
 
 
 class Contacts:

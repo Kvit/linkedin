@@ -4,7 +4,7 @@ can import it without importing the factory."""
 
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 from zoneinfo import ZoneInfo
 
 from fastapi import Request
@@ -22,6 +22,17 @@ def local(value: datetime | None, tz: str) -> str:
 
 
 templates.env.filters["local"] = local
+
+
+def qs(params: dict, **changes) -> str:
+    """A query string of `params` with `changes` applied, empty values left
+    out: how a sort heading or a pager link keeps the page's search and
+    filters. The template escapes it."""
+    merged = params | changes
+    return urlencode({name: value for name, value in merged.items() if value not in (None, "")})
+
+
+templates.env.globals["qs"] = qs
 
 
 def page_context(request: Request, **extra) -> dict:

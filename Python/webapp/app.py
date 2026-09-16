@@ -25,8 +25,9 @@ logger = logging.getLogger(__name__)
 
 PER_PAGE = 100
 
-#: The Home screen's count tables: column and heading.
-COUNTED = {"industry": "Industry", "pipeline_stage": "Stage", "handling": "Handling"}
+#: The Home screen's count tables: the Contacts filter each count opens
+#: (`projection.VALUE_FILTERS` names its column), and the heading.
+COUNTED = {"industry": "Industry", "stage": "Stage", "handling": "Handling"}
 
 
 def create_app(
@@ -72,21 +73,31 @@ def create_app(
     @app.get("/")
     def home(request: Request):
         frame = contacts.frame
-        tallies = [(heading, projection.counts(frame, column)) for column, heading in COUNTED.items()]
+        tallies = [
+            (name, heading, projection.counts(frame, projection.VALUE_FILTERS[name])) for name, heading in COUNTED.items()
+        ]
         return render.templates.TemplateResponse(
             request, "home.html", render.page_context(request, total=frame.height, tallies=tallies)
         )
 
     @app.get("/contacts")
     def contacts_list(request: Request, q: str = "", sort: str = "activity_at", dir: str = "desc", page: int = 1):
+        """The list. The filters (`industry`, `function`, `seniority`,
+        `stage`, `handling`, and `sent` and `received` as `yes` or `no`)
+        are read by `projection.Filters.from_params`, which ignores a value
+        the data does not hold."""
+        frame = contacts.frame
+        known = projection.choices(frame)
+        filters = projection.Filters.from_params(request.query_params, known)
         found, total = projection.query(
-            contacts.frame, q=q, sort=sort, descending=(dir != "asc"), page=page, per_page=PER_PAGE
+            frame, q=q, filters=filters, sort=sort, descending=(dir != "asc"), page=page, per_page=PER_PAGE
         )
         pages = max(1, -(-total // PER_PAGE))
         return render.templates.TemplateResponse(
             request, "contacts.html",
             render.page_context(
-                request, rows=found.to_dicts(), total=total, q=q, sort=sort, dir=dir, page=page, pages=pages
+                request, rows=found.to_dicts(), total=total, q=q, sort=sort, dir=dir, page=page, pages=pages,
+                choices=known, filters=filters, link={"q": q, **filters.params(), "sort": sort, "dir": dir},
             ),
         )
 

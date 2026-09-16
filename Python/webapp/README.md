@@ -16,24 +16,44 @@ It complements the other two ways of working the contacts:
 Design: `docs/superpowers/specs/2026-09-16-contacts-webapp-design.md`.
 Plan and stages: `docs/superpowers/plans/2026-09-16-contacts-webapp.md`.
 
-## What it does now (stage 1)
+## What it does now (stage 3)
 
 | Screen | Path | Shows |
 |---|---|---|
-| Home | `/` | Total contacts; counts by industry, stage and handling (`none` = unset) |
-| Contacts | `/contacts` | Every contact, 100 a page: click a column heading to sort, search by name or headline |
+| Home | `/` | Total contacts; counts by industry, stage and handling (`none` = unset), each count a link to the Contacts list with that filter applied |
+| Contacts | `/contacts` | Every contact, 100 a page: filter, click a column heading to sort, search by name or headline |
 | Contact | `/contacts/{doc_id}` | One contact: classification, stage and its reason, handling, dates, the whole conversation, queued messages, the profile summary |
 
 Every screen's header says when the data was loaded ("data as of", Chicago
 time) and has a **Refresh** button that reloads every contact from Firestore.
 Nothing on these screens writes anything.
 
+**Filters on the Contacts screen.** Pick a value for industry, function,
+seniority, stage or handling, choose Any, Yes or No for **Message Sent** and
+**Message Received**, and press **Apply**; **Clear** removes them all. Every
+filter combines with the others, with the search and with the sort, and the
+sort headings and page links keep them. A value dropdown lists the values the
+contacts actually hold, most frequent first; `none` is an unset value, so
+industry `none` lists the unclassified contacts.
+
+- **Message Sent**: Yes keeps the contacts you have written to (`sent_total`
+  above 0), No those you have not; Any, the default, does not filter.
+- **Message Received**: Yes keeps the contacts with at least one readable
+  message from them, as the Contact screen's conversation shows it, No those
+  with none; Any is the default. This is not the **Replied** column, which
+  counts only answers in a conversation you opened: on 2026-09-16, 159
+  contacts had written to you and show no replies.
+- **Connected**: the date from the fetch queue, set for the connections the
+  outreach service found, else the date LinkedIn Helper stored. On 2026-09-16,
+  2,806 of 28,675 contacts had one; the column is empty for the rest.
+
 **How the data is loaded.** At startup the app reads every `analysis` document
-(selected fields only, never `summary` or email addresses) and every
-`extracted` name and headline into one table in memory; that took 14 seconds on
-2026-09-16 for 28,675 contacts. Lists, sorting, search and counts work on that
-table, so they answer in milliseconds. It is not reloaded on its own: press
-Refresh (about 10 seconds; the page waits) after a notebook or the agent
+(selected fields only, never `summary` or email addresses), every `extracted`
+name, headline and connection date, the fetch queue's connection dates and
+every message into one table in memory; that took 14 to 17 seconds on
+2026-09-16 for 28,675 contacts. Lists, filters, sorting, search and counts work
+on that table, so they answer in milliseconds. It is not reloaded on its own:
+press Refresh (about 15 seconds; the page waits) after a notebook or the agent
 changed contacts. The Contact screen reads Firestore directly each time it
 opens, so it is always current.
 
@@ -97,12 +117,16 @@ assertion itself as well: its signature, the audience
 the issuer, and the email. Anyone else gets a Google "access denied" page or a
 403.
 
-**The first deploy may need a one-time console step.** IAP's built-in sign-in
-admits accounts of the organization that owns the project. If `vk-linkedin`
-belongs to no organization, `gcloud run deploy --iap` warns that setup is
-required: open **Security, Identity-Aware Proxy** in the Cloud console for
-`vk-linkedin`, configure the OAuth consent screen when asked (audience
-**External**, add `vk@pinnacleservice.co` as a test user), then deploy again.
+**Running now:** `v0.3.1`, revision `linkedin-contacts-00002-4bb`, deployed
+2026-09-16 at `https://linkedin-contacts-5czydyxqoa-uc.a.run.app`. Its startup
+took 26 seconds; the first revision's took 59.
+
+**The deploy needed no console step.** IAP's built-in sign-in admits accounts
+of the organization that owns the project, and `vk-linkedin` belongs to the
+`pinnacleservice.co` organization. In a project without an organization,
+`gcloud run deploy --iap` warns that setup is required: open **Security,
+Identity-Aware Proxy** in the Cloud console, configure the OAuth consent screen
+when asked, then deploy again.
 
 **If sign-in succeeds but the app answers 403**, the container log names the
 reason: `IAP assertion rejected: ... (aud=..., expected ...)` means the audience

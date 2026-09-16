@@ -3,10 +3,10 @@
 {% block content %}
 <h1>{{ total }} contact{{ "" if total == 1 else "s" }}</h1>
 <div class="tallies">
-{% for heading, rows in tallies %}
+{% for name, heading, rows in tallies %}
   <table>
     <thead><tr><th>{{ heading }}</th><th class="num">Contacts</th></tr></thead>
-    <tbody>{% for value, count in rows %}<tr><td>{{ value }}</td><td class="num">{{ count }}</td></tr>{% endfor %}</tbody>
+    <tbody>{% for value, count in rows %}<tr><td>{{ value }}</td><td class="num"><a href="/contacts?{{ qs({name: value}) }}">{{ count }}</a></td></tr>{% endfor %}</tbody>
   </table>
 {% endfor %}
 </div>

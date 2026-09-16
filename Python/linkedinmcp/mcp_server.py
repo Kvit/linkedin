@@ -383,11 +383,12 @@ def contact_report(
     one list per contact in `columns` order: `doc_id`, `name`, `category`,
     `handling`, `pipeline_stage`, `date_connected`, `last_sent_date`,
     `last_received_date`, dates in the service's timezone. `date_connected`
-    is known only for connections `get_contacts` found, and `null` for the
-    rest. The first page (`offset` 0) also carries `counts`: how many of
-    ALL matching contacts hold each category, stage and handling -- every
-    value you named listed, even at 0, so a misspelt category shows as 0.
-    A row never holds an email address or phone number.
+    comes from the fetch queue for connections `get_contacts` found, else
+    from the connection date LinkedIn Helper stored, and is `null` when
+    neither has one. The first page (`offset` 0) also carries `counts`: how
+    many of ALL matching contacts hold each category, stage and handling --
+    every value you named listed, even at 0, so a misspelt category shows
+    as 0. A row never holds an email address or phone number.
 
     A filter value outside those lists, an empty list, a negative `offset` or
     a `limit` outside 1 to 500 returns `{"ok": false, "reason": "invalid",

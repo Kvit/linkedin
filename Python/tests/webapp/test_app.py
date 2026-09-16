@@ -20,6 +20,7 @@ def _db():
     })
     db.collection("analysis").document("bob").set({"industry": "RCM"})
     db.collection("extracted").document("bob").set({"fullName": "Bob Ray", "occupation": "Billing Manager"})
+    db.collection("fetch_queue").document("ann").set({"connected_at": DatetimeWithNanoseconds(2026, 8, 20, 15, 0, tzinfo=UTC)})
     return db
 
 
@@ -57,6 +58,9 @@ def test_home_shows_the_total_and_the_counts():
     assert "Pathology" in page.text and "RCM" in page.text
     assert "lead" in page.text and "manual" in page.text and "none" in page.text
     assert ME in page.text  # the signed-in user, in the header
+    # Each count opens the Contacts list with that filter applied.
+    assert 'href="/contacts?stage=lead"' in page.text and 'href="/contacts?stage=none"' in page.text
+    assert 'href="/contacts?industry=RCM"' in page.text and 'href="/contacts?handling=manual"' in page.text
 
 
 def test_contacts_screen_lists_sorts_and_searches():
@@ -65,12 +69,30 @@ def test_contacts_screen_lists_sorts_and_searches():
         assert page.status_code == 200
         assert "Ann Lee" in page.text and "Bob Ray" in page.text and "Billing Manager" in page.text
         assert "2026-09-03 07:00" in page.text  # last reply, shown in America/Chicago
+        assert "2026-08-20 10:00" in page.text  # connected
+        head = page.text.split("<thead>")[1].split("</thead>")[0]
+        assert "Headline" in head.split("<th")[-1]  # the last column
         assert page.text.index("Ann Lee") < page.text.index("Bob Ray")  # newest activity first
         page = client.get("/contacts", params={"sort": "industry", "dir": "desc"})
         assert page.text.index("Bob Ray") < page.text.index("Ann Lee")
         page = client.get("/contacts", params={"q": "billing"})
         assert "Bob Ray" in page.text and "Ann Lee" not in page.text
         assert "1 contact," in page.text
+
+
+def test_contacts_screen_filters_and_its_links_keep_the_filters():
+    with TestClient(_app()) as client:
+        page = client.get("/contacts", params={"industry": "RCM"})
+        assert "Bob Ray" in page.text and "Ann Lee" not in page.text
+        assert '<option value="RCM" selected>' in page.text
+        assert "/contacts?industry=RCM&amp;sort=name&amp;dir=desc" in page.text  # a sort heading keeps it
+        page = client.get("/contacts", params={"industry": "Nope"})  # no contact holds it: ignored
+        assert "Ann Lee" in page.text and "Bob Ray" in page.text
+        page = client.get("/contacts", params={"handling": "manual", "sent": "no"})
+        assert "Ann Lee" in page.text and "Bob Ray" not in page.text
+        assert '<option value="no" selected>No</option>' in page.text
+        page = client.get("/contacts")
+        assert '<option value="" selected>Any</option>' in page.text  # Message Sent and Received start at Any
 
 
 def test_refresh_rebuilds_and_returns_to_the_same_screen():

@@ -13,7 +13,8 @@ th a { color: inherit; text-decoration: none; }
 .num { text-align: right; }
 .muted { color: #777; }
 .inline { display: inline; }
-.filters { display: flex; gap: .5rem; align-items: center; margin-bottom: .75rem; }
+.filters { display: flex; flex-wrap: wrap; gap: .5rem .75rem; align-items: center; margin-bottom: .5rem; }
+.filters label { white-space: nowrap; }
 .pager { display: flex; gap: 1rem; margin-top: .75rem; }
 .tallies { display: flex; gap: 2rem; flex-wrap: wrap; align-items: flex-start; }
 .detail { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; margin: 0; }
