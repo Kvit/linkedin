@@ -599,6 +599,15 @@ Everything else — tools, jobs, configuration, deploying, scheduling, the Claud
 platform setup and the switches that turn sending on — is in
 [`linkedinmcp/README.md`](linkedinmcp/README.md).
 
+## Contacts webapp (`webapp/`)
+
+A private web application for working the contacts by hand: every contact in
+one sortable, searchable table, counts by industry, stage and handling, and one
+contact's classification, conversation and queued messages on one screen. It
+runs on Cloud Run as `linkedin-contacts` behind Google sign-in for one account,
+and is built in approved stages. Running it, testing it and deploying it are in
+[`webapp/README.md`](webapp/README.md).
+
 ## LinkedIn operations (`lib/unipile`)
 
 Replaces LinkedIn Helper for contact and messaging work, using the Unipile API.

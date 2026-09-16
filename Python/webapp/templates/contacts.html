@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Contacts{% endblock %}
+{% block content %}
+<form method="get" action="/contacts" class="filters">
+  <input type="search" name="q" value="{{ q }}" placeholder="name or headline">
+  <input type="hidden" name="sort" value="{{ sort }}"><input type="hidden" name="dir" value="{{ dir }}">
+  <button type="submit">Search</button>
+  <span class="muted">{{ total }} contact{{ "" if total == 1 else "s" }}, page {{ page }} of {{ pages }}</span>
+</form>
+{% macro th(column, label, cls="") -%}
+  <th class="{{ cls }}"><a href="/contacts?q={{ q|urlencode }}&sort={{ column }}&dir={{ 'asc' if sort == column and dir == 'desc' else 'desc' }}">{{ label }}{% if sort == column %} {{ '▾' if dir == 'desc' else '▴' }}{% endif %}</a></th>
+{%- endmacro %}
+<table class="list">
+  <thead><tr>
+    {{ th("name", "Name") }}<th></th>{{ th("headline", "Headline") }}{{ th("industry", "Industry") }}{{ th("function", "Function") }}
+    {{ th("seniority", "Seniority") }}{{ th("pipeline_stage", "Stage") }}{{ th("handling", "Handling") }}
+    {{ th("sent_total", "Sent", "num") }}{{ th("replied_total", "Replied", "num") }}{{ th("last_sent_date", "Last sent") }}{{ th("last_reply_date", "Last reply") }}
+  </tr></thead>
+  <tbody>
+  {% for row in rows %}
+    <tr>
+      <td><a href="/contacts/{{ row.doc_id|urlencode }}">{{ row.name or row.doc_id }}</a></td>
+      <td><a href="{{ row.profileUrl or 'https://www.linkedin.com/in/' ~ row.doc_id }}" target="_blank" rel="noopener" title="Open on LinkedIn">in</a></td>
+      <td class="wrap">{{ row.headline or "" }}</td><td>{{ row.industry or "" }}</td><td>{{ row.function or "" }}</td>
+      <td>{{ row.seniority or "" }}</td><td>{{ row.pipeline_stage or "" }}</td><td>{{ row.handling or "" }}</td>
+      <td class="num">{{ row.sent_total if row.sent_total is not none else "" }}</td>
+      <td class="num">{{ row.replied_total if row.replied_total is not none else "" }}</td>
+      <td>{{ row.last_sent_date|local(tz) }}</td><td>{{ row.last_reply_date|local(tz) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<nav class="pager">
+  {% if page > 1 %}<a href="/contacts?q={{ q|urlencode }}&sort={{ sort }}&dir={{ dir }}&page={{ page - 1 }}">previous</a>{% endif %}
+  {% if page < pages %}<a href="/contacts?q={{ q|urlencode }}&sort={{ sort }}&dir={{ dir }}&page={{ page + 1 }}">next</a>{% endif %}
+</nav>
+{% endblock %}

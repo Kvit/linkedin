@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}{{ contact.name or contact.doc_id }}{% endblock %}
+{% macro day(value) -%}{{ value[:16]|replace("T", " ") if value else "" }}{%- endmacro %}
+{% block content %}
+<h1>{{ contact.name or contact.doc_id }} <a href="{{ contact.profile_url }}" target="_blank" rel="noopener" class="muted">LinkedIn</a></h1>
+<p>{{ contact.headline or "" }}</p>
+<dl class="detail">
+  <dt>Industry</dt><dd>{{ contact.industry or "none" }}</dd>
+  <dt>Function</dt><dd>{{ contact.function or "none" }}</dd>
+  <dt>Seniority</dt><dd>{{ contact.seniority or "none" }}</dd>
+  <dt>Stage</dt><dd>{{ contact.stage or "none" }}{% if contact.stage_reason %} <span class="muted">{{ contact.stage_reason }}</span>{% endif %}</dd>
+  <dt>Handling</dt><dd>{{ contact.handling or "none" }}</dd>
+  <dt>Sent / replied</dt><dd>{{ contact.sent_total or 0 }} / {{ contact.replied_total or 0 }}</dd>
+  <dt>Last sent</dt><dd>{{ day(contact.last_sent_date) }}</dd>
+  <dt>Last reply</dt><dd>{{ day(contact.last_reply_date) }}</dd>
+  <dt>Intro sent</dt><dd>{{ day(contact.intro_sent_at) }}</dd>
+  <dt>Connected</dt><dd>{{ connected_at|local(tz) }}</dd>
+</dl>
+
+<h2>Conversation</h2>
+{% if conversation %}<pre>{{ conversation.transcript }}</pre>{% else %}<p class="muted">No messages.</p>{% endif %}
+
+<h2>Queue</h2>
+{% if contact.queue %}
+<table>
+  <thead><tr><th>Kind</th><th>Status</th><th>Due</th><th>By</th><th>Text</th></tr></thead>
+  <tbody>
+  {% for item in contact.queue %}
+    <tr><td>{{ item.kind }}</td><td>{{ item.status }}</td><td>{{ day(item.due_at) }}</td><td>{{ item.created_by }}</td><td class="wrap">{{ item.text }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="muted">Nothing queued.</p>{% endif %}
+
+<details><summary>Profile summary{% if contact.summary_truncated %} (truncated){% endif %}</summary><pre>{{ contact.summary or "" }}</pre></details>
+{% endblock %}

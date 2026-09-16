@@ -76,7 +76,12 @@ _ROW_FIELDS = (
     "last_sent_date", "last_reply_date", "handling", "profileUrl",
 )
 
-_EXTRACTED_ROW_FIELDS = ("fullName", "occupation")
+#: What `list_contacts` asks `extracted` for: `fullName` (`_name`) and both
+#: fields `_headline` reads. The whole `miniProfile` map, not
+#: `miniProfile.headline`, as `webapp/projection.py` selects it:
+#: `tests/linkedinmcp/fake_firestore.py` projects top-level fields only, and a
+#: page is at most 100 documents. Only `headline` leaves the map.
+_EXTRACTED_ROW_FIELDS = ("fullName", "occupation", "miniProfile")
 
 
 def _iso_local(value: datetime | None, tz: str) -> str | None:
@@ -117,6 +122,18 @@ def _name(analysis: dict, extracted: dict) -> str | None:
     return extracted.get("fullName") or None
 
 
+def _headline(extracted: dict) -> str | None:
+    """`occupation` from `extracted`, set on a profile fetched through Unipile
+    (`lib.unipile.compat.to_lh_document`); otherwise `miniProfile.headline`,
+    where a LinkedIn Helper document keeps it; otherwise `None` -- the rule
+    `webapp/projection.py`'s `load_frame` applies. Of 28,559 `extracted`
+    documents, 28,336 have one of the two and only 1,156 have `occupation`
+    (2026-09-16).
+    """
+    mini = extracted.get("miniProfile")
+    return extracted.get("occupation") or (mini.get("headline") if isinstance(mini, dict) else None) or None
+
+
 def _row(doc_id: str, analysis: dict, extracted: dict, tz: str) -> dict:
     """The shape `list_contacts` returns per contact, and the base every
     `get_contact` row extends with a few more keys.
@@ -124,7 +141,7 @@ def _row(doc_id: str, analysis: dict, extracted: dict, tz: str) -> dict:
     return {
         "doc_id": doc_id,
         "name": _name(analysis, extracted),
-        "headline": extracted.get("occupation") or None,
+        "headline": _headline(extracted),
         "industry": analysis.get("industry"),
         "function": analysis.get("function"),
         "seniority": analysis.get("seniority"),

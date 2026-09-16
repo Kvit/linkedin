@@ -1,0 +1,93 @@
+"""`webapp.app`: the factory, the open health route, the guarded screens,
+the Home counts and the contacts table. `TestClient` in a `with` block
+runs the lifespan."""
+
+from datetime import UTC
+
+from fastapi.testclient import TestClient
+from google.api_core.datetime_helpers import DatetimeWithNanoseconds
+
+from tests.linkedinmcp.fake_firestore import FakeFirestore
+from tests.webapp.conftest import AUDIENCE, ME, outreach_settings, webapp_settings
+from webapp import app as webapp_app, projection
+
+
+def _db():
+    db = FakeFirestore()
+    db.collection("analysis").document("ann").set({
+        "firstName": "Ann", "lastName": "Lee", "industry": "Pathology", "pipeline_stage": "lead",
+        "handling": "manual", "last_reply_date": DatetimeWithNanoseconds(2026, 9, 3, 12, 0, tzinfo=UTC),
+    })
+    db.collection("analysis").document("bob").set({"industry": "RCM"})
+    db.collection("extracted").document("bob").set({"fullName": "Bob Ray", "occupation": "Billing Manager"})
+    return db
+
+
+def _contacts():
+    db = _db()
+    return projection.Contacts(lambda: db)
+
+
+def _app(contacts=None, **auth):
+    if contacts is None:
+        contacts = _contacts()
+        contacts.rebuild()
+    return webapp_app.create_app(webapp_settings(**auth), outreach=outreach_settings(), contacts=contacts)
+
+
+def test_health_is_open_and_screens_are_not():
+    with TestClient(_app(dev_user=None, audience=AUDIENCE)) as client:
+        assert client.get("/health").json() == {"ok": True}
+        assert client.get("/").status_code == 403
+        assert client.get("/contacts").status_code == 403
+
+
+def test_startup_builds_the_frame_when_none_was_given():
+    contacts = _contacts()
+    with TestClient(_app(contacts)) as client:
+        assert contacts.frame is not None and contacts.frame.height == 2
+        assert client.get("/health").status_code == 200
+
+
+def test_home_shows_the_total_and_the_counts():
+    with TestClient(_app()) as client:
+        page = client.get("/")
+    assert page.status_code == 200
+    assert "2 contacts" in page.text
+    assert "Pathology" in page.text and "RCM" in page.text
+    assert "lead" in page.text and "manual" in page.text and "none" in page.text
+    assert ME in page.text  # the signed-in user, in the header
+
+
+def test_contacts_screen_lists_sorts_and_searches():
+    with TestClient(_app()) as client:
+        page = client.get("/contacts")
+        assert page.status_code == 200
+        assert "Ann Lee" in page.text and "Bob Ray" in page.text and "Billing Manager" in page.text
+        assert "2026-09-03 07:00" in page.text  # last reply, shown in America/Chicago
+        assert page.text.index("Ann Lee") < page.text.index("Bob Ray")  # newest activity first
+        page = client.get("/contacts", params={"sort": "industry", "dir": "desc"})
+        assert page.text.index("Bob Ray") < page.text.index("Ann Lee")
+        page = client.get("/contacts", params={"q": "billing"})
+        assert "Bob Ray" in page.text and "Ann Lee" not in page.text
+        assert "1 contact," in page.text
+
+
+def test_refresh_rebuilds_and_returns_to_the_same_screen():
+    app = _app()
+    before = app.state.contacts.built_at
+    with TestClient(app) as client:
+        response = client.post(
+            "/refresh", headers={"referer": "http://testserver/contacts?q=ann"}, follow_redirects=False
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == "/contacts?q=ann"  # a path, never another origin
+        assert app.state.contacts.built_at > before
+        response = client.post("/refresh", follow_redirects=False)
+        assert response.headers["location"] == "/"
+
+
+def test_no_route_ends_in_z():
+    """Cloud Run's front end answers some paths ending in `z` itself."""
+    for route in _app().routes:
+        assert not getattr(route, "path", "").rstrip("/").endswith("z")

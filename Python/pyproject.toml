@@ -23,6 +23,9 @@ dependencies = [
     # which python:*-slim does not reliably carry. OUTREACH_TZ must resolve there.
     "tzdata>=2026.3",
     "google-cloud-tasks>=2.19",
+    "jinja2>=3.1.6",
+    "python-multipart>=0.0.32",
+    "google-auth>=2.57.1",
 ]
 
 [build-system]
@@ -33,6 +36,7 @@ build-backend = "hatchling.build"
 only-include = [
     "lib",
     "linkedinmcp",
+    "webapp",
     "functions.py",
     "pipeline.py",
     "profiles.py",

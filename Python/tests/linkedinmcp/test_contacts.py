@@ -279,6 +279,30 @@ def test_headline_comes_from_extracted_occupation():
     assert rows[0]["headline"] == "VP of Revenue Cycle"
 
 
+def test_headline_falls_back_to_the_linkedin_helper_mini_profile_headline():
+    """A profile fetched through Unipile (`lib.unipile.compat.to_lh_document`)
+    carries `occupation`; a LinkedIn Helper document keeps its headline only
+    at `miniProfile.headline`. `list_contacts` reads a projection of
+    `extracted`, so the list is checked as well as `get_contact`."""
+    db = FakeFirestore()
+    seed_analysis(db, "bob", last_reply_date=NOW)
+    seed_analysis(db, "ann", last_reply_date=NOW)
+    seed_extracted(
+        db, "bob", fullName="Bob Ray", occupation="Billing Manager at Acme",
+        miniProfile={"firstName": "Bob", "lastName": "Ray", "headline": "Billing Manager at Acme"},
+    )
+    seed_extracted(
+        db, "ann", fullName="Ann Lee",
+        miniProfile={"firstName": "Ann", "lastName": "Lee", "headline": "Owner, Lee Pathology", "avatar": "x"},
+    )
+
+    rows = {row["doc_id"]: row for row in contacts.list_contacts(db, SETTINGS, NOW)}
+
+    assert rows["bob"]["headline"] == "Billing Manager at Acme"
+    assert rows["ann"]["headline"] == "Owner, Lee Pathology"
+    assert contacts.get_contact(db, SETTINGS, "ann")["headline"] == "Owner, Lee Pathology"
+
+
 # --- list_contacts(): profile_url fallback -----------------------------------
 
 
