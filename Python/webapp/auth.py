@@ -118,8 +118,20 @@ class IapMiddleware:
             await self.app(scope, receive, send)
             return
         email = self._email_from(scope["headers"])
-        if email is None or email != self._allowed:
+        if email is None or email != self._allowed or _cross_site_write(scope):
             await _forbidden(send)
             return
         scope.setdefault("state", {})["user"] = email
         await self.app(scope, receive, send)
+
+
+def _cross_site_write(scope: Scope) -> bool:
+    """A POST another site's page made the browser send. The IAP sign-in
+    cookie travels with it, so the assertion alone would let it change a
+    contact. Browsers mark every request with `Sec-Fetch-Site`; only the
+    app's own pages (`same-origin`) and a typed address (`none`) may write.
+    A request without the header, such as a test client's, is not a browser's."""
+    if scope["method"] in ("GET", "HEAD"):
+        return False
+    site = dict(scope["headers"]).get(b"sec-fetch-site")
+    return site is not None and site not in (b"same-origin", b"none")

@@ -193,3 +193,19 @@ def analysis_body(extracted_doc: dict, result: ProfileAnalysis) -> dict:
         "memberDistance": get_member_distance(extracted_doc),
         "created_at": firestore.SERVER_TIMESTAMP,
     }
+
+
+def without_hand_set(body: dict, hand_set) -> dict:
+    """`body` without the fields a person set by hand, so a classifier's merge
+    leaves them alone.
+
+    `hand_set` is the `analysis` document's list of such field names, written
+    by the contacts webapp (`webapp/contacts.py`) when a person picks a value;
+    anything other than a list counts as empty. Every writer of `industry`,
+    `function`, `seniority` or `pipeline_stage` calls this before its merge:
+    `linkedinmcp.fetching._merge_classification`, `analysis.ipynb` Phase D and
+    `new-contacts.ipynb` Phase E. The stage planner honours the same list in
+    `pipeline.plan_pipeline`.
+    """
+    named = hand_set if isinstance(hand_set, list) else ()
+    return {key: value for key, value in body.items() if key not in named}

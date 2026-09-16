@@ -16,17 +16,39 @@ It complements the other two ways of working the contacts:
 Design: `docs/superpowers/specs/2026-09-16-contacts-webapp-design.md`.
 Plan and stages: `docs/superpowers/plans/2026-09-16-contacts-webapp.md`.
 
-## What it does now (stage 3)
+## What it does now (stages 1 to 5 and 8)
 
 | Screen | Path | Shows |
 |---|---|---|
-| Home | `/` | Total contacts; counts by industry, stage and handling (`none` = unset), each count a link to the Contacts list with that filter applied |
+| Home | `/` | Total contacts; counts by industry, stage and handling (`none` = unset), each count a link to the Contacts list with that filter applied; the **Get New Contacts** and **Sync Messages** buttons with a panel of their progress and results |
 | Contacts | `/contacts` | Every contact, 100 a page: filter, click a column heading to sort, search by name or headline |
-| Contact | `/contacts/{doc_id}` | One contact: classification, stage and its reason, handling, dates, the whole conversation, queued messages, the profile summary |
+| Contact | `/contacts/{doc_id}` | One contact: handling, industry, function, seniority and stage as dropdowns that save at once; the stage's reason, dates, the whole conversation, queued messages, the profile summary |
 
 Every screen's header says when the data was loaded ("data as of", Chicago
 time) and has a **Refresh** button that reloads every contact from Firestore.
-Nothing on these screens writes anything.
+The Contact screen's dropdowns and the Home screen's two buttons write; the
+rest only reads.
+
+**Buttons on the Home screen.** Each runs process steps on the outreach
+service, for real, never as a dry run:
+
+- **Get New Contacts** runs `get_contacts` for up to 10 new connections, which
+  views their LinkedIn profiles, takes about five minutes and counts against
+  the day's profile limit, then `classify_contacts` on exactly the profiles it
+  stored. The panel lists each classified contact with its industry, function,
+  seniority and whether it is in a target industry. When nothing was stored,
+  nothing is classified.
+- **Sync Messages** runs `sync_messages`: it stores the LinkedIn messages newer
+  than the newest stored one, cancels queued messages to anyone who replied,
+  refreshes the contact stats and stages up to 50 conversations.
+
+One run at a time: both buttons are disabled while a run is going, and the Home
+screen reloads itself every 3 seconds, reading the running job each time. The
+run advances only while the Home screen is open, so the second step of Get New
+Contacts starts when you next open it. The latest run is held in memory, so a
+restart or a deploy forgets it; the outreach service still finishes its jobs,
+and `get_run_report` there lists them. After a run, press **Refresh** to see
+the changes in the lists and counts.
 
 **Filters on the Contacts screen.** Pick a value for industry, function,
 seniority, stage or handling, choose Any, Yes or No for **Message Sent** and
@@ -46,6 +68,29 @@ industry `none` lists the unclassified contacts.
 - **Connected**: the date from the fetch queue, set for the connections the
   outreach service found, else the date LinkedIn Helper stored. On 2026-09-16,
   2,806 of 28,675 contacts had one; the column is empty for the rest.
+
+**Editing a contact.** On the Contact screen, Handling, Industry, Function,
+Seniority and Stage are dropdowns, Handling first. Choosing a value saves it to
+the contact's `analysis` document at once, updates that contact's row in the
+in-memory table, and reloads the page with a line saying what was saved. A
+write that another website's page sends is refused with 403: the browser's
+`Sec-Fetch-Site` header must say the request came from this site.
+
+- **Handling** offers `none`, `exclude` and `manual`. `exclude` or `manual`
+  also cancels the contact's pending and approved queued messages, and the
+  page says how many; `none` clears the field.
+- **Industry, Function, Seniority and Stage** offer the values the classifiers
+  use. A value chosen here is marked **set by hand**: the field's name goes
+  into the document's `hand_set` list and the time into `hand_set_at`; a stage
+  also gets the reason "set by hand". The classification notebooks,
+  `classify_contacts` and `classify_stages` then leave that field alone, but a
+  new message from the contact, or `classify_stages` with `force`, still
+  re-stages them. The outreach service does this from `v2.4.0`, deployed
+  2026-09-16.
+- **Release** takes the field out of `hand_set`, so the classifiers may change
+  it again; the value stays until they do.
+- A field without a value shows `none` greyed out. It cannot be chosen, so a
+  classification or a stage can be changed here but not cleared.
 
 **How the data is loaded.** At startup the app reads every `analysis` document
 (selected fields only, never `summary` or email addresses), every `extracted`
@@ -117,9 +162,9 @@ assertion itself as well: its signature, the audience
 the issuer, and the email. Anyone else gets a Google "access denied" page or a
 403.
 
-**Running now:** `v0.3.1`, revision `linkedin-contacts-00002-4bb`, deployed
-2026-09-16 at `https://linkedin-contacts-5czydyxqoa-uc.a.run.app`. Its startup
-took 26 seconds; the first revision's took 59.
+**Running now:** `v0.4.0`, revision `linkedin-contacts-00003-mgc`, deployed
+2026-09-16 at `https://linkedin-contacts-5czydyxqoa-uc.a.run.app`. Its
+application startup took 29 seconds; the two earlier revisions' took 59 and 26.
 
 **The deploy needed no console step.** IAP's built-in sign-in admits accounts
 of the organization that owns the project, and `vk-linkedin` belongs to the

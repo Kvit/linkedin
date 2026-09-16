@@ -1,6 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Home{% endblock %}
+{% block head %}{% if running %}<meta http-equiv="refresh" content="3">{% endif %}{% endblock %}
 {% block content %}
+<div class="home">
+<div>
 <h1>{{ total }} contact{{ "" if total == 1 else "s" }}</h1>
 <div class="tallies">
 {% for name, heading, rows in tallies %}
@@ -9,5 +12,53 @@
     <tbody>{% for value, count in rows %}<tr><td>{{ value }}</td><td class="num"><a href="/contacts?{{ qs({name: value}) }}">{{ count }}</a></td></tr>{% endfor %}</tbody>
   </table>
 {% endfor %}
+</div>
+</div>
+
+<aside class="routine">
+  <div class="buttons">
+    <form method="post" action="/routine/new-contacts">
+      <button type="submit" {% if running %}disabled{% endif %}
+        title="Views up to 10 new connections' LinkedIn profiles, about five minutes and counted against the day's profile limit, then classifies the ones stored">Get New Contacts</button>
+    </form>
+    <form method="post" action="/routine/sync-messages">
+      <button type="submit" {% if running %}disabled{% endif %}
+        title="Stores new LinkedIn messages, cancels queued messages to anyone who replied, and stages up to 50 conversations">Sync Messages</button>
+    </form>
+  </div>
+  <section class="panel">
+  {% if run %}
+    <h2>{{ run.label }} <span class="muted">started {{ run.started_at|local(tz) }}</span></h2>
+    {% if run.error %}<p class="problem">{{ run.error }}</p>
+    {% elif running %}<p>Running. This page reloads every 3 seconds.</p>
+    {% else %}<p>Done. Press Refresh to see the changes in the lists and counts.</p>{% endif %}
+    {% if run.problem %}<p class="problem">{{ run.problem }}</p>{% endif %}
+    {% for step in run.steps %}
+      <h3>{{ step_labels[step.tool] }}: {{ step.status or "starting" }}</h3>
+      {% if step.progress and step.status != "succeeded" %}
+        <p class="muted">{{ step.progress.note or "" }}{% if step.progress.total %} ({{ step.progress.done }} of {{ step.progress.total }}){% endif %}</p>
+      {% endif %}
+      {% set counts, tables = result_summary(step.result) %}
+      {% if counts %}
+      <table class="result">
+        <tbody>{% for label, text in counts %}<tr><td>{{ label }}</td><td>{{ text }}</td></tr>{% endfor %}</tbody>
+      </table>
+      {% endif %}
+      {% for label, columns, rows in tables %}
+      <table class="result">
+        <caption>{{ label }}</caption>
+        <thead><tr>{% for column in columns %}<th>{{ column|replace("_", " ") }}</th>{% endfor %}</tr></thead>
+        <tbody>{% for row in rows %}<tr>{% for column in columns %}{% set value = row.get(column) %}
+          <td>{% if column == "doc_id" and value %}<a href="/contacts/{{ value|urlencode }}">{{ value }}</a>{% elif value is sameas true %}yes{% elif value is sameas false %}no{% elif value is not none %}{{ value }}{% endif %}</td>
+        {% endfor %}</tr>{% endfor %}</tbody>
+      </table>
+      {% endfor %}
+    {% endfor %}
+    {% if run.note %}<p>{{ run.note }}</p>{% endif %}
+  {% else %}
+    <p class="muted">Press a button: its progress and results show here.</p>
+  {% endif %}
+  </section>
+</aside>
 </div>
 {% endblock %}

@@ -46,6 +46,7 @@ subclass polars stores to the microsecond.
 """
 
 import logging
+import threading
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -309,14 +310,32 @@ def query(
 
 class Contacts:
     """Holds the frame and its build time. `db_factory` is called on each
-    build (`clients.firestore_client` in the app, a `FakeFirestore` in tests)."""
+    build (`clients.firestore_client` in the app, a `FakeFirestore` in tests).
+    The lock makes a swap and a patch take turns: without it, a patch
+    computed from the old frame could replace a rebuild that finished
+    meanwhile."""
 
     def __init__(self, db_factory: Callable[[], object]) -> None:
         self._db_factory = db_factory
+        self._lock = threading.Lock()
         self.frame: pl.DataFrame | None = None
         self.built_at: datetime | None = None
 
     def rebuild(self) -> None:
         """Build a new frame and swap it in; until then readers see the old one."""
         frame = load_frame(self._db_factory())
-        self.frame, self.built_at = frame, datetime.now(UTC)
+        with self._lock:
+            self.frame, self.built_at = frame, datetime.now(UTC)
+
+    def patch(self, doc_id: str, **fields) -> None:
+        """Give one contact's row the values the webapp just wrote, so lists
+        and counts show an edit without a rebuild. The row is replaced whole
+        (a list value such as `hand_set` cannot be set through `pl.lit`); row
+        order does not matter, every query sorts. A contact the frame does
+        not hold yet waits for the next Refresh."""
+        with self._lock:
+            row = contact_row(self.frame, doc_id)
+            if row is None:
+                return
+            others = self.frame.filter(pl.col("doc_id") != doc_id)
+            self.frame = pl.concat([others, pl.from_dicts([row | fields], schema=self.frame.schema)])

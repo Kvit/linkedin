@@ -974,6 +974,21 @@ def test_a_half_written_classification_is_merged_over_and_the_contacts_other_fie
     assert (stored["industry"], stored["function"], stored["seniority"]) == ("Pathology", "Operations", "Director")
 
 
+def test_a_field_set_by_hand_survives_the_merge_while_the_others_are_filled(tick, gemini):
+    """The contacts webapp names a hand-picked `industry` in `hand_set`; the
+    contact is not yet classified, so the merge runs, but leaves it alone."""
+    seed_fetch(tick.db, SLUG, now=QUEUED_AT)
+    seed_contact(tick.db, SLUG, email="pat@example.com", industry="Hospital", hand_set=["industry"])
+    tick.client.users.profiles[SLUG] = full_profile()
+
+    result = tick.fetch()
+
+    assert result == {"fetch": "stored", "classified": True}
+    stored = document(tick.db, "analysis", SLUG)
+    assert (stored["industry"], stored["function"], stored["seniority"]) == ("Hospital", "Operations", "Director")
+    assert (stored["email"], stored["hand_set"]) == ("pat@example.com", ["industry"])
+
+
 def test_a_complete_classification_in_analysis_is_kept_and_gemini_is_not_called(tick, gemini):
     """Minor M4: `analysis/{doc_id}` already holds industry, function and
     seniority, all non-empty. The profile is stored, but nothing is merged

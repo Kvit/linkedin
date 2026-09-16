@@ -1310,7 +1310,9 @@ def get_contacts(days: int = 0, max_profiles: int = 10, dry_run: bool = True) ->
         "Which profiles: `doc_ids` when given (e.g. `get_contacts`' `stored_slugs`), else every stored "
         "profile -- or with `days`, only those stored in the last `days` days -- the most recently "
         "stored first. A classified contact is never re-classified, and a profile too short to judge "
-        "is skipped. At most `max` (1 to 50) per job. The result names each contact's industry and "
+        "is skipped. A field a person set by hand in the contacts webapp -- named in the contact's "
+        "`hand_set` -- keeps its value while the empty ones are filled. At most `max` (1 to 50) per job. "
+        "The result names each contact's industry and "
         "whether it is a target industry for the intro."
     )
 )
@@ -1337,7 +1339,9 @@ def classify_contacts(
         "`pipeline-classify.py`: the sales-pipeline stage (`lead`, `prospect`, `soft_no`, `reject`, `not_relevant`) of every "
         "contact whose newest reply is not classified yet -- or of `doc_ids` only, with `force` to "
         "classify them again whatever is stored -- at most `limit` (1 to 50), newest conversations "
-        "first, with Gemini. A contact who becomes a `lead` raises one alert. `sync_messages` "
+        "first, with Gemini. A stage a person set by hand in the contacts webapp -- `pipeline_stage` "
+        "named in the contact's `hand_set` -- stays until the contact writes again or `force` is given. "
+        "A contact who becomes a `lead` raises one alert. `sync_messages` "
         "already stages new replies; run this for any it did not reach, or to re-stage a contact."
     )
 )

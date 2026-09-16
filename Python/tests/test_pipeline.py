@@ -215,6 +215,29 @@ def test_force_requeues_a_named_contact_whose_key_is_unchanged():
     assert queue == ["ann"]
 
 
+def test_a_stage_set_by_hand_survives_the_silent_rule_and_reprocess_all():
+    """The contacts webapp names a hand-picked stage in `hand_set`: a lead
+    marked after a call, with no LinkedIn reply, must not become a prospect."""
+    by_hand = {"pipeline_stage": "lead", "hand_set": ["pipeline_stage"]}
+    silent, queue, tally = plan_pipeline(
+        {"ann": _entry(0), "bob": _entry(1, "m2", _day(2))},
+        {"ann": by_hand, "bob": {**by_hand, "pipeline_message_id": "m2"}},
+        reprocess_all=True,
+    )
+
+    assert silent == [] and queue == []
+    assert tally["unchanged"] == 2
+
+
+def test_a_stage_set_by_hand_is_still_requeued_by_force_or_a_newer_reply():
+    by_hand = {"pipeline_stage": "lead", "pipeline_message_id": "m2", "hand_set": ["pipeline_stage"]}
+    _silent, queue, _tally = plan_pipeline({"ann": _entry(1, "m2", _day(2))}, {"ann": by_hand}, force={"ann"})
+    assert queue == ["ann"]
+
+    _silent, queue, _tally = plan_pipeline({"ann": _entry(2, "m5", _day(5))}, {"ann": by_hand})
+    assert queue == ["ann"]
+
+
 def test_a_forced_contact_with_no_messages_is_reported_not_ignored():
     silent, queue, tally = plan_pipeline({}, {}, force={"ghost"})
 

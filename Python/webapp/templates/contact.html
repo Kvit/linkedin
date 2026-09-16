@@ -4,12 +4,36 @@
 {% block content %}
 <h1>{{ contact.name or contact.doc_id }} <a href="{{ contact.profile_url }}" target="_blank" rel="noopener" class="muted">LinkedIn</a></h1>
 <p>{{ contact.headline or "" }}</p>
+{% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
 <dl class="detail">
-  <dt>Industry</dt><dd>{{ contact.industry or "none" }}</dd>
-  <dt>Function</dt><dd>{{ contact.function or "none" }}</dd>
-  <dt>Seniority</dt><dd>{{ contact.seniority or "none" }}</dd>
-  <dt>Stage</dt><dd>{{ contact.stage or "none" }}{% if contact.stage_reason %} <span class="muted">{{ contact.stage_reason }}</span>{% endif %}</dd>
-  <dt>Handling</dt><dd>{{ contact.handling or "none" }}</dd>
+  {% for field in fields %}
+  <dt>{{ field.label }}</dt>
+  <dd>
+    <form method="post" action="/contacts/{{ contact.doc_id|urlencode }}/field" class="inline">
+      <input type="hidden" name="name" value="{{ field.name }}">
+      <select name="value" onchange="this.form.submit()" aria-label="{{ field.label }}">
+        {%- if field.current not in field.options %}
+        <option value="" disabled selected>{{ field.current }}</option>
+        {%- endif %}
+        {%- for value in field.options %}
+        <option value="{{ value }}"{% if value == field.current %} selected{% endif %}>{{ value }}</option>
+        {%- endfor %}
+      </select>
+    </form>
+    {%- if field.by_hand %}
+    <span class="muted">set by hand</span>
+    <form method="post" action="/contacts/{{ contact.doc_id|urlencode }}/release" class="inline">
+      <input type="hidden" name="name" value="{{ field.name }}">
+      <button type="submit" class="link" title="Let the classifiers change this value again">Release</button>
+    </form>
+    {%- endif %}
+    {%- if field.name == "handling" %}
+    <span class="muted">exclude or manual cancels this contact's queued messages</span>
+    {%- elif field.name == "pipeline_stage" and contact.stage_reason %}
+    <span class="muted">{{ contact.stage_reason }}</span>
+    {%- endif %}
+  </dd>
+  {% endfor %}
   <dt>Sent / replied</dt><dd>{{ contact.sent_total or 0 }} / {{ contact.replied_total or 0 }}</dd>
   <dt>Last sent</dt><dd>{{ day(contact.last_sent_date) }}</dd>
   <dt>Last reply</dt><dd>{{ day(contact.last_reply_date) }}</dd>

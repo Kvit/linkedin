@@ -29,8 +29,8 @@ class WebappSettings(BaseConfig):
     allowed_email: str
 
     #: The outreach service's MCP endpoint, `OUTREACH_URL` in
-    #: `linkedinmcp/platform/ids.env` (with the trailing slash). Unused until
-    #: the routine buttons (plan stage 8); required now so a deploy sets it once.
+    #: `linkedinmcp/platform/ids.env` (with the trailing slash), which the
+    #: Home screen's buttons call (`routine.py`).
     outreach_url: str
 
     #: The IAP JWT audience for this Cloud Run service:

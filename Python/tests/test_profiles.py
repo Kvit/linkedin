@@ -26,6 +26,7 @@ from profiles import (
     Seniority,
     analysis_body,
     classify_profile,
+    without_hand_set,
 )
 
 # --- analysis_body --------------------------------------------------------
@@ -45,6 +46,17 @@ def _extracted(**overrides):
 
 def _result(industry="RCM", function="Operations", seniority="Director"):
     return ProfileAnalysis(industry=industry, function=function, seniority=seniority)
+
+
+def test_without_hand_set_drops_exactly_the_fields_a_person_set():
+    body = analysis_body(_extracted(), _result())
+
+    kept = without_hand_set(body, ["industry", "pipeline_stage"])
+
+    assert set(body) - set(kept) == {"industry"}
+    assert kept["function"] == "Operations"
+    assert without_hand_set(body, None) == body
+    assert without_hand_set(body, "industry") == body  # not a list: nothing was set by hand
 
 
 def test_analysis_body_has_exactly_the_eight_expected_keys():

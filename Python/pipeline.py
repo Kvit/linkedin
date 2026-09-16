@@ -186,13 +186,19 @@ def plan_pipeline(
 
     Args:
         transcripts: `build_transcripts` output.
-        stored: contact id to its current ``pipeline_stage`` and
-            ``pipeline_message_id`` (either may be absent), for every contact
-            that has an `analysis` document. A contact absent here has none and
-            must never be minted.
+        stored: contact id to its current ``pipeline_stage``,
+            ``pipeline_message_id`` and ``hand_set`` (any may be absent), for
+            every contact that has an `analysis` document. A contact absent
+            here has none and must never be minted.
         reprocess_all: queue every contact with an inbound message, whatever is
-            stored -- for prompt or taxonomy changes.
-        force: contacts to queue even when nothing changed.
+            stored -- for prompt or taxonomy changes -- except a stage a person
+            set by hand (``"pipeline_stage"`` in ``hand_set``, written by the
+            contacts webapp).
+        force: contacts to queue even when nothing changed, hand-set or not.
+
+    A hand-set stage is never replaced by the silent rule or by
+    ``reprocess_all``. A newer inbound message still queues it: the latest
+    signal wins, as for any other contact.
 
     Returns:
         tuple: ``(silent, queue, tally)``. ``silent`` are contacts to mark
@@ -215,19 +221,22 @@ def plan_pipeline(
             tally["missing"] += 1
             continue
 
+        hand_set = current.get("hand_set")
+        by_hand = isinstance(hand_set, list) and "pipeline_stage" in hand_set
+
         if entry["inbound_total"] == 0:
             if current.get("pipeline_message_id"):
                 # Gemini read a message that is no longer in the window. The
                 # judgment stands; a reject turned prospect would be messaged.
                 tally["stale"] += 1
-            elif current.get("pipeline_stage") == SILENT_STAGE:
+            elif by_hand or current.get("pipeline_stage") == SILENT_STAGE:
                 tally["unchanged"] += 1
             else:
                 silent.append(contact)
             continue
 
         if (
-            reprocess_all
+            (reprocess_all and not by_hand)
             or contact in force
             or current.get("pipeline_message_id") != entry["newest_inbound_id"]
         ):
@@ -352,7 +361,7 @@ PAGE_SIZE = 250
 
 #: `select()` leaves absent fields out of `to_dict()`, so every read is `.get()`.
 MESSAGE_FIELDS = ["chat_id", "contact_doc_id", "is_sender", "timestamp", "text", "is_event", "deleted"]
-ANALYSIS_FIELDS = ["summary", "profileUrl", "pipeline_stage", "pipeline_message_id", *ON_FILE_FIELDS]
+ANALYSIS_FIELDS = ["summary", "profileUrl", "pipeline_stage", "pipeline_message_id", "hand_set", *ON_FILE_FIELDS]
 
 logger = logging.getLogger("pipeline")
 

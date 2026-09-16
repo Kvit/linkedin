@@ -400,17 +400,22 @@ def _merge_classification(db, doc_id, body) -> bool:
     notebook's Phase E, or a human, may have classified the contact while
     Gemini ran. Returns whether it wrote. `merge=True`: the document also
     carries contact names, emails and message tallies that exist nowhere
-    else.
+    else. A field a person set by hand in the contacts webapp (named in
+    `hand_set`) is left out of the merge, so a hand-set `industry` survives
+    while `function` and `seniority` are filled.
     """
     from google.cloud import firestore
+
+    import profiles
 
     ref = db.collection(ANALYSIS_COLLECTION).document(doc_id)
 
     @firestore.transactional
     def _merge(transaction):
-        if _has_classification(ref.get(transaction=transaction).to_dict()):
+        current = ref.get(transaction=transaction).to_dict()
+        if _has_classification(current):
             return False
-        transaction.set(ref, body, merge=True)
+        transaction.set(ref, profiles.without_hand_set(body, (current or {}).get("hand_set")), merge=True)
         return True
 
     return _merge(db.transaction())

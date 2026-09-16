@@ -56,9 +56,9 @@ def test_wrong_audience_issuer_or_garbage_yields_none():
     assert auth.verify_iap_jwt("not.a.jwt", AUDIENCE, request=request) is None
 
 
-async def _call(middleware, path, headers=()):
+async def _call(middleware, path, headers=(), method="GET"):
     sent = []
-    scope = {"type": "http", "path": path, "headers": list(headers), "state": {}}
+    scope = {"type": "http", "method": method, "path": path, "headers": list(headers), "state": {}}
 
     async def receive():
         return {"type": "http.request", "body": b""}
@@ -103,6 +103,18 @@ async def test_dev_user_passes_without_a_header():
     scope, sent = await _call(middleware, "/contacts")
     assert sent[0]["status"] == 200
     assert scope["state"]["user"] == ME
+
+
+@pytest.mark.anyio
+async def test_a_post_another_site_made_is_refused_but_following_a_link_is_not():
+    middleware = auth.IapMiddleware(_inner, audience=None, allowed_email=ME, dev_user=ME)
+    cross_site = [(b"sec-fetch-site", b"cross-site")]
+    _scope, sent = await _call(middleware, "/contacts/ann/field", cross_site, method="POST")
+    assert sent[0]["status"] == 403
+    _scope, sent = await _call(middleware, "/contacts/ann/field", [(b"sec-fetch-site", b"same-origin")], method="POST")
+    assert sent[0]["status"] == 200
+    _scope, sent = await _call(middleware, "/contacts/ann", cross_site)
+    assert sent[0]["status"] == 200
 
 
 @pytest.mark.anyio

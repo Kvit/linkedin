@@ -5,9 +5,9 @@ one at import would read settings and break test collection. Pass
 `settings`, `outreach` and `contacts` to skip the environment entirely --
 the path every test takes.
 
-Three screens: Home (`/`), Contacts (`/contacts`) and Contact
-(`/contacts/{doc_id}`, in `contacts.py`). All but `/health` sit behind
-`auth.IapMiddleware`.
+Three screens: Home (`/`, with the buttons of `routine.py`), Contacts
+(`/contacts`) and Contact (`/contacts/{doc_id}`, in `contacts.py`). All but
+`/health` sit behind `auth.IapMiddleware`.
 """
 
 import asyncio
@@ -19,7 +19,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from linkedinmcp import clients, settings as outreach_cfg
-from webapp import auth, contacts as contact_screen, projection, render, settings as cfg
+from webapp import auth, contacts as contact_screen, projection, render, routine, settings as cfg
 
 logger = logging.getLogger(__name__)
 
@@ -59,25 +59,33 @@ def create_app(
     app.state.settings = settings
     app.state.outreach = outreach
     app.state.contacts = contacts
+    app.state.routine = routine.Routine()
     app.add_middleware(
         auth.IapMiddleware, audience=settings.iap_audience, allowed_email=settings.allowed_email,
         dev_user=settings.dev_user,
     )
     app.mount("/static", StaticFiles(directory=render.STATIC_DIR), name="static")
     app.include_router(contact_screen.router)
+    app.include_router(routine.router)
 
     @app.get("/health")
     def health() -> dict[str, bool]:
         return {"ok": True}
 
     @app.get("/")
-    def home(request: Request):
+    async def home(request: Request):
+        """The counts, and the buttons' panel: a run going is advanced first."""
+        await routine.advance(app)
         frame = contacts.frame
         tallies = [
             (name, heading, projection.counts(frame, projection.VALUE_FILTERS[name])) for name, heading in COUNTED.items()
         ]
         return render.templates.TemplateResponse(
-            request, "home.html", render.page_context(request, total=frame.height, tallies=tallies)
+            request, "home.html",
+            render.page_context(
+                request, total=frame.height, tallies=tallies, actions=routine.ACTIONS,
+                run=app.state.routine.run, running=app.state.routine.running,
+            ),
         )
 
     @app.get("/contacts")

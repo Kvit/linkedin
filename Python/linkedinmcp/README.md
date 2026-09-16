@@ -56,8 +56,20 @@ design notes behind them are
 `2026-09-11-mcp-process-tools-design.md` (MCP v2) and
 `2026-09-14-send-messages-design.md` (`send_messages`, no schedule).
 
-**What is running right now:** `v2.3.0`, revision `linkedin-outreach-00015-k68`,
-100% of traffic, deployed 2026-09-15 and checked straight after, read-only:
+**What is running right now:** `v2.4.0`, revision `linkedin-outreach-00016-gqb`,
+100% of traffic, deployed 2026-09-16 and checked straight after, read-only
+except one dry-run job record: `get_status` answering `firestore` and `unipile`
+`ok`; `tools/list` returning 29 tools, the `classify_contacts` and
+`classify_stages` descriptions naming `hand_set` and `contact_report`'s naming
+LinkedIn Helper; `contact_report()` returning `total` 28,675 and 500 rows, 298
+of them with `date_connected`, 14 from the fetch queue and 284 from LinkedIn
+Helper's date, which `v2.3.0` left `null`; and a dry-run `classify_stages` job
+`succeeded` with 0 to classify, 0 to mark silent and 2,118 unchanged. The
+hand-set guard itself is checked by tests only: no contact had a stage set by
+hand yet.
+
+`v2.3.0`, revision `linkedin-outreach-00015-k68`, deployed 2026-09-15, was
+checked straight after, read-only:
 `tools/list` returning exactly 29 tools with `contact_report` among them;
 `contact_report()` with every filter at `All` answering in 19.4 s (13.1 s on a
 second call) with `total` 28,655, 500 rows (64,822 bytes) and `next_offset` 500;
@@ -101,6 +113,7 @@ read-only calls.
 
 | Version | Revision | What it changed |
 |---|---|---|
+| `v2.4.0` | `linkedin-outreach-00016-gqb` | Fields set by hand in the contacts webapp, named in the contact's `hand_set`, are kept: `classify_contacts` fills only the other classification fields, and `classify_stages` and `sync_messages` leave a hand-set stage until the contact writes again or `force` is given. `contact_report`'s `date_connected` falls back to LinkedIn Helper's `connect.connectedAt` in `extracted`; `get_contact` and `list_contacts` take the headline from `miniProfile.headline` when `occupation` is empty. 29 tools. |
 | `v2.3.0` | `linkedin-outreach-00015-k68` | `contact_report(categories, handling, pipeline_stage, offset, limit)`: every `analysis` contact matching the filters, 500 rows a page, with `date_connected` from the fetch queue and counts on the first page. 29 tools. |
 | `v2.2.0` | `linkedin-outreach-00014-bgd` | `send_messages`: sends every due message from one call, one a minute by default, at most 50, chaining jobs past 30 minutes. No schedule: `scheduler.cmd` removed, intros and agent messages due at once, every tool description naming `send_messages` instead of the tick. 28 tools. |
 | `v2.1.1` | `linkedin-outreach-00013-xkz` | Five fixes from the 2026-09-11 code review -- `get_contacts` fetching only the connections it listed, `send_intro` reporting blocked writes truthfully, a lost job stopping at its next heartbeat, a reply stored exactly on the sync watermark cancelling queued sends, and the default contact page counting a send as activity -- and intro spacing became a setting (1-5 minutes, was a fixed 10-30). |
