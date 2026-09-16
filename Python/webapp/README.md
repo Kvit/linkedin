@@ -16,18 +16,39 @@ It complements the other two ways of working the contacts:
 Design: `docs/superpowers/specs/2026-09-16-contacts-webapp-design.md`.
 Plan and stages: `docs/superpowers/plans/2026-09-16-contacts-webapp.md`.
 
-## What it does now (stages 1 to 5 and 8)
+## What it does now (stages 1 to 5 and 8, and the Need my answer view)
 
 | Screen | Path | Shows |
 |---|---|---|
 | Home | `/` | Total contacts; counts by industry, stage and handling (`none` = unset), each count a link to the Contacts list with that filter applied; the **Get New Contacts** and **Sync Messages** buttons with a panel of their progress and results |
 | Contacts | `/contacts` | Every contact, 100 a page: filter, click a column heading to sort, search by name or headline |
-| Contact | `/contacts/{doc_id}` | One contact: handling, industry, function, seniority and stage as dropdowns that save at once; the stage's reason, dates, the whole conversation, queued messages, the profile summary |
+| Contact | `/contacts/{doc_id}` | One contact: handling, industry, function, seniority and stage as dropdowns that save at once, the dates beside them; the conversation as a thread, your messages on the right and theirs on the left, a divider for each day; queued messages; the profile summary |
 
 Every screen's header says when the data was loaded ("data as of", Chicago
-time) and has a **Refresh** button that reloads every contact from Firestore.
+time), has a **Refresh** button that reloads every contact from Firestore,
+and a **Need my answer** button with the number of contacts waiting on you.
 The Contact screen's dropdowns and the Home screen's two buttons write; the
 rest only reads.
+
+**Need my answer** opens the Contacts list narrowed to the prospects, leads and
+contacts with no stage who wrote last: their newest readable message is newer
+than your newest readable one, or you never wrote to them. A contact staged
+`soft_no`, `reject`, `not_relevant` or `unknown` is left out. A system event,
+a deleted message or a blank one does not count as an answer. The list is sorted by when they wrote, newest
+first; the other filters and the sort still work inside the view, and
+**Show all contacts** leaves it. The number is counted when the data is
+loaded, so press **Refresh** after a sync or after answering someone.
+
+**The conversation** shows the transcript the classifiers read: each message
+is one paragraph, dated to the day, with its line breaks joined. When a
+contact has more than one LinkedIn conversation, each gets a heading. Very
+long histories show the newest 20,000 characters and say so.
+
+**The look.** The colours are the two stains a pathology slide is read in:
+hematoxylin blue-violet for your messages and every action, eosin pink-red for
+the contact's messages and the Need my answer count. Interface text is
+Atkinson Hyperlegible Next and message text is Literata, both loaded from
+Google Fonts in the browser, with system fonts as the fallback.
 
 **Buttons on the Home screen.** Each runs process steps on the outreach
 service, for real, never as a dry run:
@@ -50,13 +71,14 @@ restart or a deploy forgets it; the outreach service still finishes its jobs,
 and `get_run_report` there lists them. After a run, press **Refresh** to see
 the changes in the lists and counts.
 
-**Filters on the Contacts screen.** Pick a value for industry, function,
-seniority, stage or handling, choose Any, Yes or No for **Message Sent** and
-**Message Received**, and press **Apply**; **Clear** removes them all. Every
-filter combines with the others, with the search and with the sort, and the
-sort headings and page links keep them. A value dropdown lists the values the
-contacts actually hold, most frequent first; `none` is an unset value, so
-industry `none` lists the unclassified contacts.
+**Filters on the Contacts screen.** Tick one or more values for industry,
+function, seniority, stage or handling, choose Any, Yes or No for **Message
+Sent** and **Message Received**, and press **Apply**; **Clear** removes them
+all. Values ticked in one filter widen it, so industry RCM and Pathology keeps
+both; different filters narrow each other, and combine with the search and
+the sort, and the sort headings and page links keep them. Each list shows the
+values the contacts actually hold, most frequent first; `none` is an unset
+value, so industry `none` lists the unclassified contacts.
 
 - **Message Sent**: Yes keeps the contacts you have written to (`sent_total`
   above 0), No those you have not; Any, the default, does not filter.
@@ -162,9 +184,9 @@ assertion itself as well: its signature, the audience
 the issuer, and the email. Anyone else gets a Google "access denied" page or a
 403.
 
-**Running now:** `v0.4.0`, revision `linkedin-contacts-00003-mgc`, deployed
+**Running now:** `v0.7.0`, revision `linkedin-contacts-00006-vxn`, deployed
 2026-09-16 at `https://linkedin-contacts-5czydyxqoa-uc.a.run.app`. Its
-application startup took 29 seconds; the two earlier revisions' took 59 and 26.
+application startup took 32 seconds.
 
 **The deploy needed no console step.** IAP's built-in sign-in admits accounts
 of the organization that owns the project, and `vk-linkedin` belongs to the

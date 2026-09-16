@@ -28,6 +28,12 @@ a `replied_total` of 0 on 2026-09-16, most of them people who wrote first.
 `sent_total` needs no such care: the contacts with one above 0 are exactly
 the 1,985 with a stored outbound message.
 
+`needs_answer` is true when the contact wrote last: their newest readable
+message (`last_received_at`, `build_transcripts`' `newest_inbound_date`)
+is newer than our newest readable one, or we never wrote. Both sides are
+read from the same `messages` stream, not from `last_sent_date`, which
+also counts a system event or a deleted message.
+
 About 65,000 document reads and 14 to 17 seconds a build (measured
 2026-09-16), so it is built at startup and rebuilt only when asked (the
 Refresh button, and later after a job the webapp started).
@@ -82,14 +88,19 @@ SCHEMA: dict[str, pl.DataType] = {
     "sent_total": pl.Int64, "replied_total": pl.Int64,
     "last_sent_date": _DATETIME, "last_reply_date": _DATETIME, "intro_sent_at": _DATETIME,
     "handling": pl.String, "hand_set": _TEXT_LIST, "profileUrl": pl.String,
-    "connected_at": _DATETIME, "inbound_total": pl.Int64,
+    "connected_at": _DATETIME, "inbound_total": pl.Int64, "last_received_at": _DATETIME, "needs_answer": pl.Boolean,
 }
 
 #: Columns a page may sort on. Anything else falls back to `activity_at`.
 SORTABLE = (
     "name", "headline", "industry", "function", "seniority", "pipeline_stage", "handling",
     "sent_total", "replied_total", "connected_at", "last_sent_date", "last_reply_date", "activity_at",
+    "last_received_at",
 )
+
+#: The named views, by their `view` query value: the label the header's
+#: button and the list show.
+VIEWS = {"needs_answer": "Need my answer"}
 
 #: The Contacts screen's value filters: query parameter, and the column it
 #: matches through `normalized`.
@@ -101,6 +112,11 @@ VALUE_FILTERS = {
 #: What an empty or missing value is called in counts and filters, as
 #: `linkedinmcp.contacts.NONE` names it for `contact_report`.
 NONE = "none"
+
+#: The pipeline stages Need my answer keeps, `NONE` for no stage: a contact
+#: staged `soft_no`, `reject`, `not_relevant` or `unknown` is left out
+#: however recently they wrote.
+ANSWER_STAGES = ("prospect", "lead", NONE)
 
 #: The Message Sent and Message Received filters' query values; a missing
 #: or other value is Any.
@@ -150,6 +166,29 @@ def _epoch_ms(value):
     return value
 
 
+def _newest_outbound(documents) -> dict[str, datetime]:
+    """Each contact's newest readable message from us. Readable is
+    `pipeline.build_transcripts`' rule, repeated because that function
+    returns only the newest message from them: a contact, a timestamp, not
+    an event, not deleted, some text."""
+    newest: dict[str, datetime] = {}
+    for document in documents:
+        body = document.to_dict() or {}
+        contact, timestamp = body.get("contact_doc_id"), body.get("timestamp")
+        if (
+            body.get("is_sender") != 1
+            or not contact
+            or timestamp is None
+            or body.get("is_event") == 1
+            or body.get("deleted") == 1
+            or not (body.get("text") or "").strip()
+        ):
+            continue
+        if contact not in newest or timestamp > newest[contact]:
+            newest[contact] = timestamp
+    return newest
+
+
 def load_frame(db) -> pl.DataFrame:
     """Stream the four collections and build the frame."""
     import pipeline  # about 0.8 s, once per process, as `linkedinmcp.contacts.get_conversation` imports it
@@ -162,6 +201,8 @@ def load_frame(db) -> pl.DataFrame:
             **_fields(snapshot.to_dict() or {}, ANALYSIS_FIELDS, dropped),
             **dict.fromkeys(JOINED_FIELDS),
             "inbound_total": 0,
+            "last_received_at": None,
+            "needs_answer": False,
         }
     for snapshot in db.collection(EXTRACTED_COLLECTION).select(EXTRACTED_SELECT).stream():
         row = rows.get(snapshot.id)
@@ -182,10 +223,19 @@ def load_frame(db) -> pl.DataFrame:
         queued = _fields(snapshot.to_dict() or {}, ["connected_at"], dropped)
         if queued["connected_at"] is not None:
             row.update(queued)
-    transcripts = pipeline.build_transcripts(pipeline.load_messages(db.collection(MESSAGES_COLLECTION)))
+    documents = pipeline.load_messages(db.collection(MESSAGES_COLLECTION))
+    transcripts = pipeline.build_transcripts(documents)
+    newest_sent = _newest_outbound(documents)
     for doc_id, entry in transcripts.items():
-        if doc_id in rows:
-            rows[doc_id]["inbound_total"] = entry["inbound_total"]
+        row = rows.get(doc_id)
+        if row is None:
+            continue
+        received, sent = entry["newest_inbound_date"], newest_sent.get(doc_id)
+        row.update(
+            inbound_total=entry["inbound_total"],
+            last_received_at=received,
+            needs_answer=received is not None and (sent is None or received > sent),
+        )
     if dropped:
         logger.warning("dropped values of the wrong type, by field: %s", dict(dropped))
     return _derive(pl.from_dicts(list(rows.values()), schema=SCHEMA))
@@ -223,6 +273,12 @@ def normalized(column: str) -> pl.Expr:
     return pl.col(column).fill_null(NONE)
 
 
+def needs_my_answer() -> pl.Expr:
+    """The Need my answer view, for the list and the header's count alike:
+    the contact wrote last, and their stage is one of `ANSWER_STAGES`."""
+    return pl.col("needs_answer") & normalized("pipeline_stage").is_in(list(ANSWER_STAGES))
+
+
 def counts(frame: pl.DataFrame, column: str) -> list[tuple[str, int]]:
     """Each value of `column` and how many contacts hold it, most frequent
     first, ties in ASCII order."""
@@ -242,51 +298,71 @@ def choices(frame: pl.DataFrame) -> dict[str, list[str]]:
     return {name: [value for value, _count in counts(frame, column)] for name, column in VALUE_FILTERS.items()}
 
 
+def _every(params: Mapping[str, str], name: str) -> list[str]:
+    """Every value of `name`: all of a repeated query parameter, or the one
+    value a plain mapping holds."""
+    if hasattr(params, "getlist"):
+        return params.getlist(name)
+    value = params.get(name)
+    return [] if value is None else [value]
+
+
 @dataclass(frozen=True)
 class Filters:
-    """What the Contacts list is narrowed to. A value filter holds a value
-    as `normalized` reads it (`none` for unset), or `None` for all. `sent`
+    """What the Contacts list is narrowed to. A value filter holds the values
+    a contact may have, as `normalized` reads them (`none` for unset), or
+    nothing for all. `sent`
     is `True` for the contacts with a message from us (`sent_total` above
     0), `False` for those with none, `None` for any; `received` the same
-    over `inbound_total`."""
+    over `inbound_total`. `view` is a key of `VIEWS` or `None`: the
+    `needs_answer` view is `needs_my_answer`."""
 
-    industry: str | None = None
-    function: str | None = None
-    seniority: str | None = None
-    stage: str | None = None
-    handling: str | None = None
+    industry: tuple[str, ...] = ()
+    function: tuple[str, ...] = ()
+    seniority: tuple[str, ...] = ()
+    stage: tuple[str, ...] = ()
+    handling: tuple[str, ...] = ()
     sent: bool | None = None
     received: bool | None = None
+    view: str | None = None
 
     @classmethod
     def from_params(cls, params: Mapping[str, str], known: dict[str, list[str]]) -> Self:
-        """Filters from a query string. A value `known` (from `choices`)
-        does not hold is ignored, and so is a `sent` or `received` other
-        than `yes` or `no`, so the page never shows one filter and applies
-        another."""
+        """Filters from a query string, where a value filter repeats
+        (`industry=RCM&industry=Pathology`). A value `known` (from
+        `choices`) does not hold is ignored, and so is a `sent` or
+        `received` other than `yes` or `no`, so the page never shows one
+        filter and applies another."""
         return cls(
-            **{name: value for name in VALUE_FILTERS if (value := params.get(name)) in known[name]},
+            **{
+                name: tuple(dict.fromkeys(value for value in _every(params, name) if value in known[name]))
+                for name in VALUE_FILTERS
+            },
             sent=YES_NO.get(params.get("sent")),
             received=YES_NO.get(params.get("received")),
+            view=params.get("view") if params.get("view") in VIEWS else None,
         )
 
     def apply(self, frame: pl.DataFrame) -> pl.DataFrame:
         """`frame` narrowed to the contacts matching every filter that is set."""
         conditions = [
-            normalized(column) == getattr(self, name)
+            normalized(column).is_in(list(values))
             for name, column in VALUE_FILTERS.items()
-            if getattr(self, name) is not None
+            if (values := getattr(self, name))
         ]
         for wanted, has in ((self.sent, pl.col("sent_total").fill_null(0) > 0), (self.received, pl.col("inbound_total") > 0)):
             if wanted is not None:
                 conditions.append(has if wanted else ~has)
+        if self.view == "needs_answer":
+            conditions.append(needs_my_answer())
         return frame.filter(*conditions) if conditions else frame
 
     def params(self) -> dict[str, str]:
-        """The filters that are set, as query parameters for a link."""
-        chosen = {name: getattr(self, name) for name in VALUE_FILTERS if getattr(self, name) is not None}
+        """The filters that are set, as query parameters for a link; a value
+        filter as the list of its values."""
+        chosen = {name: list(values) for name in VALUE_FILTERS if (values := getattr(self, name))}
         flags = {name: "yes" if wanted else "no" for name in ("sent", "received") if (wanted := getattr(self, name)) is not None}
-        return chosen | flags
+        return chosen | flags | ({"view": self.view} if self.view else {})
 
 
 def query(

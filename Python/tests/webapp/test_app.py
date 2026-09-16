@@ -84,8 +84,12 @@ def test_contacts_screen_filters_and_its_links_keep_the_filters():
     with TestClient(_app()) as client:
         page = client.get("/contacts", params={"industry": "RCM"})
         assert "Bob Ray" in page.text and "Ann Lee" not in page.text
-        assert '<option value="RCM" selected>' in page.text
+        assert 'name="industry" value="RCM" checked' in page.text
         assert "/contacts?industry=RCM&amp;sort=name&amp;dir=desc" in page.text  # a sort heading keeps it
+        page = client.get("/contacts", params=[("industry", "RCM"), ("industry", "Pathology")])
+        assert "Bob Ray" in page.text and "Ann Lee" in page.text
+        assert '<span class="picked">RCM, Pathology</span>' in page.text
+        assert "/contacts?industry=RCM&amp;industry=Pathology&amp;sort=name" in page.text  # both kept
         page = client.get("/contacts", params={"industry": "Nope"})  # no contact holds it: ignored
         assert "Ann Lee" in page.text and "Bob Ray" in page.text
         page = client.get("/contacts", params={"handling": "manual", "sent": "no"})
@@ -93,6 +97,24 @@ def test_contacts_screen_filters_and_its_links_keep_the_filters():
         assert '<option value="no" selected>No</option>' in page.text
         page = client.get("/contacts")
         assert '<option value="" selected>Any</option>' in page.text  # Message Sent and Received start at Any
+
+
+def test_the_need_my_answer_button_lists_the_contacts_who_wrote_last():
+    db = _db()
+    db.collection("messages").document("m1").set({
+        "contact_doc_id": "bob", "chat_id": "chat-bob", "is_sender": 0, "text": "Are you there?",
+        "timestamp": DatetimeWithNanoseconds(2026, 9, 5, 12, 0, tzinfo=UTC),
+    })
+    contacts = projection.Contacts(lambda: db)
+    contacts.rebuild()
+    with TestClient(_app(contacts)) as client:
+        home = client.get("/")
+        assert 'href="/contacts?view=needs_answer&amp;sort=last_received_at&amp;dir=desc"' in home.text
+        assert 'Need my answer <span class="count">1</span>' in home.text
+        page = client.get("/contacts", params={"view": "needs_answer", "sort": "last_received_at", "dir": "desc"})
+        assert "Bob Ray" in page.text and "Ann Lee" not in page.text
+        assert "view=needs_answer" in page.text.split('class="list"')[1]  # sort headings keep the view
+        assert '<input type="hidden" name="view" value="needs_answer">' in page.text
 
 
 def test_refresh_rebuilds_and_returns_to_the_same_screen():

@@ -2,9 +2,16 @@
 {% block title %}{{ contact.name or contact.doc_id }}{% endblock %}
 {% macro day(value) -%}{{ value[:16]|replace("T", " ") if value else "" }}{%- endmacro %}
 {% block content %}
-<h1>{{ contact.name or contact.doc_id }} <a href="{{ contact.profile_url }}" target="_blank" rel="noopener" class="muted">LinkedIn</a></h1>
-<p>{{ contact.headline or "" }}</p>
-{% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
+{% set first_name = (contact.name or "").split(" ")[0] or "Them" %}
+<div class="contact-head">
+  <h1>{{ contact.name or contact.doc_id }}</h1>
+  <a href="{{ contact.profile_url }}" target="_blank" rel="noopener">LinkedIn profile</a>
+  {% if contact.headline %}<p class="headline">{{ contact.headline }}</p>{% endif %}
+</div>
+{% if notice %}<p class="notice" role="status">{{ notice }}</p>{% endif %}
+
+<div class="contact-layout">
+<aside class="contact-side">
 <dl class="detail">
   {% for field in fields %}
   <dt>{{ field.label }}</dt>
@@ -21,28 +28,53 @@
       </select>
     </form>
     {%- if field.by_hand %}
-    <span class="muted">set by hand</span>
+    <span class="by-hand">set by hand</span>
     <form method="post" action="/contacts/{{ contact.doc_id|urlencode }}/release" class="inline">
       <input type="hidden" name="name" value="{{ field.name }}">
       <button type="submit" class="link" title="Let the classifiers change this value again">Release</button>
     </form>
     {%- endif %}
     {%- if field.name == "handling" %}
-    <span class="muted">exclude or manual cancels this contact's queued messages</span>
+    <span class="hint">exclude or manual cancels this contact's queued messages</span>
     {%- elif field.name == "pipeline_stage" and contact.stage_reason %}
-    <span class="muted">{{ contact.stage_reason }}</span>
+    <span class="hint">{{ contact.stage_reason }}</span>
     {%- endif %}
   </dd>
   {% endfor %}
-  <dt>Sent / replied</dt><dd>{{ contact.sent_total or 0 }} / {{ contact.replied_total or 0 }}</dd>
+</dl>
+<dl class="detail facts">
+  <dt>Sent / replied</dt><dd class="num">{{ contact.sent_total or 0 }} / {{ contact.replied_total or 0 }}</dd>
   <dt>Last sent</dt><dd>{{ day(contact.last_sent_date) }}</dd>
   <dt>Last reply</dt><dd>{{ day(contact.last_reply_date) }}</dd>
   <dt>Intro sent</dt><dd>{{ day(contact.intro_sent_at) }}</dd>
   <dt>Connected</dt><dd>{{ connected_at|local(tz) }}</dd>
 </dl>
+</aside>
 
-<h2>Conversation</h2>
-{% if conversation %}<pre>{{ conversation.transcript }}</pre>{% else %}<p class="muted">No messages.</p>{% endif %}
+<section class="thread" aria-labelledby="thread-title">
+  <h2 id="thread-title">Conversation</h2>
+  {% if parts %}
+    <p class="thread-count">{{ sides.count("them") }} from {{ first_name }}, {{ sides.count("me") }} from you</p>
+    {% if conversation.truncated %}<p class="thread-note">Older messages are not shown.</p>{% endif %}
+    {% for part in parts %}
+      {% if parts|length > 1 %}<h3 class="thread-part">Conversation {{ part.number or loop.index }}</h3>{% endif %}
+      <ol class="messages">
+      {% for message in part.messages %}
+        {% if message.day and (loop.first or message.day != loop.previtem.day) %}
+        <li class="day"><time datetime="{{ message.day.isoformat() }}">{{ message.day.strftime("%a %d %b %Y") }}</time></li>
+        {% endif %}
+        <li class="message {{ message.side or 'other' }}">
+          {%- if message.side %}<span class="who">{{ "You" if message.side == "me" else first_name }}</span>{% endif %}
+          <p>{{ message.text }}</p>
+        </li>
+      {% endfor %}
+      </ol>
+    {% endfor %}
+  {% else %}
+    <p class="thread-note">No messages.</p>
+  {% endif %}
+</section>
+</div>
 
 <h2>Queue</h2>
 {% if contact.queue %}

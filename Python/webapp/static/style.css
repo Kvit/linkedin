@@ -1,37 +1,375 @@
-body { font: 14px/1.4 system-ui, sans-serif; margin: 0; color: #222; background: #fff; }
-a { color: #0a58ca; }
-header { display: flex; gap: 1.5rem; align-items: center; padding: .5rem 1rem; border-bottom: 1px solid #ddd; }
-header nav a { margin-right: .75rem; font-weight: 600; }
-header .user { margin-left: auto; }
-main { padding: 1rem; }
-h1 { font-size: 1.4rem; margin: 0 0 1rem; }
-h2 { font-size: 1.1rem; margin: 1.5rem 0 .5rem; }
-table { border-collapse: collapse; }
-th, td { text-align: left; padding: .25rem .5rem; border-bottom: 1px solid #eee; white-space: nowrap; vertical-align: top; }
-th a { color: inherit; text-decoration: none; }
-.list td.wrap { white-space: normal; min-width: 16rem; }
-.num { text-align: right; }
-.muted { color: #777; }
+/* The contacts webapp.
+
+   The palette is the two stains every pathology slide is read in, the
+   world of the labs this outreach courts: hematoxylin, a blue-violet, marks
+   your side and every action; eosin, a pink-red, marks the contact's side.
+   The page itself is slide glass. Atkinson Hyperlegible Next sets the
+   interface and the tables; the words people wrote are set in Literata, a
+   serif made for reading on screens, so a message never reads as data. */
+
+:root {
+  --glass: #f3f5f8;
+  --slide: #ffffff;
+  --ink: #1d2033;
+  --muted: #5d6679;
+  --rule: #dde2e9;
+  --rule-strong: #b9c1cd;
+  --hematoxylin: #3b3a8f;
+  --hematoxylin-deep: #2d2c72;
+  --hematoxylin-wash: #ecebf7;
+  --eosin: #b3325f;
+  --eosin-wash: #fbedf2;
+  --alert: #9f2a1b;
+  --sans: "Atkinson Hyperlegible Next", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --serif: Literata, Georgia, "Times New Roman", serif;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font: 400 0.875rem/1.45 var(--sans);
+  color: var(--ink);
+  background: var(--glass);
+}
+
+a { color: var(--hematoxylin); text-underline-offset: 0.18em; }
+a:hover { color: var(--hematoxylin-deep); }
+
+h1 { font-size: 1.75rem; line-height: 1.15; font-weight: 700; margin: 0 0 1rem; letter-spacing: -0.01em; }
+h2 { font-size: 1.125rem; font-weight: 700; margin: 2rem 0 0.6rem; }
+h3 { font-size: 0.9375rem; font-weight: 600; margin: 1rem 0 0.35rem; }
+
+:focus-visible { outline: 2px solid var(--hematoxylin); outline-offset: 2px; }
+
+/* Controls */
+
+button, select, input { font: inherit; color: inherit; }
+
+select, input[type="search"] {
+  background: var(--slide);
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  padding: 0.25rem 0.45rem;
+  min-height: 2rem;
+}
+input[type="search"] { min-width: 14rem; }
+
+button {
+  background: var(--slide);
+  color: var(--hematoxylin);
+  border: 1px solid var(--hematoxylin);
+  border-radius: 4px;
+  padding: 0.3rem 0.8rem;
+  min-height: 2rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+button:hover { background: var(--hematoxylin-wash); }
+button:disabled { color: var(--muted); border-color: var(--rule-strong); background: var(--glass); cursor: not-allowed; }
+
+button.link {
+  background: none; border: 0; padding: 0; min-height: 0;
+  color: var(--hematoxylin); font-weight: 400; text-decoration: underline; text-underline-offset: 0.18em;
+}
+
+/* Page frame */
+
+header.site {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  align-items: center;
+  padding: 0 1.25rem;
+  background: var(--slide);
+  border-bottom: 1px solid var(--rule);
+}
+header.site nav { display: flex; gap: 1.25rem; }
+header.site nav a {
+  display: inline-block;
+  padding: 0.85rem 0 0.7rem;
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: none;
+  border-bottom: 3px solid transparent;
+}
+header.site nav a[aria-current="page"] { color: var(--hematoxylin); border-bottom-color: var(--hematoxylin); }
+header.site .refresh { display: flex; gap: 0.6rem; align-items: center; color: var(--muted); }
+header.site .user { margin-left: auto; color: var(--muted); }
+
+/* The one view with a button of its own: the contacts waiting on you. Its
+   count wears eosin, the contact's colour, because it counts their messages. */
+.view-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 2rem;
+  padding: 0.2rem 0.4rem 0.2rem 0.8rem;
+  border: 1px solid var(--eosin);
+  border-radius: 4px;
+  color: var(--eosin);
+  font-weight: 600;
+  text-decoration: none;
+}
+.view-button:hover { color: var(--eosin); background: var(--eosin-wash); }
+.view-button[aria-current="page"] { background: var(--eosin-wash); }
+.view-button .count {
+  min-width: 1.6rem;
+  padding: 0 0.4rem;
+  border-radius: 3px;
+  background: var(--eosin);
+  color: var(--slide);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.view-on {
+  margin: 0.25rem 0 0.5rem;
+  padding: 0.45rem 0.75rem;
+  background: var(--eosin-wash);
+  border-left: 3px solid var(--eosin);
+  max-width: 60rem;
+}
+
+main { padding: 1.25rem; max-width: 110rem; }
+
+.muted { color: var(--muted); }
 .inline { display: inline; }
-.filters { display: flex; flex-wrap: wrap; gap: .5rem .75rem; align-items: center; margin-bottom: .5rem; }
-.filters label { white-space: nowrap; }
-.pager { display: flex; gap: 1rem; margin-top: .75rem; }
-.tallies { display: flex; gap: 2rem; flex-wrap: wrap; align-items: flex-start; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.problem { color: var(--alert); font-weight: 600; }
+.notice {
+  background: var(--hematoxylin-wash);
+  border-left: 3px solid var(--hematoxylin);
+  padding: 0.5rem 0.75rem;
+  margin: 0 0 1rem;
+  max-width: 60rem;
+}
+
+/* Tables */
+
+table { border-collapse: collapse; }
+th, td {
+  text-align: left;
+  padding: 0.35rem 0.6rem;
+  border-bottom: 1px solid var(--rule);
+  white-space: nowrap;
+  vertical-align: top;
+}
+th { font-weight: 600; color: var(--muted); border-bottom-color: var(--rule-strong); }
+th a { color: inherit; text-decoration: none; }
+th a:hover { color: var(--hematoxylin); }
+th.num, td.num { text-align: right; }
+tbody tr:hover td { background: var(--hematoxylin-wash); }
+
+/* Contacts list */
+
+.filters { display: flex; flex-wrap: wrap; gap: 0.6rem 0.9rem; align-items: center; margin-bottom: 0.5rem; }
+.filters label { display: inline-flex; gap: 0.35rem; align-items: center; white-space: nowrap; color: var(--muted); }
+.filters label select { color: var(--ink); }
+
+/* A multi-select filter: a checkbox list that opens under its button. */
+details.multi { position: relative; }
+details.multi summary {
+  list-style: none;
+  margin: 0;
+  font-weight: 400;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 2rem;
+  padding: 0.25rem 1.6rem 0.25rem 0.45rem;
+  color: var(--muted);
+  background: var(--slide);
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  cursor: pointer;
+  position: relative;
+}
+details.multi summary::-webkit-details-marker { display: none; }
+details.multi summary::after {
+  content: "";
+  position: absolute;
+  right: 0.6rem;
+  top: 50%;
+  width: 0.4rem;
+  height: 0.4rem;
+  border-right: 1.5px solid var(--ink);
+  border-bottom: 1.5px solid var(--ink);
+  transform: translateY(-70%) rotate(45deg);
+}
+details.multi[open] summary { border-color: var(--hematoxylin); }
+details.multi .picked {
+  color: var(--ink);
+  font-weight: 600;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+details.multi fieldset {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 0.25rem);
+  left: 0;
+  width: max-content;
+  min-width: 100%;
+  max-height: 20rem;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0.35rem 0;
+  background: var(--slide);
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+}
+details.multi legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+details.multi fieldset label {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.3rem 0.75rem;
+  color: var(--ink);
+  white-space: nowrap;
+  cursor: pointer;
+}
+details.multi fieldset label:hover { background: var(--hematoxylin-wash); }
+details.multi input[type="checkbox"] { accent-color: var(--hematoxylin); margin: 0; }
+
+.table-scroll {
+  overflow: auto;
+  max-height: calc(100vh - 13rem);
+  min-height: 20rem;
+  background: var(--slide);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+}
+.list thead th { position: sticky; top: 0; z-index: 1; background: var(--slide); }
+.list td.wrap { white-space: normal; min-width: 24rem; max-width: 40rem; }
+.pager { display: flex; gap: 1rem; margin-top: 0.75rem; }
+
+/* Home */
+
 .home { display: flex; gap: 2rem; flex-wrap: wrap; align-items: flex-start; }
 .home > div { flex: 1 1 36rem; }
+.tallies { display: flex; gap: 2rem; flex-wrap: wrap; align-items: flex-start; }
+.tallies table { background: var(--slide); border: 1px solid var(--rule); border-radius: 6px; border-collapse: separate; border-spacing: 0; }
+.tallies tbody tr:last-child td { border-bottom: 0; }
+
 .routine { flex: 1 1 24rem; max-width: 40rem; }
-.routine .buttons { display: flex; gap: .5rem; justify-content: flex-end; }
-.routine .panel { border: 1px solid #ddd; padding: .5rem .75rem; margin-top: .5rem; min-height: 12rem; }
+.routine .buttons { display: flex; gap: 0.5rem; justify-content: flex-end; }
+.routine .buttons button { background: var(--hematoxylin); color: var(--slide); }
+.routine .buttons button:hover { background: var(--hematoxylin-deep); }
+.routine .buttons button:disabled { color: var(--muted); border-color: var(--rule-strong); background: var(--glass); }
+.routine .panel {
+  background: var(--slide);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin-top: 0.6rem;
+  min-height: 12rem;
+}
 .routine h2 { margin-top: 0; }
-.routine h3 { font-size: 1rem; margin: .75rem 0 .25rem; }
-.routine .result { margin-bottom: .5rem; }
+.routine .result { margin-bottom: 0.5rem; }
 .routine .result td { white-space: normal; }
-.routine caption { text-align: left; font-weight: 600; padding: .25rem 0; }
-.problem { color: #a40000; }
-.detail { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; margin: 0; }
-.detail dt { font-weight: 600; }
-.detail dd { margin: 0; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
-.notice { background: #eef6ee; border: 1px solid #cde3cd; padding: .4rem .6rem; }
-button.link { background: none; border: 0; padding: 0; color: #0a58ca; text-decoration: underline; cursor: pointer; font: inherit; }
-pre { white-space: pre-wrap; background: #f7f7f7; padding: .75rem; margin: 0; }
-details summary { cursor: pointer; margin: 1.5rem 0 .5rem; font-weight: 600; }
+.routine caption { text-align: left; font-weight: 600; padding: 0.25rem 0; }
+
+/* Contact screen */
+
+.contact-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 1rem; margin-bottom: 1rem; }
+.contact-head h1 { margin: 0; }
+.contact-head .headline { flex: 1 0 100%; margin: 0; color: var(--muted); font-size: 1rem; }
+
+.contact-layout {
+  display: grid;
+  grid-template-columns: minmax(18rem, 24rem) minmax(0, 1fr);
+  gap: 1.5rem 2.5rem;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .contact-layout { grid-template-columns: minmax(0, 1fr); }
+}
+
+.detail { display: grid; grid-template-columns: max-content 1fr; gap: 0.55rem 1rem; margin: 0; }
+.detail dt { font-weight: 600; padding-top: 0.35rem; }
+.detail dd { margin: 0; display: flex; gap: 0.3rem 0.6rem; align-items: center; flex-wrap: wrap; }
+.detail dd select { max-width: 100%; }
+.detail .hint { flex-basis: 100%; color: var(--muted); font-size: 0.8125rem; }
+.detail .by-hand { color: var(--hematoxylin); font-size: 0.8125rem; font-weight: 600; }
+.detail.facts { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--rule); }
+.detail.facts dt { padding-top: 0; color: var(--muted); font-weight: 400; }
+.detail.facts dd { justify-content: flex-start; }
+
+/* The conversation: the slide the whole screen is for. */
+
+.thread {
+  background: var(--slide);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 1rem 1.5rem 1.5rem;
+  min-width: 0;
+}
+.thread h2 { margin: 0; }
+.thread-count { margin: 0.15rem 0 1rem; color: var(--muted); }
+.thread-note { color: var(--muted); margin: 0.5rem 0; }
+.thread-part { margin: 1.75rem 0 0.25rem; color: var(--muted); font-weight: 600; }
+
+.messages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.messages .day {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.9rem 0 0.2rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.messages .day:first-child { margin-top: 0; }
+.messages .day::before, .messages .day::after { content: ""; flex: 1; border-top: 1px solid var(--rule); }
+
+.message { max-width: min(64ch, 88%); padding: 0.5rem 0.9rem 0.65rem; }
+.message .who { display: block; font-size: 0.75rem; font-weight: 700; margin-bottom: 0.1rem; }
+.message p {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 1rem;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.message.them {
+  align-self: flex-start;
+  background: var(--eosin-wash);
+  border-left: 3px solid var(--eosin);
+  border-radius: 0 10px 10px 10px;
+}
+.message.them .who { color: var(--eosin); }
+.message.me {
+  align-self: flex-end;
+  background: var(--hematoxylin-wash);
+  border-right: 3px solid var(--hematoxylin);
+  border-radius: 10px 0 10px 10px;
+}
+.message.me .who { color: var(--hematoxylin); text-align: right; }
+.message.other { align-self: stretch; max-width: none; color: var(--muted); }
+
+@media (max-width: 600px) {
+  main { padding: 1rem; }
+  .thread { padding: 0.75rem 0.75rem 1rem; }
+  .message { max-width: 94%; }
+}
+
+pre {
+  white-space: pre-wrap;
+  background: var(--slide);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin: 0;
+  font: 0.875rem/1.55 var(--sans);
+  max-width: 80ch;
+}
+details summary { cursor: pointer; margin: 2rem 0 0.5rem; font-weight: 600; }

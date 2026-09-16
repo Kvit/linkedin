@@ -2,14 +2,16 @@
 {% block title %}Contacts{% endblock %}
 {% block content %}
 {% macro choice(name, label) -%}
-  <label>{{ label }}
-    <select name="{{ name }}">
-      <option value="">All</option>
+  {%- set chosen = filters[name] %}
+  <details class="multi">
+    <summary>{{ label }} <span class="picked">{{ chosen|join(", ") if chosen else "All" }}</span></summary>
+    <fieldset>
+      <legend>{{ label }}</legend>
       {%- for value in choices[name] %}
-      <option value="{{ value }}"{% if filters[name] == value %} selected{% endif %}>{{ value }}</option>
+      <label><input type="checkbox" name="{{ name }}" value="{{ value }}"{% if value in chosen %} checked{% endif %}> {{ value }}</label>
       {%- endfor %}
-    </select>
-  </label>
+    </fieldset>
+  </details>
 {%- endmacro %}
 {% macro yes_no(name, label) -%}
   <label>{{ label }}
@@ -30,13 +32,18 @@
   {{ yes_no("sent", "Message Sent") }}
   {{ yes_no("received", "Message Received") }}
   <input type="hidden" name="sort" value="{{ sort }}"><input type="hidden" name="dir" value="{{ dir }}">
+  {% if filters.view %}<input type="hidden" name="view" value="{{ filters.view }}">{% endif %}
   <button type="submit">Apply</button>
   <a href="/contacts">Clear</a>
 </form>
+{% if filters.view == "needs_answer" %}
+<p class="view-on"><strong>Need my answer:</strong> prospects, leads and contacts with no stage whose newest message is theirs, newest first. <a href="/contacts?{{ qs(link, view=None) }}">Show all contacts</a></p>
+{% endif %}
 <p class="muted">{{ total }} contact{{ "" if total == 1 else "s" }}, page {{ page }} of {{ pages }}</p>
 {% macro th(column, label, cls="") -%}
   <th class="{{ cls }}"><a href="/contacts?{{ qs(link, sort=column, dir='asc' if sort == column and dir == 'desc' else 'desc') }}">{{ label }}{% if sort == column %} {{ '▾' if dir == 'desc' else '▴' }}{% endif %}</a></th>
 {%- endmacro %}
+<div class="table-scroll">
 <table class="list">
   <thead><tr>
     {{ th("name", "Name") }}<th></th>{{ th("industry", "Industry") }}{{ th("function", "Function") }}
@@ -60,8 +67,17 @@
   {% endfor %}
   </tbody>
 </table>
+</div>
 <nav class="pager">
   {% if page > 1 %}<a href="/contacts?{{ qs(link, page=page - 1) }}">previous</a>{% endif %}
   {% if page < pages %}<a href="/contacts?{{ qs(link, page=page + 1) }}">next</a>{% endif %}
 </nav>
+<script>
+  // One filter's list open at a time; a click outside the lists closes it.
+  document.addEventListener("click", (event) => {
+    for (const open of document.querySelectorAll("details.multi[open]")) {
+      if (!open.contains(event.target)) open.open = false;
+    }
+  });
+</script>
 {% endblock %}

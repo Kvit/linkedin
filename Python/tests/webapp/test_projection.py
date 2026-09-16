@@ -74,6 +74,28 @@ def test_load_frame_reads_connection_dates_and_messages_received():
     assert rows["bob"]["connected_at"] == datetime(2026, 8, 20, 15, 0, tzinfo=UTC)  # `fetch_queue.connected_at`
     assert rows["cat"]["connected_at"] is None
     assert [rows[doc_id]["inbound_total"] for doc_id in ("ann", "bob", "cat")] == [1, 0, 0]
+    assert rows["ann"]["last_received_at"] == datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
+    assert [rows[doc_id]["needs_answer"] for doc_id in ("ann", "bob", "cat")] == [True, False, False]
+
+
+def test_needs_answer_is_who_wrote_last_by_readable_messages():
+    db = _db()
+    _message(db, "m5", "ann", 1, 4, "Here is more")  # we answered Ann
+    db.collection("analysis").document("dee").set({"industry": "RCM"})
+    _message(db, "m6", "dee", 0, 5, "Can we talk?")
+    _message(db, "m7", "dee", 1, 6, "")  # blank, and an event: neither answers her
+    db.collection("messages").document("m8").set({
+        "contact_doc_id": "dee", "chat_id": "chat-dee", "is_sender": 1, "timestamp": _when(7), "text": "joined", "is_event": 1,
+    })
+    for doc_id, stage in (("eve", "prospect"), ("fay", "soft_no")):
+        db.collection("analysis").document(doc_id).set({"pipeline_stage": stage})
+        _message(db, f"m-{doc_id}", doc_id, 0, 8, "Hello?")
+    frame = projection.load_frame(db)
+    rows = {row["doc_id"]: row for row in frame.to_dicts()}
+    assert rows["ann"]["needs_answer"] is False and rows["dee"]["needs_answer"] is True
+    assert rows["fay"]["needs_answer"] is True  # she wrote last, but the view leaves out her stage
+    page, total = projection.query(frame, filters=projection.Filters(view="needs_answer"), sort="last_received_at")
+    assert page["doc_id"].to_list() == ["eve", "dee"] and total == 2  # prospect, and no stage
 
 
 def test_a_wrong_typed_value_is_dropped_not_fatal():
@@ -138,11 +160,12 @@ def test_filters_narrow_by_value_by_none_and_by_messages_sent_and_received():
         page, _total = projection.query(frame, filters=projection.Filters(**chosen))
         return set(page["doc_id"].to_list())
 
-    assert ids(industry="RCM") == {"bob", "dee"}
-    assert ids(industry="none") == {"cat"}
-    assert ids(handling="manual") == {"ann"}  # stored as " Manual "
-    assert ids(stage="lead") == {"ann"}
-    assert ids(industry="RCM", seniority="Staff") == {"bob"}
+    assert ids(industry=("RCM",)) == {"bob", "dee"}
+    assert ids(industry=("RCM", "Pathology")) == {"ann", "bob", "dee"}  # any of the chosen values
+    assert ids(industry=("none",)) == {"cat"}
+    assert ids(handling=("manual",)) == {"ann"}  # stored as " Manual "
+    assert ids(stage=("lead",)) == {"ann"}
+    assert ids(industry=("RCM",), seniority=("Staff",)) == {"bob"}
     assert ids(sent=True) == {"ann", "bob"}
     assert ids(sent=False) == {"cat", "dee"}  # no `sent_total`, or 0
     assert ids(received=True) == {"ann", "dee"}  # Dee wrote to us, though her `replied_total` is 0
@@ -155,8 +178,11 @@ def test_filters_from_a_query_string_ignore_values_the_data_does_not_hold():
     assert known["industry"] == ["Pathology", "RCM", "none"]
     assert known["handling"] == ["none", "manual"]
     filters = projection.Filters.from_params({"industry": "RCM", "stage": "nope", "received": "no", "sent": "maybe"}, known)
-    assert filters == projection.Filters(industry="RCM", received=False)
-    assert filters.params() == {"industry": "RCM", "received": "no"}
+    assert filters == projection.Filters(industry=("RCM",), received=False)
+    assert filters.params() == {"industry": ["RCM"], "received": "no"}
+    filters = projection.Filters.from_params({"view": "needs_answer"}, known)
+    assert filters.view == "needs_answer" and filters.params() == {"view": "needs_answer"}
+    assert projection.Filters.from_params({"view": "nope"}, known).view is None
 
 
 def test_contact_row_finds_one_contact():

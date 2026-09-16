@@ -39,6 +39,8 @@ After a write the frame row is patched, so the list and the Home counts
 show it at once, and the page reloads with a notice.
 """
 
+import re
+from datetime import date
 from typing import Annotated, get_args
 from urllib.parse import quote, urlencode
 
@@ -100,6 +102,39 @@ def _notice(params) -> str:
     return ""
 
 
+#: The two kinds of line in `pipeline.build_transcripts`' text: a
+#: conversation's header, and one message with its day and side.
+_PART = re.compile(r"--- conversation (\d+) ---")
+_MESSAGE = re.compile(r"(\d{4}-\d{2}-\d{2}) (Me|Them): (.*)")
+
+
+def thread(conversation: dict | None) -> list[dict]:
+    """`get_conversation`'s transcript as conversations of messages, for the
+    screen to lay out: `[{"number", "messages": [{"day", "side", "text"}]}]`,
+    `side` `me` or `them`. The text is parsed rather than the messages read
+    again, so the screen shows exactly what the classifiers read, one
+    whitespace-collapsed paragraph per message.
+
+    A transcript cut to its newest characters (`truncated`) can start
+    mid-line: that first line is dropped. Any other line that is not a
+    message is kept as `side` `None`, never lost."""
+    if conversation is None:
+        return []
+    parts: list[dict] = []
+    for index, line in enumerate(conversation["transcript"].split("\n")):
+        if header := _PART.fullmatch(line):
+            parts.append({"number": int(header[1]), "messages": []})
+            continue
+        if not parts:
+            parts.append({"number": None, "messages": []})
+        if found := _MESSAGE.fullmatch(line):
+            day, side, text = found.groups()
+            parts[-1]["messages"].append({"day": date.fromisoformat(day), "side": side.lower(), "text": text})
+        elif not (index == 0 and conversation.get("truncated")):
+            parts[-1]["messages"].append({"day": None, "side": None, "text": line})
+    return [part for part in parts if part["messages"]]
+
+
 @router.get("/contacts/{doc_id}")
 def contact_screen(request: Request, doc_id: str):
     db = clients.firestore_client()
@@ -126,11 +161,13 @@ def contact_screen(request: Request, doc_id: str):
         {"name": name, "label": label, "options": options, "current": current[name], "by_hand": name in by_hand}
         for name, (label, options) in CHOICES.items()
     ]
+    parts = thread(conversation)
     return render.templates.TemplateResponse(
         request, "contact.html",
         render.page_context(
-            request, contact=contact, conversation=conversation, connected_at=connected_at, fields=fields,
-            notice=_notice(request.query_params),
+            request, contact=contact, conversation=conversation, parts=parts,
+            sides=[message["side"] for part in parts for message in part["messages"]],
+            connected_at=connected_at, fields=fields, notice=_notice(request.query_params),
         ),
     )
 

@@ -65,8 +65,12 @@ LinkedIn Helper; `contact_report()` returning `total` 28,675 and 500 rows, 298
 of them with `date_connected`, 14 from the fetch queue and 284 from LinkedIn
 Helper's date, which `v2.3.0` left `null`; and a dry-run `classify_stages` job
 `succeeded` with 0 to classify, 0 to mark silent and 2,118 unchanged. The
-hand-set guard itself is checked by tests only: no contact had a stage set by
-hand yet.
+hand-set guard, checked live the same day on the one contact whose stage was
+set by hand, `not_relevant`, written to once and never answered: dry-run
+`classify_stages(doc_ids=[...])`, with and without `force`, both left it
+`unchanged`, where the same plan without its `hand_set` marks it silent, back
+to `prospect`; and a real `sync_messages` from the webapp at 17:13 Chicago time
+staged 3 replies and marked 4 contacts silent, and left it as set.
 
 `v2.3.0`, revision `linkedin-outreach-00015-k68`, deployed 2026-09-15, was
 checked straight after, read-only:

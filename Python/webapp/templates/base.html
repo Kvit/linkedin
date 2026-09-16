@@ -4,17 +4,28 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Contacts{% endblock %}</title>
+  <link rel="icon" href="data:,">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;600;700&family=Literata:opsz,wght@7..72,400;7..72,600&display=swap">
   <link rel="stylesheet" href="/static/style.css">
   {% block head %}{% endblock %}
 </head>
 <body>
-  <header>
-    <nav><a href="/">Home</a><a href="/contacts">Contacts</a></nav>
-    <form method="post" action="/refresh" class="inline">
-      <span class="muted">data as of {{ built_at or "never" }}</span>
+  {% set path = request.url.path %}
+  <header class="site">
+    <nav>
+      <a href="/"{% if path == "/" %} aria-current="page"{% endif %}>Home</a>
+      <a href="/contacts"{% if path.startswith("/contacts") %} aria-current="page"{% endif %}>Contacts</a>
+    </nav>
+    <form method="post" action="/refresh" class="refresh">
+      <span>Data as of {{ built_at or "never" }}</span>
       <button type="submit" title="Reload every contact from Firestore (about 30 seconds)">Refresh</button>
     </form>
-    <span class="muted user">{{ user }}</span>
+    <a class="view-button" href="/contacts?view=needs_answer&amp;sort=last_received_at&amp;dir=desc"
+      {%- if request.query_params.get("view") == "needs_answer" %} aria-current="page"{% endif %}
+      title="Prospects, leads and contacts with no stage whose newest message is theirs, newest first">Need my answer <span class="count">{{ needs_answer }}</span></a>
+    <span class="user">{{ user }}</span>
   </header>
   <main>{% block content %}{% endblock %}</main>
 </body>

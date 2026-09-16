@@ -10,6 +10,8 @@ from zoneinfo import ZoneInfo
 from fastapi import Request
 from fastapi.templating import Jinja2Templates
 
+from webapp import projection
+
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -26,10 +28,11 @@ templates.env.filters["local"] = local
 
 def qs(params: dict, **changes) -> str:
     """A query string of `params` with `changes` applied, empty values left
-    out: how a sort heading or a pager link keeps the page's search and
-    filters. The template escapes it."""
+    out and a list repeated as one parameter per value: how a sort heading
+    or a pager link keeps the page's search and filters. The template
+    escapes it."""
     merged = params | changes
-    return urlencode({name: value for name, value in merged.items() if value not in (None, "")})
+    return urlencode({name: value for name, value in merged.items() if value not in (None, "", [])}, doseq=True)
 
 
 templates.env.globals["qs"] = qs
@@ -38,10 +41,12 @@ templates.env.globals["qs"] = qs
 def page_context(request: Request, **extra) -> dict:
     """What `base.html` needs on every screen, from `app.state`."""
     state = request.app.state
+    frame = state.contacts.frame
     return {
         "user": request.scope.get("state", {}).get("user"),
         "built_at": local(state.contacts.built_at, state.outreach.tz),
         "tz": state.outreach.tz,
+        "needs_answer": frame.filter(projection.needs_my_answer()).height if frame is not None else 0,
         **extra,
     }
 

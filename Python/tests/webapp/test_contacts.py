@@ -3,7 +3,7 @@
 reached through `clients.firestore_client`, monkeypatched the way
 `tests/linkedinmcp/test_app.py`'s `backend` fixture does it."""
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,7 +12,7 @@ from linkedinmcp import clients, queue
 from tests.linkedinmcp.fake_firestore import FakeFirestore
 from tests.linkedinmcp.fake_unipile import seed_contact, seed_item, seed_message
 from tests.webapp.conftest import outreach_settings, webapp_settings
-from webapp import app as webapp_app, projection
+from webapp import app as webapp_app, contacts as contact_screen, projection
 
 NOW = datetime(2026, 9, 10, 12, 0, tzinfo=UTC)
 
@@ -47,10 +47,31 @@ def test_contact_screen_shows_header_conversation_queue_and_summary(client):
     assert "Ann Lee" in page.text and "Pathology" in page.text and "asked for pricing" in page.text
     assert "Owner, Lee Pathology" in page.text  # the LinkedIn Helper headline the list shows
     assert "2026-08-20 10:00" in page.text  # connected, in America/Chicago
-    assert "Me: Thanks for connecting" in page.text and "Them: What does it cost?" in page.text
+    assert '<li class="message me"><span class="who">You</span>' in page.text and "<p>Thanks for connecting</p>" in page.text
+    assert '<li class="message them"><span class="who">Ann</span>' in page.text and "<p>What does it cost?</p>" in page.text
+    assert "1 from Ann, 1 from you" in page.text
     assert "Happy to share pricing." in page.text and "pending" in page.text
     assert "Ann runs a pathology lab." in page.text
     assert "ann@example.com" not in page.text
+
+
+def test_thread_splits_the_transcript_into_conversations_and_messages():
+    transcript = "\n".join([
+        "e cut mid-message",
+        "--- conversation 2 ---",
+        "2026-09-01 Me: Hello",
+        "2026-09-02 Them: Hi: what is this about?",
+        "--- conversation 3 ---",
+        "a line that is not a message",
+    ])
+    parts = contact_screen.thread({"transcript": transcript, "truncated": True})
+    assert [part["number"] for part in parts] == [2, 3]
+    assert parts[0]["messages"] == [
+        {"day": date(2026, 9, 1), "side": "me", "text": "Hello"},
+        {"day": date(2026, 9, 2), "side": "them", "text": "Hi: what is this about?"},
+    ]
+    assert parts[1]["messages"] == [{"day": None, "side": None, "text": "a line that is not a message"}]
+    assert contact_screen.thread(None) == []
 
 
 def test_a_contact_with_no_messages_says_so(client, db):
