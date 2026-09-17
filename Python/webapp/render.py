@@ -47,6 +47,7 @@ def page_context(request: Request, **extra) -> dict:
         "built_at": local(state.contacts.built_at, state.outreach.tz),
         "tz": state.outreach.tz,
         "needs_answer": frame.filter(projection.needs_my_answer()).height if frame is not None else 0,
+        "stars": frame.filter(projection.starred()).height if frame is not None else 0,
         **extra,
     }
 

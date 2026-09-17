@@ -150,7 +150,7 @@ class FakeMessaging:
         number = self._next()
         return ChatStarted(chat_id=f"chat-new-{number}", message_id=f"sent-{number}")
 
-    def iter_chats(self):
+    def iter_chats(self, *, unread=None, page_size=100):
         self.iter_chats_calls += 1
         self._read("iter_chats")
         return iter(list(self.chats))
@@ -261,13 +261,14 @@ ONE_TO_ONE, GROUP, CHANNEL = 0, 1, 2
 NO_TYPE = object()
 
 
-def chat(chat_id: str, attendee_provider_id: str | None, *, type=ONE_TO_ONE) -> Chat:
+def chat(chat_id: str, attendee_provider_id: str | None, *, type=ONE_TO_ONE, pinned: int = 0) -> Chat:
     """A real `Chat` model, as `iter_chats()` and `get_chat()` return it --
     a one-to-one chat unless `type` says otherwise; `type=NO_TYPE` builds
-    one whose response carried no `type` at all."""
+    one whose response carried no `type` at all. `pinned=1` is a chat
+    starred in LinkedIn."""
     if type is NO_TYPE:
-        return Chat(id=chat_id, attendee_provider_id=attendee_provider_id)
-    return Chat(id=chat_id, attendee_provider_id=attendee_provider_id, type=type)
+        return Chat(id=chat_id, attendee_provider_id=attendee_provider_id, pinned=pinned)
+    return Chat(id=chat_id, attendee_provider_id=attendee_provider_id, type=type, pinned=pinned)
 
 
 def provider_id_of(doc_id: str) -> str:

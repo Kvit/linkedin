@@ -16,7 +16,7 @@ It complements the other two ways of working the contacts:
 Design: `docs/superpowers/specs/2026-09-16-contacts-webapp-design.md`.
 Plan and stages: `docs/superpowers/plans/2026-09-16-contacts-webapp.md`.
 
-## What it does now (stages 1 to 5 and 8, the Need my answer view, and the message box)
+## What it does now (stages 1 to 5 and 8, the Need my answer and My Stars views, and the message box)
 
 | Screen | Path | Shows |
 |---|---|---|
@@ -26,9 +26,10 @@ Plan and stages: `docs/superpowers/plans/2026-09-16-contacts-webapp.md`.
 
 Every screen's header says when the data was loaded ("data as of", Chicago
 time), has a **Refresh** button that reloads every contact from Firestore,
-and a **Need my answer** button with the number of contacts waiting on you.
-The Contact screen's dropdowns and Send, and the Home screen's two buttons,
-write; the rest only reads.
+a **Need my answer** button with the number of contacts waiting on you, and a
+**My Stars** button with the number of contacts whose LinkedIn conversation is
+starred. The Contact screen's dropdowns and Send, the Home screen's two
+buttons, and My Stars write; the rest only reads.
 
 **Need my answer** opens the Contacts list narrowed to the prospects, leads and
 contacts with no stage who wrote last: their newest readable message is newer
@@ -38,6 +39,20 @@ a deleted message or a blank one does not count as an answer. The list is sorted
 first; the other filters and the sort still work inside the view, and
 **Show all contacts** leaves it. The number is counted when the data is
 loaded, so press **Refresh** after a sync or after answering someone.
+
+**My Stars** reads which conversations are starred in LinkedIn now, marks
+those contacts in `analysis` (`linkedin_starred: true`), clears the mark on
+contacts whose conversation was unstarred since (`linkedin_starred: false`),
+and opens the Contacts list narrowed to the marked contacts. A press takes
+about 4 seconds: LinkedIn offers no way to ask for starred conversations
+alone, or for what changed, so every press reads all 3,350 conversations
+(`linkedinmcp/stars.py`). The line above the list says how many conversations
+are starred and how many marks were added and cleared. A starred conversation
+is matched to its contact through the stored messages, so one whose messages
+are not synced yet is reported as matching no contact until after the next
+Sync Messages. Opening the view without pressing (a link, the back button)
+shows the marks as of the last press, and so does the count in the header.
+If the read fails, no mark changes and the line says so.
 
 **The conversation** shows the transcript the classifiers read: each message
 is one paragraph, dated to the day, with its line breaks joined. When a
@@ -231,9 +246,9 @@ assertion itself as well: its signature, the audience
 the issuer, and the email. Anyone else gets a Google "access denied" page or a
 403.
 
-**Running now:** `v1.0.0`, revision `linkedin-contacts-00007-nqt`, deployed
-2026-09-17 (UTC) at `https://linkedin-contacts-5czydyxqoa-uc.a.run.app`. Its
-application startup took 32 seconds.
+**Running now:** `v1.1.0`, revision `linkedin-contacts-00008-zxd`, deployed
+2026-09-17 03:09 (UTC) at `https://linkedin-contacts-5czydyxqoa-uc.a.run.app`. Its
+application startup took 31 seconds.
 
 **The deploy needed no console step.** IAP's built-in sign-in admits accounts
 of the organization that owns the project, and `vk-linkedin` belongs to the

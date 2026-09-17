@@ -25,6 +25,11 @@
     <a class="view-button" href="/contacts?view=needs_answer&amp;sort=last_received_at&amp;dir=desc"
       {%- if request.query_params.get("view") == "needs_answer" %} aria-current="page"{% endif %}
       title="Prospects, leads and contacts with no stage whose newest message is theirs, newest first">Need my answer <span class="count">{{ needs_answer }}</span></a>
+    <form method="post" action="/stars" class="stars">
+      <button type="submit" class="view-button mine"
+        {%- if request.query_params.get("view") == "stars" %} aria-current="page"{% endif %}
+        title="Read which conversations are starred in LinkedIn now (about 4 seconds), then list those contacts">My Stars <span class="count">{{ stars }}</span></button>
+    </form>
     <span class="user">{{ user }}</span>
   </header>
   <main>{% block content %}{% endblock %}</main>

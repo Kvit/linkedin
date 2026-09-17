@@ -7,19 +7,23 @@ the path every test takes.
 
 Three screens: Home (`/`, with the buttons of `routine.py`), Contacts
 (`/contacts`) and Contact (`/contacts/{doc_id}`, in `contacts.py`, with the
-message box of `compose.py`). All but `/health` sit behind
+message box of `compose.py`). The header's My Stars button (`POST /stars`)
+marks the contacts whose LinkedIn conversation is starred
+(`linkedinmcp.stars`) and lists them. All but `/health` sit behind
 `auth.IapMiddleware`.
 """
 
 import asyncio
 import logging
+import re
 from contextlib import asynccontextmanager
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from linkedinmcp import clients, settings as outreach_cfg
+from linkedinmcp import clients, clock, settings as outreach_cfg, stars
 from webapp import auth, compose, contacts as contact_screen, projection, render, routine, settings as cfg
 
 logger = logging.getLogger(__name__)
@@ -29,6 +33,30 @@ PER_PAGE = 100
 #: The Home screen's count tables: the Contacts filter each count opens
 #: (`projection.VALUE_FILTERS` names its column), and the heading.
 COUNTED = {"industry": "Industry", "stage": "Stage", "handling": "Handling"}
+
+
+def _read_stars() -> dict:
+    """`stars.get_stars` with a Unipile client of its own, closed after."""
+    client = clients.unipile_client()
+    try:
+        return stars.get_stars(clients.firestore_client(), client)
+    finally:
+        client.close()
+
+
+def stars_notice(params) -> str:
+    """The line My Stars leaves on the list, read from its redirect."""
+    at = params.get("at", "")
+    if not re.fullmatch(r"\d{2}:\d{2}", at):
+        return ""
+    if params.get("stars") == "failed":
+        return f"Reading the starred conversations from LinkedIn failed at {at}, so nothing changed: the list shows the last successful read."
+    numbers = [params.get(name, "") for name in ("starred", "added", "removed", "unmatched")]
+    if not all(number.isdigit() for number in numbers):
+        return ""
+    starred, added, removed, unmatched = numbers
+    line = f"{starred} starred conversation{'' if starred == '1' else 's'} in LinkedIn at {at}: {added} marked, {removed} cleared."
+    return line + (f" {unmatched} matched no contact." if unmatched != "0" else "")
 
 
 def create_app(
@@ -108,8 +136,30 @@ def create_app(
             render.page_context(
                 request, rows=found.to_dicts(), total=total, q=q, sort=sort, dir=dir, page=page, pages=pages,
                 choices=known, filters=filters, link={"q": q, **filters.params(), "sort": sort, "dir": dir},
+                notice=stars_notice(request.query_params) if filters.view == "stars" else "",
             ),
         )
+
+    @app.post("/stars")
+    async def my_stars(request: Request) -> RedirectResponse:
+        """My Stars: read which LinkedIn conversations are starred now, mark
+        and unmark the contacts in `analysis`, patch their rows, and open the
+        list of them. Inside the request: about 4 seconds on the real data. A
+        failed read writes nothing, and the list says so."""
+        at = render.local(clock.utcnow(), outreach.tz)[11:]  # HH:MM
+        try:
+            found = await asyncio.to_thread(_read_stars)
+        except Exception:
+            logger.exception("reading the starred LinkedIn conversations failed")
+            return RedirectResponse(f"/contacts?{urlencode({'view': 'stars', 'stars': 'failed', 'at': at})}", status_code=303)
+        for value, doc_ids in ((True, found["added"]), (False, found["removed"])):
+            for doc_id in doc_ids:
+                contacts.patch(doc_id, linkedin_starred=value)
+        notice = {
+            "view": "stars", "starred": found["starred"], "added": len(found["added"]),
+            "removed": len(found["removed"]), "unmatched": found["unmatched"], "at": at,
+        }
+        return RedirectResponse(f"/contacts?{urlencode(notice)}", status_code=303)
 
     @app.post("/refresh")
     def refresh(request: Request) -> RedirectResponse:

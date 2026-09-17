@@ -72,7 +72,7 @@ ANALYSIS_FIELDS = [
     "firstName", "lastName", "industry", "function", "seniority",
     "pipeline_stage", "pipeline_reason", "pipeline_classified_at",
     "sent_total", "replied_total", "last_sent_date", "last_reply_date",
-    "intro_sent_at", "handling", "hand_set", "profileUrl",
+    "intro_sent_at", "handling", "hand_set", "profileUrl", "linkedin_starred",
 ]
 EXTRACTED_SELECT = ["fullName", "occupation", "miniProfile", "connect"]
 #: The columns filled from outside `analysis`, null until a source has them.
@@ -87,7 +87,7 @@ SCHEMA: dict[str, pl.DataType] = {
     "pipeline_stage": pl.String, "pipeline_reason": pl.String, "pipeline_classified_at": _DATETIME,
     "sent_total": pl.Int64, "replied_total": pl.Int64,
     "last_sent_date": _DATETIME, "last_reply_date": _DATETIME, "intro_sent_at": _DATETIME,
-    "handling": pl.String, "hand_set": _TEXT_LIST, "profileUrl": pl.String,
+    "handling": pl.String, "hand_set": _TEXT_LIST, "profileUrl": pl.String, "linkedin_starred": pl.Boolean,
     "connected_at": _DATETIME, "inbound_total": pl.Int64, "last_received_at": _DATETIME, "needs_answer": pl.Boolean,
 }
 
@@ -100,7 +100,7 @@ SORTABLE = (
 
 #: The named views, by their `view` query value: the label the header's
 #: button and the list show.
-VIEWS = {"needs_answer": "Need my answer"}
+VIEWS = {"needs_answer": "Need my answer", "stars": "My Stars"}
 
 #: The Contacts screen's value filters: query parameter, and the column it
 #: matches through `normalized`.
@@ -141,6 +141,8 @@ def _typed(field: str, value):
         return value if isinstance(value, datetime) and value.tzinfo is not None else None
     if kind == _TEXT_LIST:
         return [item for item in value if isinstance(item, str)] if isinstance(value, list) else None
+    if kind == pl.Boolean:
+        return value if isinstance(value, bool) else None
     return None
 
 
@@ -279,6 +281,12 @@ def needs_my_answer() -> pl.Expr:
     return pl.col("needs_answer") & normalized("pipeline_stage").is_in(list(ANSWER_STAGES))
 
 
+def starred() -> pl.Expr:
+    """The My Stars view: the contacts `linkedinmcp.stars.get_stars` marked
+    `linkedin_starred`, as of the last press of the button."""
+    return pl.col("linkedin_starred").fill_null(False)
+
+
 def counts(frame: pl.DataFrame, column: str) -> list[tuple[str, int]]:
     """Each value of `column` and how many contacts hold it, most frequent
     first, ties in ASCII order."""
@@ -315,7 +323,7 @@ class Filters:
     is `True` for the contacts with a message from us (`sent_total` above
     0), `False` for those with none, `None` for any; `received` the same
     over `inbound_total`. `view` is a key of `VIEWS` or `None`: the
-    `needs_answer` view is `needs_my_answer`."""
+    `needs_answer` view is `needs_my_answer`, `stars` is `starred`."""
 
     industry: tuple[str, ...] = ()
     function: tuple[str, ...] = ()
@@ -355,6 +363,8 @@ class Filters:
                 conditions.append(has if wanted else ~has)
         if self.view == "needs_answer":
             conditions.append(needs_my_answer())
+        elif self.view == "stars":
+            conditions.append(starred())
         return frame.filter(*conditions) if conditions else frame
 
     def params(self) -> dict[str, str]:

@@ -7,7 +7,9 @@ from datetime import UTC
 from fastapi.testclient import TestClient
 from google.api_core.datetime_helpers import DatetimeWithNanoseconds
 
+from linkedinmcp import clients
 from tests.linkedinmcp.fake_firestore import FakeFirestore
+from tests.linkedinmcp.fake_unipile import FakeUnipile, chat, provider_id_of, seed_message
 from tests.webapp.conftest import AUDIENCE, ME, outreach_settings, webapp_settings
 from webapp import app as webapp_app, projection
 
@@ -115,6 +117,30 @@ def test_the_need_my_answer_button_lists_the_contacts_who_wrote_last():
         assert "Bob Ray" in page.text and "Ann Lee" not in page.text
         assert "view=needs_answer" in page.text.split('class="list"')[1]  # sort headings keep the view
         assert '<input type="hidden" name="view" value="needs_answer">' in page.text
+
+
+def test_my_stars_marks_the_starred_contacts_and_lists_them(monkeypatch):
+    db = _db()
+    db.collection("analysis").document("bob").set({"linkedin_starred": True}, merge=True)  # unstarred since
+    for doc_id in ("ann", "bob"):
+        seed_message(db, f"m-{doc_id}", doc_id, is_sender=1, timestamp=DatetimeWithNanoseconds(2026, 9, 1, tzinfo=UTC))
+    linkedin = FakeUnipile(chats=[chat("chat-ann", provider_id_of("ann"), pinned=1), chat("chat-bob", provider_id_of("bob"))])
+    monkeypatch.setattr(clients, "firestore_client", lambda: db)
+    monkeypatch.setattr(clients, "unipile_client", lambda: linkedin)
+    contacts = projection.Contacts(lambda: db)
+    contacts.rebuild()
+    with TestClient(_app(contacts)) as client:
+        assert 'My Stars <span class="count">1</span>' in client.get("/").text
+        response = client.post("/stars", follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers["location"].startswith("/contacts?view=stars&starred=1&added=1&removed=1&unmatched=0&at=")
+        page = client.get(response.headers["location"])
+    assert linkedin.closed
+    assert db.collection("analysis").document("ann").get().to_dict()["linkedin_starred"] is True
+    assert db.collection("analysis").document("bob").get().to_dict()["linkedin_starred"] is False
+    assert "Ann Lee" in page.text and "Bob Ray" not in page.text  # the rows were patched, no rebuild
+    assert "1 starred conversation in LinkedIn at" in page.text and "1 marked, 1 cleared." in page.text
+    assert 'My Stars <span class="count">1</span>' in page.text
 
 
 def test_refresh_rebuilds_and_returns_to_the_same_screen():

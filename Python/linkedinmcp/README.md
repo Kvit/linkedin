@@ -780,6 +780,7 @@ linkedinmcp/
   contacts.py       read helpers behind the read-only MCP tools
   fetch_queue.py    fetch_queue: the daily-connections-to-fetch queue
   fetching.py       fetch_one()/preview(): one profile per idle tick
+  stars.py          get_stars(): LinkedIn's starred conversations, marked on analysis
   jobs.py           sync(), daily(), tick(), plan_intros(), handle_unipile_webhook()
   steps.py          the six process steps the MCP tools start as jobs
   monitor.py        the job monitor: start, run, follow; Cloud Tasks executor

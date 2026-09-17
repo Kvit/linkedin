@@ -231,6 +231,9 @@ class Chat(UnipileModel):
     unread_count: int = 0
     unread: int = 0
     timestamp: datetime | None = None
+    #: 1 when the conversation is starred in LinkedIn (LinkedIn's messaging
+    #: has a star and no pin). Starring leaves `timestamp` alone.
+    pinned: int | None = None
 
     _ts = field_validator("timestamp", mode="before")(_parse_timestamp)
 

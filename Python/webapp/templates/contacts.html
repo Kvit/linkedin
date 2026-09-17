@@ -36,6 +36,10 @@
   <button type="submit">Apply</button>
   <a href="/contacts">Clear</a>
 </form>
+{% if notice %}<p class="notice" role="status">{{ notice }}</p>{% endif %}
+{% if filters.view == "stars" %}
+<p class="view-on"><strong>My Stars:</strong> contacts whose LinkedIn conversation is starred, as of the last press of My Stars. <a href="/contacts?{{ qs(link, view=None) }}">Show all contacts</a></p>
+{% endif %}
 {% if filters.view == "needs_answer" %}
 <p class="view-on"><strong>Need my answer:</strong> prospects, leads and contacts with no stage whose newest message is theirs, newest first. <a href="/contacts?{{ qs(link, view=None) }}">Show all contacts</a></p>
 {% endif %}

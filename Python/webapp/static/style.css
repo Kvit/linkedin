@@ -97,8 +97,9 @@ header.site nav a[aria-current="page"] { color: var(--hematoxylin); border-botto
 header.site .refresh { display: flex; gap: 0.6rem; align-items: center; color: var(--muted); }
 header.site .user { margin-left: auto; color: var(--muted); }
 
-/* The one view with a button of its own: the contacts waiting on you. Its
-   count wears eosin, the contact's colour, because it counts their messages. */
+/* The views with a button of their own. Need my answer counts the contacts
+   waiting on you: its count wears eosin, the contact's colour, because it
+   counts their messages. */
 .view-button {
   display: inline-flex;
   align-items: center;
@@ -113,6 +114,10 @@ header.site .user { margin-left: auto; color: var(--muted); }
 }
 .view-button:hover { color: var(--eosin); background: var(--eosin-wash); }
 .view-button[aria-current="page"] { background: var(--eosin-wash); }
+/* My Stars marks what you starred, so its button wears hematoxylin, your side. */
+header.site form.stars { margin: 0; }
+.view-button.mine { font: inherit; font-weight: 600; border-color: var(--hematoxylin); color: var(--hematoxylin); }
+.view-button.mine:hover, .view-button.mine[aria-current="page"] { color: var(--hematoxylin); background: var(--hematoxylin-wash); }
 .view-button .count {
   min-width: 1.6rem;
   padding: 0 0.4rem;
@@ -122,6 +127,7 @@ header.site .user { margin-left: auto; color: var(--muted); }
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
+.view-button.mine .count { background: var(--hematoxylin); }
 .view-on {
   margin: 0.25rem 0 0.5rem;
   padding: 0.45rem 0.75rem;
