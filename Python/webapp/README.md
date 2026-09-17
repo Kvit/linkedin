@@ -231,8 +231,8 @@ assertion itself as well: its signature, the audience
 the issuer, and the email. Anyone else gets a Google "access denied" page or a
 403.
 
-**Running now:** `v0.7.0`, revision `linkedin-contacts-00006-vxn`, deployed
-2026-09-16 at `https://linkedin-contacts-5czydyxqoa-uc.a.run.app`. Its
+**Running now:** `v1.0.0`, revision `linkedin-contacts-00007-nqt`, deployed
+2026-09-17 (UTC) at `https://linkedin-contacts-5czydyxqoa-uc.a.run.app`. Its
 application startup took 32 seconds.
 
 **The deploy needed no console step.** IAP's built-in sign-in admits accounts
