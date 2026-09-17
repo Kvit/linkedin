@@ -242,7 +242,7 @@ details.multi input[type="checkbox"] { accent-color: var(--hematoxylin); margin:
   border-radius: 6px;
 }
 .list thead th { position: sticky; top: 0; z-index: 1; background: var(--slide); }
-.list td.wrap { white-space: normal; min-width: 24rem; max-width: 40rem; }
+td.wrap { white-space: normal; min-width: 24rem; max-width: 40rem; }
 .pager { display: flex; gap: 1rem; margin-top: 0.75rem; }
 
 /* Home */
@@ -296,6 +296,52 @@ details.multi input[type="checkbox"] { accent-color: var(--hematoxylin); margin:
 .detail.facts { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--rule); }
 .detail.facts dt { padding-top: 0; color: var(--muted); font-weight: 400; }
 .detail.facts dd { justify-content: flex-start; }
+
+/* The message box, above the conversation. */
+
+.contact-main { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.compose {
+  background: var(--slide);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 1rem 1.5rem 1.1rem;
+}
+.compose h2 { margin: 0 0 0.6rem; }
+.compose textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 8rem;
+  resize: vertical;
+  padding: 0.6rem 0.8rem;
+  font-family: var(--serif);
+  font-size: 1rem;
+  line-height: 1.65;
+  color: inherit;
+  background: var(--slide);
+  border: 1px solid var(--rule-strong);
+  border-radius: 6px;
+}
+.compose textarea:focus-visible { outline-offset: 0; border-color: var(--hematoxylin); }
+.compose-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 0.6rem; }
+.compose-count { margin-right: auto; color: var(--muted); font-size: 0.8125rem; font-variant-numeric: tabular-nums; }
+.compose-count.over { color: var(--alert); font-weight: 600; }
+button.primary { background: var(--hematoxylin); color: var(--slide); }
+button.primary:hover { background: var(--hematoxylin-deep); }
+button.primary:disabled { color: var(--muted); border-color: var(--rule-strong); background: var(--glass); }
+.compose-status { margin: 0.6rem 0 0; color: var(--muted); font-size: 0.875rem; }
+.compose-refusal {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.75rem;
+  margin: 0.6rem 0 0; color: var(--alert); font-weight: 600;
+}
+.compose-warning {
+  margin: 0.6rem 0 0;
+  padding: 0.5rem 0.75rem;
+  background: var(--eosin-wash);
+  border-left: 3px solid var(--eosin);
+}
+.compose-warning ul { margin: 0; padding-left: 1.1rem; }
+.compose-warning p { margin: 0.25rem 0 0; color: var(--muted); font-size: 0.875rem; }
 
 /* The conversation: the slide the whole screen is for. */
 
@@ -355,10 +401,14 @@ details.multi input[type="checkbox"] { accent-color: var(--hematoxylin); margin:
 }
 .message.me .who { color: var(--hematoxylin); text-align: right; }
 .message.other { align-self: stretch; max-width: none; color: var(--muted); }
+.unsynced-list { margin-top: 0.9rem; }
+.message.unsynced { border-right-style: dashed; }
+.message.unsynced p { white-space: pre-line; }
 
 @media (max-width: 600px) {
   main { padding: 1rem; }
-  .thread { padding: 0.75rem 0.75rem 1rem; }
+  .thread, .compose { padding: 0.75rem 0.75rem 1rem; }
+  .compose-count { flex-basis: 100%; }
   .message { max-width: 94%; }
 }
 

@@ -37,9 +37,14 @@ values are the classifiers' own vocabulary: `profiles.Industry`,
 
 After a write the frame row is patched, so the list and the Home counts
 show it at once, and the page reloads with a notice.
+
+The message box above the conversation posts to `compose.py`, which
+renders this screen again through `render_contact` when a send is refused,
+so the text stays in the box.
 """
 
 import re
+import secrets
 from datetime import date
 from typing import Annotated, get_args
 from urllib.parse import quote, urlencode
@@ -92,8 +97,18 @@ def _back(doc_id: str, **notice) -> RedirectResponse:
     return RedirectResponse(f"/contacts/{quote(doc_id, safe='')}?{urlencode(notice)}", status_code=303)
 
 
+#: What the Contact screen says about the sync a send started (`compose.py`).
+SYNC_NOTES = {
+    "started": "Sync Messages started: the message is stored when it finishes, as Home shows.",
+    "busy": "A run is already going on Home: press Sync Messages when it ends, to store the message.",
+    "failed": "Sync Messages could not be started, as Home shows: press it there to store the message.",
+}
+
+
 def _notice(params) -> str:
     """The line a write leaves on the reloaded page, read from its redirect."""
+    if re.fullmatch(r"\d{2}:\d{2}", params.get("sent", "")):
+        return f"Sent at {params['sent']}. {SYNC_NOTES.get(params.get('sync'), '')}".strip()
     if (name := params.get("saved")) in CHOICES:
         cancelled = params.get("cancelled", "")
         return f"{CHOICES[name][0]} saved." + (f" Queued messages cancelled: {cancelled}." if cancelled.isdigit() else "")
@@ -135,8 +150,30 @@ def thread(conversation: dict | None) -> list[dict]:
     return [part for part in parts if part["messages"]]
 
 
+def unsynced_sends(db, doc_id: str) -> list[dict]:
+    """The messages sent from the message box that the sync has not stored
+    yet, oldest first: the contact's `manual` queue items that are `sent`
+    with a `message_id` not in `messages`, or still `sending` or `unknown`."""
+    items = [
+        item for item in queue.items_for_contact(db, doc_id)
+        if item.get("kind") == queue.MANUAL and item.get("status") in (queue.SENT, queue.SENDING, queue.UNKNOWN)
+    ]
+    if not items:
+        return []
+    stored = {document.id for document in pipeline.load_messages(db.collection(pipeline.MESSAGES_COLLECTION), [doc_id])}
+    return [item for item in reversed(items) if item.get("status") != queue.SENT or item.get("message_id") not in stored]
+
+
 @router.get("/contacts/{doc_id}")
 def contact_screen(request: Request, doc_id: str):
+    return render_contact(request, doc_id, notice=_notice(request.query_params))
+
+
+def render_contact(request: Request, doc_id: str, *, notice: str = "", compose: dict | None = None):
+    """The Contact screen. `compose` is the message box's state after a
+    refused send: its `text`, and `refusal` (reason and sentence),
+    `warnings` or the `open_item` in the way. Every render carries a new
+    `token`, so each form sends at most one message."""
     db = clients.firestore_client()
     contact = reads.get_contact(db, request.app.state.outreach, doc_id, full=True)
     if contact is None:
@@ -167,7 +204,10 @@ def contact_screen(request: Request, doc_id: str):
         render.page_context(
             request, contact=contact, conversation=conversation, parts=parts,
             sides=[message["side"] for part in parts for message in part["messages"]],
-            connected_at=connected_at, fields=fields, notice=_notice(request.query_params),
+            connected_at=connected_at, fields=fields, notice=notice,
+            compose={"text": "", "refusal": None, "warnings": [], "open_item": None, **(compose or {}),
+                     "token": secrets.token_urlsafe(16)},
+            max_chars=request.app.state.outreach.message_max_chars, unsynced=unsynced_sends(db, doc_id),
         ),
     )
 

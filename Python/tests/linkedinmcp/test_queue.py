@@ -928,3 +928,31 @@ def test_counts_reports_the_right_number_per_status_and_excludes_terminal_items(
         queue.SENDING: 1,
         queue.UNKNOWN: 0,
     }
+
+
+# --- start_manual() ---------------------------------------------------------
+
+
+def test_start_manual_creates_a_sending_item_that_settles_like_a_claimed_one():
+    db = FakeFirestore()
+    item, created = queue.start_manual(
+        db, "manual:contact-1:t1", {"contact_doc_id": "contact-1", "text": "hi", "chat_id": "chat-1", "tags": ["manual"]},
+        "webapp", START,
+    )
+    assert created and item["status"] == queue.SENDING and item["kind"] == queue.MANUAL
+    assert queue.next_due(db, START + timedelta(hours=1)) is None  # never approved, so no step picks it up
+
+    queue.settle(db, "manual:contact-1:t1", queue.SENT, now=START, message_id="msg-1")
+    stored = queue.get(db, "manual:contact-1:t1")
+    assert (stored["status"], stored["message_id"], stored["tags"], stored["created_by"]) == (queue.SENT, "msg-1", ["manual"], "webapp")
+    [row] = [doc.to_dict() for doc in db.collection(ledger.LEDGER_COLLECTION).stream()]
+    assert (row["kind"], row["result"], row["queue_id"]) == ("message", queue.SENT, "manual:contact-1:t1")
+
+
+def test_start_manual_twice_writes_nothing_the_second_time():
+    db = FakeFirestore()
+    queue.start_manual(db, "m1", {"contact_doc_id": "contact-1", "text": "first"}, "webapp", START)
+    item, created = queue.start_manual(db, "m1", {"contact_doc_id": "contact-1", "text": "second"}, "webapp", START)
+    assert not created and item["text"] == "first"
+    with pytest.raises(ValueError):
+        queue.enqueue(db, "m2", {"contact_doc_id": "contact-1", "kind": queue.MANUAL, "text": "x"}, require_approval=False, now=START)

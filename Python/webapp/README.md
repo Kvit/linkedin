@@ -16,19 +16,19 @@ It complements the other two ways of working the contacts:
 Design: `docs/superpowers/specs/2026-09-16-contacts-webapp-design.md`.
 Plan and stages: `docs/superpowers/plans/2026-09-16-contacts-webapp.md`.
 
-## What it does now (stages 1 to 5 and 8, and the Need my answer view)
+## What it does now (stages 1 to 5 and 8, the Need my answer view, and the message box)
 
 | Screen | Path | Shows |
 |---|---|---|
 | Home | `/` | Total contacts; counts by industry, stage and handling (`none` = unset), each count a link to the Contacts list with that filter applied; the **Get New Contacts** and **Sync Messages** buttons with a panel of their progress and results |
 | Contacts | `/contacts` | Every contact, 100 a page: filter, click a column heading to sort, search by name or headline |
-| Contact | `/contacts/{doc_id}` | One contact: handling, industry, function, seniority and stage as dropdowns that save at once, the dates beside them; the conversation as a thread, your messages on the right and theirs on the left, a divider for each day; queued messages; the profile summary |
+| Contact | `/contacts/{doc_id}` | One contact: handling, industry, function, seniority and stage as dropdowns that save at once, the dates beside them; a box to write a message, with **Expand with AI** and **Send**; the conversation as a thread, your messages on the right and theirs on the left, a divider for each day; queued messages; the profile summary |
 
 Every screen's header says when the data was loaded ("data as of", Chicago
 time), has a **Refresh** button that reloads every contact from Firestore,
 and a **Need my answer** button with the number of contacts waiting on you.
-The Contact screen's dropdowns and the Home screen's two buttons write; the
-rest only reads.
+The Contact screen's dropdowns and Send, and the Home screen's two buttons,
+write; the rest only reads.
 
 **Need my answer** opens the Contacts list narrowed to the prospects, leads and
 contacts with no stage who wrote last: their newest readable message is newer
@@ -43,6 +43,53 @@ loaded, so press **Refresh** after a sync or after answering someone.
 is one paragraph, dated to the day, with its line breaks joined. When a
 contact has more than one LinkedIn conversation, each gets a heading. Very
 long histories show the newest 20,000 characters and say so.
+
+**Writing a message.** The box above the conversation takes the message
+itself, or a note to expand. The count under it is shown in bold past 1,200
+characters, the limit the outreach service applies.
+
+- **Expand with AI** sends the box's text as the instruction to Gemini, with
+  the contact's classification, whole profile summary and conversation as
+  context (the text the stage classifier reads), and puts the message it
+  writes in the box; **Undo** brings the note back. It asks for a note
+  between two executives in your voice: the note is the whole content (no
+  call, demo, meeting length, date, price or promise it does not name), the
+  conversation only makes it specific and is never retold, a short note makes
+  a short message ("check status" is one or two sentences), one paragraph,
+  "Hi" and the first name, no sign-off, no email address or phone number, no
+  sales jargon and none of the listed stock phrases ("jump on a call", "just
+  following up", "let me know if you have any questions" and others). The line under the box names the
+  model version that wrote it and the seconds it took. Nothing is stored.
+  The model is `WEBAPP_EXPAND_MODEL`, by default `gemini-pro-latest`, Google's
+  name for its newest Pro model.
+- **Send** sends the box's text to the contact at once through Unipile. It is
+  refused, with the text kept and the reason shown, when the text check
+  fails (empty, too long, a `{slot}` left in, a link to a domain not allowed),
+  when handling is `exclude`, when LinkedIn sends are blocked or paused, when
+  a message to them is already queued (a pending or approved one offers
+  **Cancel it and send mine**, which cancels it only when the send passes
+  every other check), when the day's message budget is used, or
+  when their LinkedIn id is not known. It asks for a second press, **Send
+  anyway**, when their stage is `soft_no`, `reject` or `not_relevant`, or
+  when you already wrote to them today and they have not written since.
+- **What a send writes:** an `outreach_queue` item `manual:{doc_id}:{token}`
+  with kind `manual` and tags `["manual"]`, created before the LinkedIn call
+  and settled `sent` with LinkedIn's message id after it; an `action_log`
+  row, so the outreach service's 24-hour count includes it; `last_sent_date`
+  and `sent_total` merged into `analysis`. The Need my answer count drops at
+  once. Then **Sync Messages** starts as if pressed on Home; it stores the
+  message in `messages` with `tags: ["manual"]`, copied from the queue item.
+  Until then the conversation ends with the message, marked as not stored
+  by a sync yet. A Refresh before the sync ends puts the contact back in
+  Need my answer.
+- **A form sends once:** each page carries a new token, and the item's id
+  holds it, so a double click or a resubmitted page sends nothing more.
+- **When LinkedIn refuses it** the item is settled `failed` and the page says
+  why; a rate limit or a disconnected account also pauses sends, and a
+  restriction blocks them, as the outreach service does. When LinkedIn gives
+  no clear answer the item is `unknown`, an alert is raised, and the next
+  sync marks it sent if the message turns up, failed after 48 hours. Such a
+  message is stored with `tags: []`.
 
 **The look.** The colours are the two stains a pathology slide is read in:
 hematoxylin blue-violet for your messages and every action, eosin pink-red for
@@ -60,7 +107,7 @@ service, for real, never as a dry run:
   seniority and whether it is in a target industry. When nothing was stored,
   nothing is classified.
 - **Sync Messages** runs `sync_messages`: it stores the LinkedIn messages newer
-  than the newest stored one, cancels queued messages to anyone who replied,
+  than the last one it synced, cancels queued messages to anyone who replied,
   refreshes the contact stats and stages up to 50 conversations.
 
 One run at a time: both buttons are disabled while a run is going, and the Home
@@ -210,7 +257,8 @@ gcloud run services logs read linkedin-contacts --region us-central1 --project v
 |---|---|
 | `WEBAPP_ALLOWED_EMAIL` | The one Google account allowed in |
 | `WEBAPP_IAP_AUDIENCE` | The IAP JWT audience, computed by `deploy.cmd` |
-| `WEBAPP_OUTREACH_URL` | The outreach service's MCP URL, for the routine buttons of a later stage |
+| `WEBAPP_OUTREACH_URL` | The outreach service's MCP URL, for the Home buttons and the sync after a send |
+| `WEBAPP_EXPAND_MODEL` | The Gemini model of Expand with AI; default `gemini-pro-latest` |
 | `WEBAPP_DEV_USER` | Local runs only |
 
 **Cost.** One instance stays up (`--min-instances=1`) so the contact table is

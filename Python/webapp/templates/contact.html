@@ -51,6 +51,37 @@
 </dl>
 </aside>
 
+<div class="contact-main">
+<section class="compose" aria-labelledby="compose-title">
+  <h2 id="compose-title">New message</h2>
+  <form method="post" action="/contacts/{{ contact.doc_id|urlencode }}/send" class="compose-form"
+        data-expand="/contacts/{{ contact.doc_id|urlencode }}/expand" data-limit="{{ max_chars }}">
+    <input type="hidden" name="token" value="{{ compose.token }}">
+    {%- if compose.warnings %}<input type="hidden" name="confirm" value="1">{% endif %}
+    <textarea name="text" rows="6" aria-label="The message, or a note for Expand with AI"
+              placeholder="Write the message, or a note for Expand with AI">{{ compose.text }}</textarea>
+    <div class="compose-bar">
+      <span class="compose-count" aria-live="polite"><span data-count>{{ compose.text|length }}</span> / {{ "{:,}".format(max_chars) }} characters</span>
+      <button type="button" data-expand-button>Expand with AI</button>
+      <button type="submit" class="primary">{{ "Send anyway" if compose.warnings else "Send" }}</button>
+    </div>
+    <p class="compose-status" data-status role="status" hidden></p>
+    {%- if compose.warnings %}
+    <div class="compose-warning" role="alert">
+      <ul>{% for warning in compose.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+      <p>Press Send anyway to send it.</p>
+    </div>
+    {%- endif %}
+    {%- if compose.refusal %}
+    <p class="compose-refusal" role="alert">{{ compose.refusal[1] }}
+      {%- if compose.open_item and compose.open_item.status in ("pending", "approved") %}
+      <button type="submit" name="cancel_item" value="{{ compose.open_item.id }}">Cancel it and send mine</button>
+      {%- endif %}
+    </p>
+    {%- endif %}
+  </form>
+</section>
+
 <section class="thread" aria-labelledby="thread-title">
   <h2 id="thread-title">Conversation</h2>
   {% if parts %}
@@ -70,10 +101,22 @@
       {% endfor %}
       </ol>
     {% endfor %}
-  {% else %}
+  {% elif not unsynced %}
     <p class="thread-note">No messages.</p>
   {% endif %}
+  {% if unsynced %}
+    <ol class="messages unsynced-list">
+      <li class="day">Sent from here, not stored by a sync yet</li>
+      {% for item in unsynced %}
+      <li class="message me unsynced">
+        <span class="who">You, {{ (item.sent_at or item.sending_at)|local(tz) }}{% if item.status != "sent" %}, {{ item.status }}{% endif %}</span>
+        <p>{{ item.text }}</p>
+      </li>
+      {% endfor %}
+    </ol>
+  {% endif %}
 </section>
+</div>
 </div>
 
 <h2>Queue</h2>
@@ -89,4 +132,58 @@
 {% else %}<p class="muted">Nothing queued.</p>{% endif %}
 
 <details><summary>Profile summary{% if contact.summary_truncated %} (truncated){% endif %}</summary><pre>{{ contact.summary or "" }}</pre></details>
+<script>
+// The message box: the character count, Expand with AI in place, and
+// buttons disabled once the form is sent (after the submitter's value is
+// taken, so "Cancel it and send mine" still posts its item).
+(() => {
+  const form = document.querySelector(".compose-form");
+  if (!form) return;
+  const box = form.elements.text;
+  const count = form.querySelector("[data-count]");
+  const status = form.querySelector("[data-status]");
+  const expand = form.querySelector("[data-expand-button]");
+  const limit = Number(form.dataset.limit);
+  const recount = () => {
+    count.textContent = box.value.length;
+    count.parentElement.classList.toggle("over", box.value.length > limit);
+  };
+  const say = (text, undo) => {
+    status.hidden = false;
+    status.textContent = text;
+    if (undo === undefined) return;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "link";
+    button.textContent = "Undo";
+    button.addEventListener("click", () => { box.value = undo; recount(); status.hidden = true; box.focus(); });
+    status.append(" ", button);
+  };
+  box.addEventListener("input", recount);
+  recount();
+  expand.addEventListener("click", async () => {
+    const note = box.value;
+    if (!note.trim()) { say("Write a note first: Expand with AI turns it into the message."); return; }
+    expand.disabled = true;
+    say("Writing the message. A Pro model can take half a minute.");
+    try {
+      const response = await fetch(form.dataset.expand, {
+        method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({text: note}),
+      });
+      const answer = response.ok ? await response.json() : {ok: false, detail: "Expand failed: HTTP " + response.status + "."};
+      if (!answer.ok) { say(answer.detail); return; }
+      box.value = answer.text;
+      recount();
+      say("Written by " + answer.model + " in " + answer.seconds + " s." + (answer.problem ? " " + answer.problem : ""), note);
+    } catch (error) {
+      say("Expand failed: " + error + ".");
+    } finally {
+      expand.disabled = false;
+    }
+  });
+  form.addEventListener("submit", () => {
+    setTimeout(() => form.querySelectorAll("button").forEach((button) => { button.disabled = true; }), 0);
+  });
+})();
+</script>
 {% endblock %}

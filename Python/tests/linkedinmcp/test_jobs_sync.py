@@ -6,9 +6,9 @@ contact newly classified `lead` raises one alert.
 `sync` reaches `messages_sync` through the module, so most tests replace
 its five functions on that module with `FakeSync`'s, whose signatures are
 the real ones exactly -- no `**kwargs` -- so a call of the wrong shape fails
-here. Two run the REAL `messages_sync` code against `FakeFirestore` and the
-stub client: the first restricted-account test, whose forward pass meets
-`AccountRestricted` from the stub, and the last test, end to end.
+here. The rest run the REAL `messages_sync` code against `FakeFirestore` and
+the stub client: the first restricted-account test, whose forward pass meets
+`AccountRestricted` from the stub, and the tests under "end to end".
 """
 
 from datetime import UTC, datetime, timedelta
@@ -60,7 +60,7 @@ class FakeSync:
                 fake.resolvers.append(self)
 
         monkeypatch.setattr(messages_sync, "_watermarks", self._watermarks)
-        monkeypatch.setattr(messages_sync, "_ids_at", self._ids_at)
+        monkeypatch.setattr(messages_sync, "_ids_since", self._ids_since)
         monkeypatch.setattr(messages_sync, "ContactResolver", ContactResolver)
         monkeypatch.setattr(messages_sync, "forward_pass", self._forward_pass)
         monkeypatch.setattr(messages_sync, "refresh_contact_stats", self._refresh_contact_stats)
@@ -70,12 +70,12 @@ class FakeSync:
         oldest = self.max_ts - timedelta(days=400) if self.max_ts is not None else None
         return oldest, self.max_ts
 
-    def _ids_at(self, messages_ref, moment):
-        self.calls.append(("_ids_at", messages_ref.id, moment))
+    def _ids_since(self, messages_ref, moment):
+        self.calls.append(("_ids_since", messages_ref.id, moment))
         return set(self.skip_ids)
 
-    def _forward_pass(self, client, db, messages_ref, resolver, max_ts, skip_ids, *, dry_run):
-        self.calls.append(("forward_pass", client, db, messages_ref.id, resolver, max_ts, skip_ids, dry_run))
+    def _forward_pass(self, client, db, messages_ref, resolver, cursor, skip_ids, *, dry_run):
+        self.calls.append(("forward_pass", client, db, messages_ref.id, resolver, cursor, skip_ids, dry_run))
         if not dry_run:
             for message_id, body in self.new_messages:
                 messages_ref.document(message_id).set(body)
@@ -121,7 +121,9 @@ def unknown_item(db, queue_id, contact_doc_id, *, sending_at, kind="follow_up"):
 # =============================================================================
 
 
-def test_sync_runs_the_forward_pass_from_the_newest_stored_message(monkeypatch, tmp_path):
+def test_sync_with_no_cursor_runs_the_forward_pass_from_the_newest_stored_message(monkeypatch, tmp_path):
+    """No `runtime_state/messages_sync` document yet: the newest stored
+    message stands in for the cursor."""
     db = FakeFirestore()
     client = FakeUnipile()
     fake = FakeSync(
@@ -137,10 +139,10 @@ def test_sync_runs_the_forward_pass_from_the_newest_stored_message(monkeypatch, 
     summary = jobs.sync(db, client, make_settings(tmp_path), NOW)
 
     assert fake.names() == [
-        "_watermarks", "ContactResolver", "_ids_at", "forward_pass", "refresh_contact_stats",
+        "_watermarks", "ContactResolver", "_ids_since", "forward_pass", "refresh_contact_stats",
     ]
     assert fake.calls[1] == ("ContactResolver", client, "messages", "extracted", True)
-    assert fake.calls[2] == ("_ids_at", "messages", MAX_TS)
+    assert fake.calls[2] == ("_ids_since", "messages", MAX_TS)
     assert fake.calls[3] == (
         "forward_pass", client, db, "messages", fake.resolvers[0], MAX_TS, {"stored-at-the-watermark"}, False,
     )
@@ -526,7 +528,7 @@ def test_an_account_restricted_escaping_sync_is_enough_without_the_client_flag(m
     client = FakeUnipile()
     FakeSync(monkeypatch, max_ts=MAX_TS)
 
-    def forward_pass_that_raises(client_arg, db_arg, messages_ref, resolver, max_ts, skip_ids, *, dry_run):
+    def forward_pass_that_raises(client_arg, db_arg, messages_ref, resolver, cursor, skip_ids, *, dry_run):
         raise restricted()
 
     monkeypatch.setattr(messages_sync, "forward_pass", forward_pass_that_raises)
@@ -551,7 +553,7 @@ def test_a_restriction_some_code_caught_still_blocks_writes_when_sync_ends(monke
     FakeSync(monkeypatch, max_ts=MAX_TS)
 
     def forward_pass_that_caught_a_restriction(
-        client_arg, db_arg, messages_ref, resolver, max_ts, skip_ids, *, dry_run
+        client_arg, db_arg, messages_ref, resolver, cursor, skip_ids, *, dry_run
     ):
         client_arg.writes_blocked = True
         return 0
@@ -674,6 +676,40 @@ def test_a_reply_stored_at_exactly_the_watermark_cancels_and_the_message_already
     assert status(db, "agent:jane-roe:20260910") == queue.CANCELLED
     assert status(db, "agent:bob:20260910") == queue.APPROVED
     assert (summary["replied_contacts"], summary["cancelled"]) == (1, 1)
+
+
+def test_sync_reads_from_its_cursor_so_a_newer_document_written_elsewhere_hides_no_reply(tmp_path):
+    """The sync last got through our opening message to Jane. Since then
+    something other than the sync stored a document ten minutes old -- the
+    newest in `messages` -- and Jane replied an hour ago. Reading from the
+    newest stored document would start past her reply; reading from the
+    cursor stores it, cancels her queued follow-up, and moves the cursor to
+    her reply."""
+    db = FakeFirestore()
+    opened, replied = NOW - timedelta(days=6), NOW - timedelta(hours=1)
+    seed_contact(db, "jane-roe", firstName="Jane", industry="RCM")
+    seed_message(
+        db, "ours-1", "jane-roe", is_sender=1, timestamp=opened, chat_id="chat-jane",
+        contact_provider_id="ACoAAJane", contact_member_id="111",
+    )
+    db.collection("runtime_state").document("messages_sync").set({"synced_through": opened})
+    seed_message(db, "written-elsewhere", None, is_sender=1, timestamp=NOW - timedelta(minutes=10), chat_id="chat-other")
+    seed_item(db, "agent:jane-roe:20260910", "jane-roe", now=NOW - timedelta(hours=2), chat_id="chat-jane")
+    client = FakeUnipile()
+    client.messaging.mailbox = [
+        Message(id="ours-1", chat_id="chat-jane", is_sender=1, text="Thanks for connecting", timestamp=opened),
+        Message(
+            id="reply-1", chat_id="chat-jane", is_sender=0, sender_id="ACoAAJane",
+            text="Tell me more", timestamp=replied,
+        ),
+    ]
+
+    summary = jobs.sync(db, client, make_settings(tmp_path), NOW)
+
+    assert db.collection("messages").document("reply-1").get().to_dict()["contact_doc_id"] == "jane-roe"
+    assert status(db, "agent:jane-roe:20260910") == queue.CANCELLED
+    assert messages_sync.read_cursor(db) == replied
+    assert (summary["written"], summary["replied_contacts"], summary["cancelled"]) == (1, 1, 1)
 
 
 def test_a_message_the_service_sent_is_stored_with_its_queue_items_tags(tmp_path):

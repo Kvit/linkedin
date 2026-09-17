@@ -81,8 +81,8 @@ def _iso(value):
 
 
 def sync_messages(job) -> dict:
-    """`messages_sync.py`: mirror the messages LinkedIn holds past the newest
-    stored one, then react to them (`jobs._sync`) -- cancel queued items for anyone who replied, refresh
+    """`messages_sync.py`: mirror the messages LinkedIn holds past the sync's
+    cursor, then react to them (`jobs._sync`) -- cancel queued items for anyone who replied, refresh
     the contact stats, resolve `unknown` sends and, with `classify`, stage
     the new replies with Gemini (`pipeline-classify`) and raise one `lead`
     alert per new lead. It heartbeats between those phases. A dry run only

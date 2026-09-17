@@ -169,17 +169,25 @@ async def advance(app) -> None:
             await _next(app, run, step)
 
 
+async def start(app, action: str) -> Run | None:
+    """Start `action`'s run, unless one is already going: the new run --
+    its `error` set when the first step was not started -- or `None`."""
+    label, tool, arguments = ACTIONS[action]
+    routine: Routine = app.state.routine
+    async with routine.lock:
+        if routine.running:
+            return None
+        routine.run = Run(action=action, label=label, started_at=datetime.now(UTC))
+        await _start(app, routine.run, tool, arguments)
+        return routine.run
+
+
 @router.post("/routine/{action}")
 async def press(request: Request, action: str) -> RedirectResponse:
     """Start a run, unless one is already going; back to Home either way."""
     if action not in ACTIONS:
         raise HTTPException(status_code=404, detail="No such action.")
-    label, tool, arguments = ACTIONS[action]
-    routine: Routine = request.app.state.routine
-    async with routine.lock:
-        if not routine.running:
-            routine.run = Run(action=action, label=label, started_at=datetime.now(UTC))
-            await _start(request.app, routine.run, tool, arguments)
+    await start(request.app, action)
     return RedirectResponse("/", status_code=303)
 
 

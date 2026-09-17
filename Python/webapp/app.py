@@ -6,8 +6,9 @@ one at import would read settings and break test collection. Pass
 the path every test takes.
 
 Three screens: Home (`/`, with the buttons of `routine.py`), Contacts
-(`/contacts`) and Contact (`/contacts/{doc_id}`, in `contacts.py`). All but
-`/health` sit behind `auth.IapMiddleware`.
+(`/contacts`) and Contact (`/contacts/{doc_id}`, in `contacts.py`, with the
+message box of `compose.py`). All but `/health` sit behind
+`auth.IapMiddleware`.
 """
 
 import asyncio
@@ -19,7 +20,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from linkedinmcp import clients, settings as outreach_cfg
-from webapp import auth, contacts as contact_screen, projection, render, routine, settings as cfg
+from webapp import auth, compose, contacts as contact_screen, projection, render, routine, settings as cfg
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ def create_app(
     )
     app.mount("/static", StaticFiles(directory=render.STATIC_DIR), name="static")
     app.include_router(contact_screen.router)
+    app.include_router(compose.router)
     app.include_router(routine.router)
 
     @app.get("/health")

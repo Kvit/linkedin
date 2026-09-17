@@ -314,7 +314,8 @@ calls no Gemini and writes nothing but its own job record. Settings only ever na
 and guard still applies.
 
 **`sync_messages(classify=True, dry_run=True)`** -- your `messages_sync.py`
-Mirrors the LinkedIn messages newer than the newest one stored, then reacts:
+Mirrors the LinkedIn messages newer than the last one it synced (its cursor,
+`runtime_state/messages_sync`), then reacts:
 cancels queued sends for anyone who replied, refreshes contact stats, settles
 sends whose outcome was unknown, and (with `classify`) stages the new replies and
 raises one alert per new lead. Nothing else pulls replies in, so run it before
@@ -840,7 +841,11 @@ can be offered that way later.
 Every queued message is `outreach_queue/{id}`, with a deterministic id --
 `intro:{doc_id}` (at most one per contact, ever) or `agent:{doc_id}:{YYYYMMDD}`
 (at most one agent or human item per contact per local day) -- so queueing the
-same thing twice writes nothing the second time.
+same thing twice writes nothing the second time. The contacts webapp's Send
+adds a third: `manual:{doc_id}:{token}`, kind `manual`, tags `["manual"]`,
+created by `queue.start_manual` straight in `sending` before its own LinkedIn
+call and settled like a claimed item. It is never `approved`, so no step sends
+it, and `enqueue` refuses the kind.
 
 **Statuses:** `pending`, `approved`, `sending`, `sent`, `unknown`, `failed`,
 `cancelled`, `skipped`. The first four are "open" and block a new item for the
@@ -849,6 +854,7 @@ same contact.
 ```
 create        -> pending    (require_approval is on, or kind == "reply")
 create        -> approved   (otherwise; approved_by = "auto")
+create        -> sending    (start_manual: the contacts webapp's Send, kind "manual")
 pending       -> approved   (a human approves)
 pending/approved -> cancelled
 approved      -> skipped    (a guard refused it at send time)

@@ -1269,7 +1269,7 @@ def _launch(step: str, params: dict) -> dict[str, Any]:
 
 @mcp.tool(
     description=_job_description(
-        "`messages_sync.py`: mirror the LinkedIn messages newer than the newest stored one, then "
+        "`messages_sync.py`: mirror the LinkedIn messages newer than the last one it synced, then "
         "react to them -- cancel queued items for anyone who replied, refresh the contact stats, "
         "settle sends whose outcome was unknown and, with `classify` (default true), stage the new "
         "replies with Gemini and raise one `lead` alert per new lead. Nothing runs this on a "

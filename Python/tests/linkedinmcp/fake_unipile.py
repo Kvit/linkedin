@@ -246,6 +246,10 @@ class FakeUnipile:
         self.messaging = FakeMessaging(self, chats=chats, sent_24h=sent_24h)
         self.users = FakeUsers(self, relations)
         self.budget = FakeBudget({"message": message_limit, "profile": profile_limit})
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
 
 
 #: Unipile's chat `type` values (the node SDK's `ChatTypeSchema`: SINGLE 0,

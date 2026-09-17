@@ -262,8 +262,9 @@ UNKNOWN_PAGE = 100
 
 
 def sync(db, client, settings, now, *, dry_run=False, state=None, classify=None) -> dict:
-    """Mirror the messages LinkedIn holds past the newest stored one into
-    `messages`, then react to them:
+    """Mirror the messages LinkedIn holds past the sync's cursor
+    (`messages_sync.read_cursor`; the newest stored message until the first
+    sync records one) into `messages`, then react to them:
 
     0. sweep stale claims (`sweep_stale`), as `daily` and `tick` do -- sync
        runs every 15 minutes all week, so a claim a dead tick left behind is
@@ -272,8 +273,8 @@ def sync(db, client, settings, now, *, dry_run=False, state=None, classify=None)
     2. every contact with a new INBOUND message has their `pending` and
        `approved` items cancelled ("they replied"): a reply stops queued
        follow-ups, and the agent decides again. This comes straight after
-       the forward pass: its messages are found by the watermark from
-       before it, which the next sync will have moved past;
+       the forward pass: its messages are found by the cursor from before
+       it, which the forward pass has already moved past;
     3. when the forward pass wrote anything, the per-contact stats refresh;
     4. every `unknown` item is resolved against the stored history (ruling
        P2-8) -- see `_resolve_unknowns`;
@@ -309,6 +310,9 @@ def _sync(db, client, now, *, dry_run, classify, beat=None) -> dict:
     _min_ts, max_ts = messages_sync._watermarks(messages_ref)
     if max_ts is None:
         return {"skipped": "no_history"}
+    # The sync's own cursor, which nothing else writes; until the first sync
+    # that records one, the newest stored message stands in for it.
+    cursor = messages_sync.read_cursor(db) or max_ts
 
     # Before LinkedIn is read, so an outage there does not hold it up; and
     # before `_resolve_unknowns`, so a claim swept here can be settled from
@@ -316,14 +320,14 @@ def _sync(db, client, now, *, dry_run, classify, beat=None) -> dict:
     swept = sweep_stale(db, now, dry_run=dry_run)
 
     resolver = messages_sync.ContactResolver(client, messages_ref, db.collection(EXTRACTED_COLLECTION), join=True)
-    skip_ids = messages_sync._ids_at(messages_ref, max_ts)
-    written = messages_sync.forward_pass(client, db, messages_ref, resolver, max_ts, skip_ids, dry_run=dry_run)
+    skip_ids = messages_sync._ids_since(messages_ref, cursor)
+    written = messages_sync.forward_pass(client, db, messages_ref, resolver, cursor, skip_ids, dry_run=dry_run)
     if dry_run:
         return {"dry_run": True, "would_write": written, "would_sweep": len(swept)}
 
-    # Before anything else can fail: the next sync's watermark is already
-    # past these replies, so a cancellation skipped now is never made.
-    replied = _replied_contacts(messages_ref, max_ts, skip_ids)
+    # Before anything else can fail: the forward pass has already moved the
+    # cursor past these replies, so a cancellation skipped now is never made.
+    replied = _replied_contacts(messages_ref, cursor, skip_ids)
     cancelled = sum(queue.cancel_for_contact(db, contact, "they replied", now) for contact in replied)
     if beat is not None:
         beat("refreshing contact stats")
@@ -361,11 +365,11 @@ def _sync(db, client, now, *, dry_run, classify, beat=None) -> dict:
 _REPLY_FIELDS = ["contact_doc_id", "is_sender", "timestamp", "is_event", "deleted"]
 
 
-def _replied_contacts(messages_ref, max_ts, skip_ids) -> list[str]:
+def _replied_contacts(messages_ref, cursor, skip_ids) -> list[str]:
     """Every contact with an inbound message this sync just stored: one
-    timestamped at or after `max_ts` -- the forward pass reads from just
-    before it -- other than `skip_ids`, those already stored at `max_ts`
-    before the pass. Those were handled by the sync that stored them;
+    timestamped at or after `cursor` -- the forward pass reads from just
+    before it -- other than `skip_ids`, those already stored from `cursor`
+    on before the pass. Those were handled by the sync that stored them;
     counting one again would cancel what was queued in answer to it. ONE
     range query, projected to the fields read; a message with no resolved
     contact belongs to nobody.
@@ -377,7 +381,7 @@ def _replied_contacts(messages_ref, max_ts, skip_ids) -> list[str]:
     """
     from google.cloud.firestore_v1.base_query import FieldFilter
 
-    query = messages_ref.where(filter=FieldFilter("timestamp", ">=", max_ts)).select(_REPLY_FIELDS)
+    query = messages_ref.where(filter=FieldFilter("timestamp", ">=", cursor)).select(_REPLY_FIELDS)
     fresh = [document.to_dict() or {} for document in query.stream() if document.id not in skip_ids]
     usable = guards._usable_messages(fresh)
     return sorted({body["contact_doc_id"] for body in usable if body["is_sender"] == 0 and body.get("contact_doc_id")})

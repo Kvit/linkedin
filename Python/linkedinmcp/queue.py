@@ -62,6 +62,10 @@ OPEN = frozenset({PENDING, APPROVED, SENDING, UNKNOWN})
 TERMINAL = frozenset({SENT, FAILED, CANCELLED, SKIPPED})
 KINDS = ("intro", "follow_up", "drip_step", "reply")
 
+#: A message a person sent from the contacts webapp (`start_manual`). Not in
+#: `KINDS`: `enqueue` refuses it, so no step ever claims or sends one.
+MANUAL = "manual"
+
 # Iteration order for `counts()`: a tuple, not `OPEN` itself, so the returned
 # dict's key order is deterministic across runs rather than following
 # frozenset's arbitrary (hash-seed-dependent) iteration order.
@@ -187,6 +191,51 @@ def enqueue(db, queue_id: str, item: dict, *, require_approval: bool, now: datet
     except api_exceptions.Conflict:
         existing = ref.get().to_dict()
         return {**existing, "id": queue_id}, False
+    return {**data, "id": queue_id}, True
+
+
+def start_manual(db, queue_id: str, item: dict, owner: str, now: datetime) -> tuple[dict, bool]:
+    """Create `queue_id` straight in `sending`, claimed by `owner`: the record
+    of a message a person is sending at once, before the LinkedIn call. The
+    caller settles it with `settle`, exactly as a claimed item is settled, so
+    the `action_log` row, `sweep_stale` and the sync's `unknown` resolution
+    all treat it as they treat the service's own sends -- and `messages_sync`
+    copies its `tags` onto the stored message by `message_id`.
+
+    Never `approved`, not even for a moment: `next_due` reads only approved
+    items, so `send_messages` cannot claim it or skip it. `kind` is `MANUAL`.
+    `item` takes the keys `enqueue` takes, `kind` and `due_at` excepted.
+
+    Create-only, as `enqueue`: when `queue_id` exists, nothing is written and
+    `(existing_item, False)` is returned -- a form submitted twice sends once.
+    """
+    unknown_keys = set(item) - (_ENQUEUE_KEYS - {"kind", "due_at"})
+    if unknown_keys:
+        raise ValueError(f"start_manual: unknown item key(s): {sorted(unknown_keys)}")
+    if not item.get("contact_doc_id"):
+        raise ValueError("start_manual: contact_doc_id must not be empty")
+    text = item.get("text")
+    if not text or not text.strip():
+        raise ValueError("start_manual: text must not be blank")
+    data = {
+        **item,
+        "kind": MANUAL,
+        "tags": list(item.get("tags") or []),
+        "created_by": item.get("created_by", "webapp"),
+        "created_at": now,
+        "due_at": now,
+        "status": SENDING,
+        "sending_at": now,
+        "lease_owner": owner,
+    }
+
+    from google.api_core import exceptions as api_exceptions
+
+    ref = db.collection(QUEUE_COLLECTION).document(queue_id)
+    try:
+        ref.create(data)
+    except api_exceptions.Conflict:
+        return {**ref.get().to_dict(), "id": queue_id}, False
     return {**data, "id": queue_id}, True
 
 

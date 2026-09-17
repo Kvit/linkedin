@@ -11,17 +11,30 @@ a contact in `extracted` / `analysis` so the two can be analysed together.
 
 The invariant
 -------------
-`messages` always holds exactly the contiguous range [min_ts, max_ts], where
-min_ts >= the floor set by --since. The forward pass extends the top, the
-backward pass extends the bottom, and no write may create an interior hole.
+`messages` holds every message from min_ts, the oldest stored one, up to the
+cursor, where min_ts >= the floor set by --since. The forward pass reads from
+the cursor and moves it up, the backward pass extends the bottom, and no write
+may create an interior hole.
 
-Both watermarks are *derived* from the collection on every run rather than
-stored alongside it, so there is no sync state to corrupt, lose or reset -- and
-an interruption is repaired simply by running the script again.
+The cursor
+----------
+`synced_through` on `runtime_state/messages_sync` is the one piece of state the
+sync keeps: the newest message timestamp the forward pass has confirmed
+stored. Only the forward pass writes it, in the same batch as the messages it
+vouches for, so a document written into `messages` by anything else cannot
+move it -- where a watermark derived from the collection would jump past
+messages never fetched. An interruption is repaired by running the script
+again.
 
-The ordering rule that makes that true is in `plan_forward_writes`: the API
-answers newest-first, and writing in that order is the one way this can lose
-data permanently. See its docstring.
+With no cursor document the newest stored message stands in for it, which is
+all this module relied on before it kept one; the next run records the cursor.
+Deleting the document therefore restarts from the newest stored message.
+
+The bottom of the range, min_ts, is still derived from the collection.
+
+The ordering rule that keeps the cursor honest is in `plan_forward_writes`: the
+API answers newest-first, and writing in that order is the one way this can
+lose data permanently. See its docstring.
 
 Contact stats
 -------------
@@ -63,8 +76,12 @@ a contact demonstrably read, since they replied to them -- so a reply is the onl
 evidence of engagement this data holds.
 
 An out-of-band write into `messages` -- a document added by hand or imported by
-another tool -- can stretch [min_ts, max_ts] across an interior that was never
-filled, and neither pass will go back for it. `--verify` is the check for that.
+another tool -- older than min_ts still moves the bottom of the range, and the
+backward pass never goes back for what lies between. `--verify` is the check
+for that. Above min_ts the cursor makes such a write harmless, with one
+exception: a document stored under a real message's id at or after the cursor
+is skipped rather than overwritten, so it keeps what the other writer put in
+it.
 
 Attachments are stored as metadata only. Documents carrying any are marked
 `attachments_fetched: False`, so a later pass can find its own backlog without
@@ -112,6 +129,12 @@ CHAT_FETCH_THRESHOLD = 25
 LARGE_DELTA_WARNING = 5000
 
 _RESERVED_DOC_ID = re.compile(r"^__.*__$")
+
+#: Where the forward pass keeps its cursor (see "The cursor" above). Named here
+#: rather than imported from `linkedinmcp.state`: `linkedinmcp` imports this
+#: module, never the other way round.
+CURSOR_COLLECTION = "runtime_state"
+CURSOR_DOCUMENT = "messages_sync"
 
 
 # --- Firestore plumbing -------------------------------------------------------
@@ -168,6 +191,33 @@ def _ids_at(messages_ref, moment: datetime | None) -> set[str]:
         return set()
     query = messages_ref.where(filter=FieldFilter("timestamp", "==", moment))
     return {doc.id for doc in query.select([]).stream()}
+
+
+def _ids_since(messages_ref, moment: datetime | None) -> set[str]:
+    """Which documents are stored at or after the cursor.
+
+    The forward pass re-reads from the cursor, and the cursor can sit below
+    documents already stored: a run stopped between committing messages and
+    reaching the end of its stream, or something other than the sync wrote
+    them. Skipping them by id is what keeps `jobs._replied_contacts` from
+    taking a reply it already handled for a new one.
+    """
+    if moment is None:
+        return set()
+    query = messages_ref.where(filter=FieldFilter("timestamp", ">=", moment))
+    return {doc.id for doc in query.select([]).stream()}
+
+
+def _cursor_ref(db):
+    return db.collection(CURSOR_COLLECTION).document(CURSOR_DOCUMENT)
+
+
+def read_cursor(db) -> datetime | None:
+    """`synced_through`: the newest message timestamp the forward pass has
+    confirmed stored, everything older included. `None` before the first run
+    that keeps one; callers then start from the newest stored message."""
+    snapshot = _cursor_ref(db).get()
+    return (snapshot.to_dict() or {}).get("synced_through") if snapshot.exists else None
 
 
 def _chunks[T](items: Iterable[T], size: int) -> Iterator[list[T]]:
@@ -403,7 +453,11 @@ def _document_body(message, provider_id, member_id, doc_id, tags=()) -> dict:
     return body
 
 
-def _commit(db, messages_ref, messages, resolver, *, dry_run: bool) -> int:
+def _newest_timestamp(messages) -> datetime | None:
+    return max((message.timestamp for message in messages if message.timestamp is not None), default=None)
+
+
+def _commit(db, messages_ref, messages, resolver, *, dry_run: bool, synced_through=None) -> int:
     """Write one chunk atomically.
 
     A batch rather than a bulk writer: `BulkWriter` parallelises and gives no
@@ -412,6 +466,10 @@ def _commit(db, messages_ref, messages, resolver, *, dry_run: bool) -> int:
 
     Each message is written whole, so its campaign tags are looked up again
     every time it is written (`_queued_tags`) -- a rescan keeps them.
+
+    `synced_through`, when given, moves the cursor in the same batch, so the
+    cursor is never ahead of the messages it vouches for. Only the forward pass
+    passes it: a rescan walks newest-first and would move the cursor back.
     """
     if not messages:
         return 0
@@ -424,6 +482,8 @@ def _commit(db, messages_ref, messages, resolver, *, dry_run: bool) -> int:
             messages_ref.document(_check_document_id(message.id)),
             _document_body(message, provider_id, member_id, doc_id, tags.get(message.id, [])),
         )
+    if synced_through is not None:
+        batch.set(_cursor_ref(db), {"synced_through": synced_through}, merge=True)
     if not dry_run:
         batch.commit()
     return len(messages)
@@ -432,37 +492,51 @@ def _commit(db, messages_ref, messages, resolver, *, dry_run: bool) -> int:
 # --- the two passes -----------------------------------------------------------
 
 
-def forward_pass(client, db, messages_ref, resolver, max_ts, skip_ids, *, dry_run):
-    """Fetch messages newer than anything stored, and write them oldest-first.
+def forward_pass(client, db, messages_ref, resolver, cursor, skip_ids, *, dry_run):
+    """Fetch the messages from the cursor on, and write them oldest-first.
 
     The whole delta is buffered before the first write, because it has to be
-    reversed: the API answers newest-first, and writing in that order raises the
-    high-water mark past messages that were never written.
+    reversed: the API answers newest-first, and writing in that order would
+    move the cursor past messages that were never written.
 
     That is also why this pass takes no page cap, deliberately. Truncating a
-    descending stream keeps the *newest* N, and writing those advances the high
-    water mark straight over the remainder -- an interior hole neither pass would
-    ever revisit. `--max-pages` therefore bounds the backfill only, where
-    stopping early is safe because the walk moves the low water mark downward.
+    descending stream keeps the *newest* N, and writing those moves the cursor
+    straight over the remainder. `--max-pages` therefore bounds the backfill
+    only, where stopping early is safe because the walk moves the low water
+    mark downward.
+
+    Each chunk moves the cursor to its newest message in the same batch. Once
+    every chunk is down, the cursor moves on to the newest message the API
+    returned -- which is newer than the last chunk's when the newest messages
+    were already stored and skipped. A run with nothing to write records it
+    too, one write, so a cursor exists from the first run rather than from the
+    first new message. A dry run moves nothing.
     """
-    if max_ts is None:
+    if cursor is None:
         return 0
 
     stream = client.messaging.iter_all_messages(
-        after=boundary_window(max_ts, "forward"), page_size=PAGE_SIZE
+        after=boundary_window(cursor, "forward"), page_size=PAGE_SIZE
     )
-    delta = [m for m in stream if m.id not in skip_ids]
-    if not delta:
-        return 0
+    fetched = list(stream)
+    delta = [m for m in fetched if m.id not in skip_ids]
 
     if len(delta) > LARGE_DELTA_WARNING:
         print(f"  [!] {len(delta):,} new messages -- unusually large for one run")
 
-    resolver.prepare({m.chat_id for m in delta if m.chat_id})
+    if delta:
+        resolver.prepare({m.chat_id for m in delta if m.chat_id})
 
     written = 0
+    through = cursor
     for chunk in _chunks(plan_forward_writes(delta), PAGE_SIZE):
-        written += _commit(db, messages_ref, chunk, resolver, dry_run=dry_run)
+        newest = _newest_timestamp(chunk)
+        written += _commit(db, messages_ref, chunk, resolver, dry_run=dry_run, synced_through=newest)
+        through = max(through, newest) if newest is not None else through
+
+    newest = _newest_timestamp(fetched)
+    if not dry_run and newest is not None and (newest > through or not delta):
+        _cursor_ref(db).set({"synced_through": newest}, merge=True)
     return written
 
 
@@ -533,7 +607,8 @@ def verify(client, messages_ref, min_ts, max_ts) -> bool:
     """Compare what is stored against what the API holds in the same range.
 
     The one failure this design cannot prevent by construction is an out-of-band
-    write stretching the range across an interior nobody filled. This finds it.
+    write below min_ts, stretching the range across history nobody fetched.
+    This finds it.
     """
     if min_ts is None or max_ts is None:
         print("verify: collection is empty; nothing to check.")
@@ -727,15 +802,21 @@ def main(argv=None) -> int:
             print("  stored before: nothing; this is a first run")
         else:
             print(f"  stored before: {min_ts:%Y-%m-%d %H:%M} .. {max_ts:%Y-%m-%d %H:%M}")
+        cursor = read_cursor(db)
+        if cursor is None:
+            print("  cursor:        none yet; reading from the newest stored message")
+            cursor = max_ts
+        else:
+            print(f"  cursor:        {cursor:%Y-%m-%d %H:%M:%S}")
         if args.dry_run:
             print("  [!] dry run: nothing will be written")
 
         resolver = ContactResolver(
             client, messages_ref, extracted_ref, join=not args.no_contact_join
         )
-        skip_ids = _ids_at(messages_ref, max_ts) | _ids_at(messages_ref, min_ts)
+        skip_ids = _ids_since(messages_ref, cursor) | _ids_at(messages_ref, min_ts)
 
-        new = forward_pass(client, db, messages_ref, resolver, max_ts, skip_ids,
+        new = forward_pass(client, db, messages_ref, resolver, cursor, skip_ids,
                            dry_run=args.dry_run)
         print(f"  forward pass:  {new:,} new")
 
@@ -760,6 +841,9 @@ def main(argv=None) -> int:
             min_ts, max_ts = _watermarks(messages_ref)
             if max_ts is not None:
                 print(f"  stored after:  {min_ts:%Y-%m-%d %H:%M} .. {max_ts:%Y-%m-%d %H:%M}")
+            cursor = read_cursor(db)
+            if cursor is not None:
+                print(f"  cursor after:  {cursor:%Y-%m-%d %H:%M:%S}")
 
         # Outside the `if new or old` above on purpose: a run with no delta is
         # exactly when a classification pass has erased these fields and they

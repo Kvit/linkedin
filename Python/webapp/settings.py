@@ -37,6 +37,11 @@ class WebappSettings(BaseConfig):
     #: `/projects/<project number>/locations/us-central1/services/linkedin-contacts`.
     iap_audience: str | None = None
 
+    #: The Gemini model **Expand with AI** writes with (`compose.py`). The
+    #: default is Google's alias for its newest Pro model, so it moves with
+    #: each Pro release; the page names the version that answered.
+    expand_model: str = "gemini-pro-latest"
+
     #: Local runs only: treat every request as this user. `deploy.cmd`
     #: never sets it; `tests/webapp/test_deploy.py` proves that.
     dev_user: str | None = None
