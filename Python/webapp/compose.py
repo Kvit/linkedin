@@ -65,7 +65,8 @@ EXPAND_ATTEMPTS = 2
 #: Who we are, as the stage classifier is told it: the product and the
 #: account sentences of its instructions' first paragraph, without the
 #: sentences about classifying and about polite answers.
-ABOUT = ". ".join(pipeline.PIPELINE_INSTRUCTIONS.split("\n\n", 1)[0].split(". ")[1:3]) + "."
+ABOUT = ". ".join(pipeline.PIPELINE_INSTRUCTIONS.split(
+    "\n\n", 1)[0].split(". ")[1:3]) + "."
 
 NO_CONVERSATION = "No messages yet: this is the first message to them."
 
@@ -88,7 +89,7 @@ Write the one message Vitali sends next, in Vitali's voice, in the first person.
 - Match the language of the conversation.
 - Plain text in one paragraph: no markdown, no bullet symbols, no blank lines, no subject line, no placeholders such as [Name] or {{first_name}}, and no link unless the NOTE contains one.
 - Never write an email address or a phone number, not even one from the CONVERSATION, unless the NOTE contains it.
-- At most {max_chars} characters; shorter is better.
+- At most {max_chars} characters; keep it concise.
 - Answer with the message text only.
 
 # Style: one executive writing to another
@@ -116,7 +117,8 @@ def gemini() -> genai.Client:
     if _gemini is None:
         _gemini = genai.Client(
             http_options=types.HttpOptions(
-                timeout=EXPAND_TIMEOUT_MS, retry_options=types.HttpRetryOptions(attempts=EXPAND_ATTEMPTS)
+                timeout=EXPAND_TIMEOUT_MS, retry_options=types.HttpRetryOptions(
+                    attempts=EXPAND_ATTEMPTS)
             )
         )
     return _gemini
@@ -147,8 +149,10 @@ async def expand(request: Request, doc_id: str, body: ExpandRequest) -> dict:
             model=settings.expand_model,
             contents=expand_prompt(contact, conversation, note),
             config=types.GenerateContentConfig(
-                system_instruction=expand_instructions(outreach.message_max_chars),
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                system_instruction=expand_instructions(
+                    outreach.message_max_chars),
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                    disable=True),
             ),
         )
     except Exception as error:
@@ -162,8 +166,10 @@ async def expand(request: Request, doc_id: str, body: ExpandRequest) -> dict:
     usage = response.usage_metadata
     logger.info(
         "Expand with AI for %s: %s in %.1f s, %s prompt tokens, %s thinking, %s output",
-        doc_id, response.model_version, seconds, getattr(usage, "prompt_token_count", None),
-        getattr(usage, "thoughts_token_count", None), getattr(usage, "candidates_token_count", None),
+        doc_id, response.model_version, seconds, getattr(
+            usage, "prompt_token_count", None),
+        getattr(usage, "thoughts_token_count", None), getattr(
+            usage, "candidates_token_count", None),
     )
     verdict = guards.validate_text(text, outreach)
     return {
@@ -199,7 +205,8 @@ def _provider_id(db, doc_id: str, messages: list[dict]) -> str | None:
     if found:
         return found
     fetched = db.collection(FETCH_COLLECTION).document(doc_id).get()
-    value = (fetched.to_dict() or {}).get("provider_id") if fetched.exists else None
+    value = (fetched.to_dict() or {}).get(
+        "provider_id") if fetched.exists else None
     if isinstance(value, str) and value:
         return value
     for snapshot in db.get_all([db.collection(EXTRACTED_COLLECTION).document(doc_id)], field_paths=["externalIds"]):
@@ -223,9 +230,11 @@ def _warnings(contact: dict, messages: list[dict], items: list[dict], tz: str, n
             item[name] for item in items if item.get("status") in (queue.SENT, queue.SENDING, queue.UNKNOWN)
             for name in ("sent_at", "sending_at") if item.get(name) is not None
         ]
-        newest_inbound = max((message["timestamp"] for message in usable if message["is_sender"] == 0), default=None)
+        newest_inbound = max(
+            (message["timestamp"] for message in usable if message["is_sender"] == 0), default=None)
         if newest_inbound is None or newest_inbound < max(touched):
-            found.append("You already wrote to them today, and they have not written since.")
+            found.append(
+                "You already wrote to them today, and they have not written since.")
     return found
 
 
@@ -238,7 +247,8 @@ def _after_failure(db, outreach, runtime, now: datetime, item: dict, error: Exce
     `unknown_send` alert and settles `unknown`, which the sync resolves."""
     name = type(error).__name__
     queue_id, doc_id = item["id"], item["contact_doc_id"]
-    context = {"queue_id": queue_id, "contact_doc_id": doc_id, "kind": queue.MANUAL, "error": name}
+    context = {"queue_id": queue_id, "contact_doc_id": doc_id,
+               "kind": queue.MANUAL, "error": name}
     not_sent = f"Not sent: LinkedIn answered {name}."
 
     if isinstance(error, unipile_errors.RateLimited):
@@ -320,7 +330,8 @@ def send_now(app, doc_id: str, text: str, token: str, *, confirmed: bool, cancel
         item["id"] == cancel_item and item.get("status") in (queue.PENDING, queue.APPROVED) for item in items
     ):
         cancel_item = ""
-    open_item = next((item for item in items if item.get("status") in queue.OPEN and item["id"] != cancel_item), None)
+    open_item = next((item for item in items if item.get(
+        "status") in queue.OPEN and item["id"] != cancel_item), None)
     if open_item is not None:
         if open_item.get("status") in (queue.PENDING, queue.APPROVED):
             detail = f"A {open_item.get('kind')} message is queued for them ({open_item.get('status')})."
@@ -341,16 +352,19 @@ def send_now(app, doc_id: str, text: str, token: str, *, confirmed: bool, cancel
     client = clients.unipile_client()
     try:
         try:
-            sent_24h = jobs.messages_last_24h(db, client, runtime, outreach, now)
+            sent_24h = jobs.messages_last_24h(
+                db, client, runtime, outreach, now)
             client.budget.reconcile(message=sent_24h)
             if client.budget.remaining("message") <= 0:
                 return _refused("budget", f"{sent_24h} messages went out in the last 24 hours: the daily limit is reached.")
             if chat_id is not None:
-                verdict = jobs._chat_verdict(client, {"kind": queue.MANUAL, "contact_doc_id": doc_id, "chat_id": chat_id}, messages)
+                verdict = jobs._chat_verdict(client, {
+                                             "kind": queue.MANUAL, "contact_doc_id": doc_id, "chat_id": chat_id}, messages)
                 if not verdict.ok:
                     return _refused(verdict.reason, verdict.detail)
         except Exception as error:
-            logger.exception("checking the send to %s with LinkedIn failed", doc_id)
+            logger.exception(
+                "checking the send to %s with LinkedIn failed", doc_id)
             name = type(error).__name__
             if isinstance(error, unipile_errors.AccountRestricted):
                 jobs._note_restriction(
@@ -377,21 +391,25 @@ def send_now(app, doc_id: str, text: str, token: str, *, confirmed: bool, cancel
             return _refused("form:already_sent", f"This form was already sent: that message is {item.get('status')}.")
         try:
             if chat_id is not None:
-                message_id, opened = client.messaging.send_message(chat_id, text).message_id, None
+                message_id, opened = client.messaging.send_message(
+                    chat_id, text).message_id, None
             else:
                 started = client.messaging.start_chat([provider_id], text)
                 message_id, opened = started.message_id, started.chat_id
         except Exception as error:
             logger.warning("the send to %s failed: %r", doc_id, error)
             return _refused(*_after_failure(db, outreach, runtime, now, item, error))
-        queue.settle(db, queue_id, queue.SENT, now=now, message_id=message_id, chat_id=opened)
+        queue.settle(db, queue_id, queue.SENT, now=now,
+                     message_id=message_id, chat_id=opened)
     finally:
         client.close()
 
     stored_total = contact.get("sent_total")
     sent_total = (stored_total if isinstance(stored_total, int) else 0) + 1
-    db.collection(ANALYSIS_COLLECTION).document(doc_id).set({"last_sent_date": now, "sent_total": sent_total}, merge=True)
-    app.state.contacts.patch(doc_id, last_sent_date=now, sent_total=sent_total, activity_at=now, needs_answer=False)
+    db.collection(ANALYSIS_COLLECTION).document(doc_id).set(
+        {"last_sent_date": now, "sent_total": sent_total}, merge=True)
+    app.state.contacts.patch(doc_id, last_sent_date=now,
+                             sent_total=sent_total, activity_at=now, needs_answer=False)
     logger.info("sent %s to %s as %s", queue_id, doc_id, message_id)
     return Outcome(sent_at=now)
 
@@ -414,9 +432,11 @@ async def send(
     if outcome.sent_at is None:
         return contact_screen.render_contact(
             request, doc_id,
-            compose={"text": text, "refusal": outcome.refusal, "warnings": outcome.warnings, "open_item": outcome.open_item},
+            compose={"text": text, "refusal": outcome.refusal,
+                     "warnings": outcome.warnings, "open_item": outcome.open_item},
         )
     run = await routine.start(request.app, "sync-messages")
     sync = "busy" if run is None else "failed" if run.error else "started"
-    notice = {"sent": _local(outcome.sent_at, request.app.state.outreach.tz, "%H:%M"), "sync": sync}
+    notice = {"sent": _local(
+        outcome.sent_at, request.app.state.outreach.tz, "%H:%M"), "sync": sync}
     return RedirectResponse(f"/contacts/{quote(doc_id, safe='')}?{urlencode(notice)}", status_code=303)
