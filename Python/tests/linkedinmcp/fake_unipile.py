@@ -6,7 +6,8 @@ job test file shares.
 `messaging.send_message`, `messaging.start_chat`, `messaging.iter_chats`,
 `messaging.get_chat`, `messaging.count_messages_sent_since`,
 `users.iter_relations`,
-`users.get_profile`, `budget.reconcile` / `budget.remaining` /
+`users.get_profile`, `users.iter_posts` / `iter_comments` / `iter_reactions`,
+`budget.throttle`, `budget.reconcile` / `budget.remaining` /
 `budget.used`, and `writes_blocked` -- plus `messaging.iter_all_messages`,
 the one read the REAL `messages_sync.forward_pass` makes, for the
 end-to-end sync test. It opens no socket and constructs no `httpx.Client`,
@@ -44,9 +45,19 @@ support modules like this one and `fake_firestore.py`.
 import copy
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from lib.unipile import errors as unipile_errors
-from lib.unipile.models import Chat, ChatStarted, MessageSent, Profile, Relation
+from lib.unipile.models import (
+    Chat,
+    ChatStarted,
+    Comment,
+    MessageSent,
+    Post,
+    Profile,
+    Reaction,
+    Relation,
+)
 from linkedinmcp import fetch_queue, queue
 from linkedinmcp.settings import OutreachSettings
 
@@ -76,6 +87,7 @@ class FakeBudget:
         self.counts: dict[str, int] = {}
         self.reconcile_calls: list[dict] = []
         self.remaining_calls: list[str] = []
+        self.throttle_calls = 0
 
     def reconcile(self, **observed: int) -> None:
         self.reconcile_calls.append(dict(observed))
@@ -90,6 +102,9 @@ class FakeBudget:
     def remaining(self, kind: str) -> int:
         self.remaining_calls.append(kind)
         return max(0, self.limits.get(kind, 0) - self.used(kind))
+
+    def throttle(self) -> None:
+        self.throttle_calls += 1
 
 
 class FakeMessaging:
@@ -211,6 +226,13 @@ class FakeUsers:
         self.profile_error: BaseException | None = None
         self.charge_error = False
         self.profile_calls: list[tuple[str, bool]] = []
+        # Activity reads: items by provider id, calls as (method, id, page_size, max_pages),
+        # and errors keyed by (method, id).
+        self.posts: dict[str, list[Post]] = {}
+        self.comments: dict[str, list[Comment]] = {}
+        self.reactions: dict[str, list[Reaction]] = {}
+        self.activity_calls: list[tuple] = []
+        self.read_errors: dict[tuple[str, str], BaseException] = {}
 
     def iter_relations(self):
         self.iter_relations_calls += 1
@@ -227,6 +249,23 @@ class FakeUsers:
             raise unipile_errors.NotFound(status=404, title=f"no profile configured for {identifier}")
         self._client.budget.record("profile")
         return found
+
+    def _activity(self, method, items, identifier, page_size, max_pages):
+        self.activity_calls.append((method, identifier, page_size, max_pages))
+        error = self.read_errors.get((method, identifier))
+        if error is not None:
+            _raise_as_transport(self._client, error)
+        found = items.get(identifier, [])
+        return iter(found[:page_size] if max_pages == 1 else found)
+
+    def iter_posts(self, identifier, *, page_size=100, max_pages=None):
+        return self._activity("iter_posts", self.posts, identifier, page_size, max_pages)
+
+    def iter_comments(self, identifier, *, page_size=100, max_pages=None):
+        return self._activity("iter_comments", self.comments, identifier, page_size, max_pages)
+
+    def iter_reactions(self, identifier, *, page_size=100, max_pages=None):
+        return self._activity("iter_reactions", self.reactions, identifier, page_size, max_pages)
 
 
 class FakeUnipile:
@@ -246,6 +285,7 @@ class FakeUnipile:
         self.messaging = FakeMessaging(self, chats=chats, sent_24h=sent_24h)
         self.users = FakeUsers(self, relations)
         self.budget = FakeBudget({"message": message_limit, "profile": profile_limit})
+        self.settings = SimpleNamespace(max_activity_checks_per_day=100)
         self.closed = False
 
     def close(self) -> None:
@@ -298,6 +338,21 @@ def profile(slug: str | None, provider_id: str, **fields) -> Profile:
     profile is complete and `to_lh_document` maps it.
     """
     return Profile.model_validate({"provider_id": provider_id, "public_identifier": slug, **fields})
+
+
+def post(post_id: str, when: datetime, *, text: str = "A post") -> Post:
+    """A real `Post` model, as `iter_posts()` yields it."""
+    return Post(id=post_id, text=text, date="1d", parsed_datetime=when, share_url=f"https://li/{post_id}")
+
+
+def comment(comment_id: str, when: datetime, *, text: str = "A comment") -> Comment:
+    """A real `Comment` model, as `iter_comments()` yields it."""
+    return Comment(id=comment_id, post_id=f"post-of-{comment_id}", text=text, date=when)
+
+
+def reaction(post_id: str, value: str = "LIKE") -> Reaction:
+    """A real `Reaction` model, as `iter_reactions()` yields it."""
+    return Reaction(value=value, post_id=post_id)
 
 
 # =============================================================================

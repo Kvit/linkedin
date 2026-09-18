@@ -56,6 +56,9 @@ class UnipileSettings(BaseConfig):
     #: Profile reads per UTC day -- the binding constraint in practice, and the
     #: read LinkedIn throttles hardest. Retries of a throttled fetch count too.
     max_profile_fetches_per_day: int = 250
+    #: Contacts `lib.get_activity` checks per rolling 24 h, each up to four reads
+    #: (posts, comments, reactions, profile). Unipile advises ~100 a day per route.
+    max_activity_checks_per_day: int = 100
 
     # Pacing. A person opening one profile, reading it and moving on takes far
     # longer than a script needs to, so every budgeted call waits first. See

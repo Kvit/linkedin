@@ -337,6 +337,51 @@ class ReceivedInvitation(UnipileModel):
     )
 
 
+class PostAuthor(UnipileModel):
+    id: str | None = None
+    public_identifier: str | None = None
+    name: str | None = None
+
+
+class Post(UnipileModel):
+    """A post or repost from ``GET /users/{id}/posts``; ``date`` is relative ("1d")."""
+
+    id: str
+    share_url: str | None = None
+    text: str | None = None
+    date: str | None = None
+    parsed_datetime: datetime | None = None
+    reaction_counter: int = 0
+    comment_counter: int = 0
+    repost_counter: int = 0
+    is_repost: bool = False
+    author: PostAuthor | None = None
+
+    _ts = field_validator("parsed_datetime", mode="before")(_parse_timestamp)
+
+
+class Comment(UnipileModel):
+    """A comment from ``GET /users/{id}/comments``; ``date`` is ISO."""
+
+    model_config = ConfigDict(coerce_numbers_to_str=True)
+
+    id: str
+    post_id: str | None = None
+    text: str | None = None
+    date: datetime | None = None
+
+    _ts = field_validator("date", mode="before")(_parse_timestamp)
+
+
+class Reaction(UnipileModel):
+    """A reaction from ``GET /users/{id}/reactions``. It carries no date."""
+
+    model_config = ConfigDict(coerce_numbers_to_str=True)
+
+    value: str | None = None
+    post_id: str | None = None
+
+
 class InvitationSentResult(UnipileModel):
     """Response to ``POST /users/invite``.
 

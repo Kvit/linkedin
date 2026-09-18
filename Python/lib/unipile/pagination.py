@@ -15,6 +15,7 @@ def iter_cursor[T](
     fetch: Callable[[str | None], Page],
     *,
     parse: Callable[[Any], T] = lambda item: item,
+    max_pages: int | None = None,
 ) -> Iterator[T]:
     """Walk a cursor-paginated endpoint, yielding parsed items.
 
@@ -22,13 +23,15 @@ def iter_cursor[T](
     and returns the raw response body. Iteration stops when the response carries
     no cursor, returns an empty page, or repeats a cursor it has already served
     -- the last of which would otherwise loop forever against a misbehaving
-    endpoint.
+    endpoint. ``max_pages`` also stops it after that many requests.
     """
     cursor: str | None = None
     seen: set[str] = set()
+    pages = 0
 
     while True:
         page = fetch(cursor)
+        pages += 1
         items = page.get("items") or []
         if not items:
             return
@@ -36,6 +39,8 @@ def iter_cursor[T](
         for item in items:
             yield parse(item)
 
+        if max_pages is not None and pages >= max_pages:
+            return
         cursor = page.get("cursor")
         if not cursor or cursor in seen:
             return
@@ -49,6 +54,7 @@ def iter_account_scoped[T](
     model: type[T],
     *,
     page_size: int = 100,
+    max_pages: int | None = None,
     **extra: Any,
 ) -> Iterator[T]:
     """Walk an account-scoped list endpoint, yielding parsed models.
@@ -65,4 +71,4 @@ def iter_account_scoped[T](
             params["cursor"] = cursor
         return get(path, params=params)
 
-    return iter_cursor(fetch, parse=model.model_validate)
+    return iter_cursor(fetch, parse=model.model_validate, max_pages=max_pages)

@@ -29,6 +29,7 @@ import itertools
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from lib.contacts import activity_key, headline
 from linkedinmcp import fetch_queue, queue
 
 ANALYSIS_COLLECTION = "analysis"
@@ -77,7 +78,7 @@ _ROW_FIELDS = (
 )
 
 #: What `list_contacts` asks `extracted` for: `fullName` (`_name`) and both
-#: fields `_headline` reads. The whole `miniProfile` map, not
+#: fields `headline` reads. The whole `miniProfile` map, not
 #: `miniProfile.headline`, as `webapp/projection.py` selects it:
 #: `tests/linkedinmcp/fake_firestore.py` projects top-level fields only, and a
 #: page is at most 100 documents. Only `headline` leaves the map.
@@ -122,18 +123,6 @@ def _name(analysis: dict, extracted: dict) -> str | None:
     return extracted.get("fullName") or None
 
 
-def _headline(extracted: dict) -> str | None:
-    """`occupation` from `extracted`, set on a profile fetched through Unipile
-    (`lib.unipile.compat.to_lh_document`); otherwise `miniProfile.headline`,
-    where a LinkedIn Helper document keeps it; otherwise `None` -- the rule
-    `webapp/projection.py`'s `load_frame` applies. Of 28,559 `extracted`
-    documents, 28,336 have one of the two and only 1,156 have `occupation`
-    (2026-09-16).
-    """
-    mini = extracted.get("miniProfile")
-    return extracted.get("occupation") or (mini.get("headline") if isinstance(mini, dict) else None) or None
-
-
 def _row(doc_id: str, analysis: dict, extracted: dict, tz: str) -> dict:
     """The shape `list_contacts` returns per contact, and the base every
     `get_contact` row extends with a few more keys.
@@ -141,7 +130,7 @@ def _row(doc_id: str, analysis: dict, extracted: dict, tz: str) -> dict:
     return {
         "doc_id": doc_id,
         "name": _name(analysis, extracted),
-        "headline": _headline(extracted),
+        "headline": headline(extracted),
         "industry": analysis.get("industry"),
         "function": analysis.get("function"),
         "seniority": analysis.get("seniority"),
@@ -168,20 +157,6 @@ def _local_midnight(value, tz: str) -> datetime:
     if isinstance(value, str):
         value = date.fromisoformat(value)
     return datetime(value.year, value.month, value.day, tzinfo=ZoneInfo(tz))
-
-
-def _activity_key(analysis: dict):
-    """Sort key for "most recent activity": the later of `last_reply_date`
-    and `last_sent_date`, newest first, a contact with neither last.
-
-    `(has_date, date_or_None)`, the same null-safe tiebreak shape
-    `fake_firestore.py`'s own `order_by` re-sort uses -- two contacts that
-    both lack any date compare as equal tuples without ever needing to
-    order `None` against `None`.
-    """
-    candidates = [d for d in (analysis.get("last_reply_date"), analysis.get("last_sent_date")) if d is not None]
-    latest = max(candidates) if candidates else None
-    return (latest is not None, latest)
 
 
 def _needs_touch(doc_id: str, analysis: dict, *, now: datetime, settings, open_ids: set, holds) -> bool:
@@ -312,7 +287,7 @@ def list_contacts(
             if _needs_touch(doc_id, data, now=now, settings=settings, open_ids=open_ids, holds=holds)
         ]
 
-    rows.sort(key=lambda pair: _activity_key(pair[1]), reverse=True)
+    rows.sort(key=lambda pair: activity_key(pair[1]), reverse=True)
     page = rows[:clamped_limit]
 
     extracted_by_id: dict[str, dict] = {}
@@ -407,7 +382,7 @@ def contact_report(
 ) -> dict:
     """Every `analysis` contact matching all three filters -- each a list
     from `report_filter`, or `None` for all -- most recently active first
-    (`_activity_key`), ties by `doc_id`, one page of `limit` rows from
+    (`activity_key`), ties by `doc_id`, one page of `limit` rows from
     `offset`.
 
     ONE `analysis` query, `select`ing `_REPORT_FIELDS`: `industry in
@@ -453,7 +428,7 @@ def contact_report(
 
     # Two stable sorts: `doc_id` breaks every tie in activity.
     matched.sort(key=lambda pair: pair[0])
-    matched.sort(key=lambda pair: _activity_key(pair[1]), reverse=True)
+    matched.sort(key=lambda pair: activity_key(pair[1]), reverse=True)
 
     page = matched[offset:offset + limit]
     page_ids = [doc_id for doc_id, _data in page]

@@ -50,6 +50,7 @@ from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import NoDecode, SettingsConfigDict
 
 from lib.config import BaseConfig, ConfigError, split_list
+from lib.contacts import TARGET_INDUSTRIES
 
 __all__ = ["SERVICE_PACING", "ConfigError", "OutreachSettings", "get_settings", "load_environment"]
 
@@ -126,11 +127,9 @@ class OutreachSettings(BaseConfig):
     #: Industry labels eligible for an intro. Mirrors `TARGET_INDUSTRIES` in
     #: `send-intros.ipynb`. Setting this to an empty string makes **no contact
     #: eligible** -- a deliberate kill switch, and not the same as leaving it
-    #: unset, which gives the four below.
+    #: unset, which gives `lib.contacts.TARGET_INDUSTRIES`.
     target_industries: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: [
-            "RCM", "Pathology", "Medical Lab", "Physician Practice",
-        ]
+        default_factory=lambda: list(TARGET_INDUSTRIES)
     )
 
     #: Message templates, relative to the working directory, which is `Python/`

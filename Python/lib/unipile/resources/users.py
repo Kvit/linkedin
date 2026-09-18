@@ -8,8 +8,11 @@ from typing import Any, Literal
 from ..budget import SendBudget
 from ..errors import ProfileIncomplete, ThrottleLockout
 from ..models import (
+    Comment,
     InvitationSentResult,
+    Post,
     Profile,
+    Reaction,
     ReceivedInvitation,
     Relation,
     SentInvitation,
@@ -185,6 +188,18 @@ class UsersResource:
     def iter_following(self, *, page_size: int = 100) -> Iterator[Relation]:
         return self._list("/api/v1/users/following", Relation, page_size)
 
+    # --- activity (unbudgeted reads; the caller paces them) ----------------------
+
+    def iter_posts(self, identifier: str, *, page_size: int = 100, max_pages: int | None = None) -> Iterator[Post]:
+        """Posts and reposts by a user, newest first."""
+        return self._list(f"/api/v1/users/{identifier}/posts", Post, page_size, max_pages=max_pages)
+
+    def iter_comments(self, identifier: str, *, page_size: int = 100, max_pages: int | None = None) -> Iterator[Comment]:
+        return self._list(f"/api/v1/users/{identifier}/comments", Comment, page_size, max_pages=max_pages)
+
+    def iter_reactions(self, identifier: str, *, page_size: int = 100, max_pages: int | None = None) -> Iterator[Reaction]:
+        return self._list(f"/api/v1/users/{identifier}/reactions", Reaction, page_size, max_pages=max_pages)
+
     # --- invitations ----------------------------------------------------------
 
     def iter_invitations_sent(self, *, page_size: int = 100) -> Iterator[SentInvitation]:
@@ -307,8 +322,10 @@ class UsersResource:
 
     # --- internals ------------------------------------------------------------
 
-    def _list[T](self, path: str, model: type[T], page_size: int, **extra: Any) -> Iterator[T]:
+    def _list[T](
+        self, path: str, model: type[T], page_size: int, *, max_pages: int | None = None, **extra: Any
+    ) -> Iterator[T]:
         return iter_account_scoped(
             self._transport.get, self._account_id, path, model,
-            page_size=page_size, **extra,
+            page_size=page_size, max_pages=max_pages, **extra,
         )

@@ -419,6 +419,37 @@ def test_iter_relations_walks_every_page(users, relations_body):
 
 
 @respx.mock
+@pytest.mark.parametrize(
+    ("method", "path", "item", "field", "expected"),
+    [
+        (
+            "iter_posts", "posts",
+            {"id": "p1", "text": "Hi", "date": "1d", "parsed_datetime": "2026-09-17T13:00:48.602Z",
+             "author": {"id": "ACoX", "public_identifier": "pat", "name": "Pat"}},
+            "parsed_datetime", datetime(2026, 9, 17, 13, 0, 48, 602000, tzinfo=UTC),
+        ),
+        (
+            "iter_comments", "comments",
+            {"id": "c1", "post_id": "75042", "text": "Agreed", "date": "2026-09-11T18:47:26.090Z"},
+            "date", datetime(2026, 9, 11, 18, 47, 26, 90000, tzinfo=UTC),
+        ),
+        ("iter_reactions", "reactions", {"value": "LIKE", "post_id": "75051"}, "value", "LIKE"),
+    ],
+)
+def test_activity_lists_read_one_page(users, method, path, item, field, expected):
+    route = respx.get(f"{BASE}/api/v1/users/ACoX/{path}").mock(
+        return_value=httpx.Response(200, json={"items": [item], "cursor": "next"})
+    )
+
+    found = list(getattr(users, method)("ACoX", page_size=5, max_pages=1))
+
+    assert route.call_count == 1  # LinkedIn returns a cursor even on a short page; it is not followed
+    params = route.calls[0].request.url.params
+    assert (params["account_id"], params["limit"]) == (ACCOUNT, "5")
+    assert getattr(found[0], field) == expected
+
+
+@respx.mock
 def test_iter_invitations_sent_exposes_the_firestore_keys(users, invitations_sent_body):
     respx.get(f"{BASE}/api/v1/users/invite/sent").mock(
         return_value=httpx.Response(200, json=invitations_sent_body)

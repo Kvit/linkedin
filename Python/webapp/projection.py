@@ -246,7 +246,7 @@ def load_frame(db) -> pl.DataFrame:
 def _derive(frame: pl.DataFrame) -> pl.DataFrame:
     """`name` (`firstName` + `lastName`, else `fullName`, the rule of
     `linkedinmcp.contacts._name`) and `activity_at` (the later of the two
-    dates, the sort `contacts._activity_key` uses). `concat_str` yields null
+    dates, the sort `lib.contacts.activity_key` uses). `concat_str` yields null
     on any null input, so both parts are filled."""
     joined = pl.concat_str(
         [pl.col("firstName").fill_null("").str.strip_chars(), pl.col("lastName").fill_null("").str.strip_chars()],

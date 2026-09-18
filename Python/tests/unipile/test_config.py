@@ -53,6 +53,7 @@ def test_defaults_match_the_conservative_budget(monkeypatch):
     assert settings.max_invites_per_day == 25
     assert settings.max_messages_per_day == 50
     assert settings.max_profile_fetches_per_day == 250
+    assert settings.max_activity_checks_per_day == 100
     assert settings.account_id is None
 
 
