@@ -56,8 +56,16 @@ design notes behind them are
 `2026-09-11-mcp-process-tools-design.md` (MCP v2) and
 `2026-09-14-send-messages-design.md` (`send_messages`, no schedule).
 
-**What is running right now:** `v2.6.1`, revision `linkedin-outreach-00022-fg5`,
+**What is running right now:** `v2.6.2`, revision `linkedin-outreach-00023-gfs`,
 100% of traffic, deployed 2026-09-19 and checked straight after, read-only: 33
+tools, the summary's description opening "PRIMARY tool for analyzing" and
+`fetch_user_activity`'s saying "Never for analysis", `get_status` `ok`; the
+summary's 27 rows carrying `industry`, `pipeline_stage`, `own_posts`,
+`profile_changed_fields`, `new_position` and `last_liked_at`
+(`ricky-zegelstein-m-d-b876b8`: `position` changed, new position shown).
+
+`v2.6.1`, revision `linkedin-outreach-00022-fg5`, deployed 2026-09-19, was
+checked straight after, read-only: 33
 tools, `get_status` `ok`; the summary listed 27 contacts needing a draft and
 13 with one, every row carrying `last_post_at`, which only `vickidifrancesco`
 had yet (2025-03-28, from a posts-only crawler check that morning; her posts
@@ -164,6 +172,7 @@ read-only calls.
 
 | Version | Revision | What it changed |
 |---|---|---|
+| `v2.6.2` | `linkedin-outreach-00023-gfs` | `get_user_activity_summary` is described as the primary tool for analysis and `fetch_user_activity` as the text for writing only, shorter and in one order: purpose, when to call, fields. Summary rows add `industry`, `pipeline_stage`, `own_posts`, `profile_changed_fields`, `new_position` and `last_liked_at`, so analysis needs no fetch. Built from commit 6a2f046 plus the uncommitted activity changes. 33 tools. |
 | `v2.6.1` | `linkedin-outreach-00022-fg5` | Summary rows and `fetch_user_activity` carry `last_post_at`: the contact's newest post or repost the crawler has seen, older than its window too (a repost dated when reposted), null until a check that reads posts. Built from commit 6a2f046 plus the uncommitted `profile_changed_at` and `last_post_at` changes. 33 tools. |
 | `v2.6.0` | `linkedin-outreach-00021-f4t` | `comment_on_post(doc_id, post_id, text, mode)`: my comment on one of the contact's own posts in their `activity` record (never a repost), saved as a draft (`mode="draft"`, the default) or posted on LinkedIn (`mode="live"`, capped by `UNIPILE_MAX_COMMENTS_PER_DAY`, refused while writes are blocked). Summary rows carry `profile_changed_at` (the crawler check that first found the current profile changes; LinkedIn does not date them) and `my_comment_text`, `my_comment_mode` (`draft` or `posted`), `my_comment_date`; `fetch_user_activity` returns `profile_changed_at`, `my_comment`, `last_commented_at`, and a `post_id` on every post, taken from its link for posts stored before rows carried one. Built from commit 6a2f046 plus the uncommitted `profile_changed_at` change. 33 tools. |
 | `v2.5.3` | `linkedin-outreach-00020-g8k` | Every `get_user_activity_summary` row carries `suggested_message_updated_at`, rows without a draft too (null when never drafted), so a draft the crawler wiped still shows when it was written. 32 tools. |
@@ -319,6 +328,36 @@ Follows a job a process step started, by its id.
 `wait_seconds` (up to 45) waits for the job to finish instead of answering
 immediately -- call `get_job(job_id, wait_seconds=45)` again while the status is
 `queued` or `running`. A failed job carries the error's class name.
+
+### LinkedIn activity
+
+The activity crawler (`lib.get_activity`, run from the dev container) stores
+what first-degree target contacts posted, commented on and reacted to in
+`activity/{doc_id}`. These four tools read and write those records.
+
+**`get_user_activity_summary(freshness=15, has_suggested_message=False, limit=None)`**
+The tool for analysis: one row per contact active in the last `freshness` days,
+newest first, with every stored date and count -- industry and stage,
+`last_activity`, `last_post_at`, counts of posts (`own_posts` are not reposts),
+comments and reactions, which profile fields changed and the new position, and
+my like, draft and comment. Null or 0 means nothing was found. By default it
+lists contacts needing a draft; `has_suggested_message=True` lists those with
+one.
+
+**`fetch_user_activity(doc_id)`**
+One contact's activity text: their newest posts, comments and reactions, each
+with the post it was on, and profile changes before and after. It is large; use
+it to write a message or a comment, not for analysis.
+
+**`update_suggested_message(doc_id, text)`**
+Stores a draft message on the record; empty text clears it. Nothing is sent:
+`send_follow_up`, `send_reply` or the contacts webapp's Suggested screen sends
+it.
+
+**`comment_on_post(doc_id, post_id, text="", mode="draft")`**
+My comment on one of the contact's own posts. `draft` saves it; `live` posts it
+on LinkedIn under your name, at most `UNIPILE_MAX_COMMENTS_PER_DAY` a day and one
+per post. Reposts are refused.
 
 ### Queueing a message, and the inbox
 

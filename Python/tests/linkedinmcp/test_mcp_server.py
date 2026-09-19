@@ -1915,7 +1915,7 @@ async def test_activity_summary_filters_by_freshness_and_draft(env, fake_db):
     assert [r["doc_id"] for r in fresh["contacts"]] == ["ann", "fay"] and fresh["count"] == 2
     row = fresh["contacts"][0]
     assert (row["doc_id"], row["posts"], row["comments"], row["reactions"], row["profile_changes"]) == ("ann", 1, 0, 2, 0)
-    assert "industry" not in row and row["last_activity"].endswith(TZ_OFFSET)
+    assert row["industry"] == "RCM" and row["last_activity"].endswith(TZ_OFFSET)
     assert row["suggested_message_sent_at"] is None and fresh["contacts"][1]["suggested_message_sent_at"].endswith(TZ_OFFSET)
     assert row["suggested_message_updated_at"] is None  # never drafted
     assert fresh["contacts"][1]["suggested_message_updated_at"].endswith(TZ_OFFSET)  # drafted, then wiped by newer activity

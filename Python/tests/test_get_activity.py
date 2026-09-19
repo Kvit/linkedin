@@ -277,6 +277,23 @@ def test_the_summary_shows_my_comment_text_mode_and_date():
     assert tuple(rows["cat"][f] for f in fields) == (None, None, None)
 
 
+def test_the_summary_carries_what_analysis_needs():
+    db = FakeFirestore()
+    db.collection("activity").document("ann").set({
+        "name": "Ann", "industry": "RCM", "pipeline_stage": "lead", "profile_url": "https://li/ann",
+        "last_activity": NOW - timedelta(days=1), "updated_at": NOW, "last_liked_at": NOW,
+        "posts": [{"is_repost": False}, {"is_repost": True}],
+        "profile_changes": [{"field": "headline", "before": "Biller", "after": "Director"},
+                            {"field": "position", "before": "Biller at X", "after": "Director at Y"}],
+    })
+
+    row = get_activity.activity_summary(db, now=NOW)[0]
+
+    assert (row["industry"], row["pipeline_stage"], "profile_url" in row) == ("RCM", "lead", False)  # from doc_id
+    assert (row["posts"], row["own_posts"], row["last_liked_at"]) == (2, 1, NOW)
+    assert (row["profile_changed_fields"], row["new_position"]) == (["headline", "position"], "Director at Y")
+
+
 def test_last_post_at_is_the_newest_post_seen_even_outside_the_window():
     db, client = _setup()
     cat = provider_id_of("cat")

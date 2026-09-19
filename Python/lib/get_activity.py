@@ -163,8 +163,9 @@ def activity_summary(
     cutoff = (now or _utcnow()) - timedelta(days=freshness)
     # One range filter; the draft test runs here, as a second filter would need a composite index.
     query = db.collection(ACTIVITY_COLLECTION).where(filter=FieldFilter("last_activity", ">=", cutoff)).select(
-        ["name", "last_activity", "last_post_at", "updated_at", "suggested_message", "suggested_message_updated_at",
-         "suggested_message_sent_at", "my_comment", "profile_changed_at", *COUNTED]
+        ["name", "industry", "pipeline_stage", "last_activity", "last_post_at", "updated_at", "suggested_message",
+         "suggested_message_updated_at", "suggested_message_sent_at", "my_comment", "profile_changed_at",
+         "last_liked_at", *COUNTED]
     )
     rows = []
     for snapshot in query.stream():
@@ -175,9 +176,16 @@ def activity_summary(
         changed = data.get("suggested_message_updated_at")
         if not draft and changed is not None and changed >= data["last_activity"]:
             continue  # cleared or sent after this activity
-        row = {"doc_id": snapshot.id, "name": data.get("name"), "last_activity": data.get("last_activity"),
-               "last_post_at": data.get("last_post_at"), "updated_at": data.get("updated_at"), **{kind: len(data.get(kind) or []) for kind in COUNTED},
-               "profile_changed_at": data.get("profile_changed_at"), "suggested_message_updated_at": changed, "suggested_message_sent_at": data.get("suggested_message_sent_at")}
+        changes = data.get("profile_changes") or []
+        row = {"doc_id": snapshot.id, "name": data.get("name"), "industry": data.get("industry"),
+               "pipeline_stage": data.get("pipeline_stage"), "last_activity": data.get("last_activity"),
+               "last_post_at": data.get("last_post_at"), "updated_at": data.get("updated_at"),
+               **{kind: len(data.get(kind) or []) for kind in COUNTED},
+               "own_posts": sum(1 for p in data.get("posts") or [] if not p.get("is_repost")),
+               "profile_changed_fields": [c.get("field") for c in changes],
+               "new_position": next((c.get("after") for c in changes if c.get("field") == "position"), None),
+               "profile_changed_at": data.get("profile_changed_at"), "last_liked_at": data.get("last_liked_at"),
+               "suggested_message_updated_at": changed, "suggested_message_sent_at": data.get("suggested_message_sent_at")}
         mine = data.get("my_comment") or {}
         row.update(my_comment_text=mine.get("text"), my_comment_mode=mine.get("mode"),
                    my_comment_date=mine.get("posted_at") if mine.get("mode") == "posted" else mine.get("drafted_at"))
