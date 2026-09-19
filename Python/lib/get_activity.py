@@ -1,7 +1,7 @@
 """Crawl recent LinkedIn activity of first-degree target contacts into `activity/{doc_id}`.
 
-Each call checks contacts one at a time: never-checked first (most recently active
-first), then the oldest `updated_at`. At most `UNIPILE_MAX_ACTIVITY_CHECKS_PER_DAY`
+Each call checks contacts one at a time: never-checked first (most senior first, then
+most recently active), then the oldest `updated_at`. At most `UNIPILE_MAX_ACTIVITY_CHECKS_PER_DAY`
 contacts per rolling 24 h. A check is four reads (posts, comments, reactions,
 profile) plus one read per distinct post its newest comments and reactions were on,
 each preceded by the client's human cadence (random 20-40 s gaps, a 2-5 min break
@@ -55,6 +55,11 @@ COMMENT_MAX_CHARS = 1250
 #: Stages never crawled (the user's rule, 2026-09-19).
 SKIPPED_STAGES = frozenset({"soft_no", "reject", "not_relevant"})
 
+#: Never-checked contacts go most senior first (the user's rule, 2026-09-19). "Owner" leads, as
+#: it outranks every level in the classifier; any other label, or none, goes after "Unknown".
+SENIORITY_ORDER = ("Owner", "Executive", "VP", "Director", "Manager", "Staff", "Unknown")
+_SENIORITY_RANK = {label: rank for rank, label in enumerate(SENIORITY_ORDER)}
+
 _SKIP = (NotFound, UnprocessableError)  # noted on the contact; the crawl goes on
 _STOP = (RateLimited, PermissionDenied, CircuitOpen, ThrottleLockout, ServerError)  # ends the call
 
@@ -89,6 +94,7 @@ def get_contact_activity(
     stored = _stored(db, activity, audience)
     never = [c for c in audience if not stored[c["doc_id"]].get("updated_at")]
     never.sort(key=lambda c: activity_key(c["analysis"]), reverse=True)
+    never.sort(key=lambda c: _SENIORITY_RANK.get(c["analysis"].get("seniority"), len(SENIORITY_ORDER)))  # stable
     seen = sorted((c for c in audience if stored[c["doc_id"]].get("updated_at")),
                   key=lambda c: stored[c["doc_id"]]["updated_at"])
     order, missing = never + seen, []
@@ -351,7 +357,7 @@ def _audience(db, client, industries: list[str]) -> list[dict]:
     """First-degree target-industry connections, minus special handling and `SKIPPED_STAGES`."""
     relations = {r.public_identifier: r for r in client.users.iter_relations()}
     query = db.collection(ANALYSIS_COLLECTION).where(filter=FieldFilter("industry", "in", industries)).select(
-        ["industry", "pipeline_stage", "handling", "last_reply_date", "last_sent_date"]
+        ["industry", "seniority", "pipeline_stage", "handling", "last_reply_date", "last_sent_date"]
     )
     audience = []
     for snapshot in query.stream():

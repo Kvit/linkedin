@@ -136,6 +136,25 @@ def test_the_newest_five_of_each_kind_are_kept_with_the_post_they_were_on():
     assert stored["last_post_at"] == NOW - timedelta(hours=2)  # a repost counts, dated when reposted
 
 
+def test_never_checked_contacts_go_most_senior_first_then_most_recently_active():
+    db = FakeFirestore()
+    seed_contact(db, "ann", industry="RCM", seniority="Staff", last_reply_date=NOW - timedelta(days=1))
+    seed_contact(db, "bob", industry="RCM", seniority="Director")
+    seed_contact(db, "cat", industry="RCM", seniority="Director", last_sent_date=NOW - timedelta(days=5))
+    seed_contact(db, "dan", industry="RCM", seniority="Executive")
+    seed_contact(db, "eve", industry="RCM", seniority="Owner")
+    seed_contact(db, "fay", industry="RCM")  # unclassified: after every level
+    seed_contact(db, "gus", industry="RCM", seniority="Owner")  # checked before: after every never-checked contact
+    db.collection("activity").document("gus").set({"updated_at": NOW - timedelta(days=9)})
+    slugs = ("ann", "bob", "cat", "dan", "eve", "fay", "gus")
+    client = FakeUnipile(relations=[relation(slug, provider_id_of(slug), None, first=slug.title()) for slug in slugs])
+
+    get_activity.get_contact_activity(db, client, type="reactions", industries=["RCM"], now=NOW)
+
+    order = ("eve", "dan", "cat", "bob", "ann", "fay", "gus")
+    assert [call[1] for call in client.users.activity_calls] == [provider_id_of(slug) for slug in order]
+
+
 def test_doc_ids_recheck_exactly_those_contacts_in_order():
     db, client = _setup()
 
