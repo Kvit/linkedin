@@ -34,7 +34,7 @@ is still running.
 
 - [Where things stand](#where-things-stand)
 - [A normal day](#a-normal-day)
-- [The 29 tools, and when to reach for each](#the-29-tools-and-when-to-reach-for-each)
+- [The 33 tools, and when to reach for each](#the-33-tools-and-when-to-reach-for-each)
 - [Connecting to it](#connecting-to-it)
 - [When something stops](#when-something-stops)
 - [Settings you might change](#settings-you-might-change)
@@ -49,15 +49,26 @@ is still running.
 ## Where things stand
 
 **Everything is built, and a session drives it.** The send path, the load of
-new connections and MCP v2 (29 tools, the six process steps running as jobs)
+new connections and MCP v2 (33 tools, the six process steps running as jobs)
 all exist, are tested and have been verified against the live service. The
 design notes behind them are
 `docs/superpowers/specs/2026-09-09-outreach-agent-design.md` (the service),
 `2026-09-11-mcp-process-tools-design.md` (MCP v2) and
 `2026-09-14-send-messages-design.md` (`send_messages`, no schedule).
 
-**What is running right now:** `v2.6.2`, revision `linkedin-outreach-00023-gfs`,
-100% of traffic, deployed 2026-09-19 and checked straight after, read-only: 33
+**What is running right now:** `v2.7.0`, revision `linkedin-outreach-00024-zrc`,
+100% of traffic, deployed 2026-09-19 and checked straight after, read-only but
+for one dry-run `classify_stages` job: 33 tools (the longest description of
+those changed 1,878 characters), server instructions 1,163 characters, the four
+prompts listed and rendered, `workflow://new_contacts` read, `get_status` `ok`;
+the summary's 27 rows with no empty values; `needs_comment` listing 10 posts;
+`not_messaged_days=30` listing none, correctly: of the 27, 5 would be refused a
+send and 22 were messaged 2 or 3 days before; `fetch_user_activity(kinds=
+["posts"])` returning posts only; `get_job` short while the job was queued,
+full once it succeeded.
+
+`v2.6.2`, revision `linkedin-outreach-00023-gfs`, deployed 2026-09-19, was
+checked straight after, read-only: 33
 tools, the summary's description opening "PRIMARY tool for analyzing" and
 `fetch_user_activity`'s saying "Never for analysis", `get_status` `ok`; the
 summary's 27 rows carrying `industry`, `pipeline_stage`, `own_posts`,
@@ -172,6 +183,7 @@ read-only calls.
 
 | Version | Revision | What it changed |
 |---|---|---|
+| `v2.7.0` | `linkedin-outreach-00024-zrc` | The four workflows as prompts and `workflow://{name}` resources, named in new server instructions (`workflows.py`). `get_user_activity_summary(needs_comment, not_messaged_days)`: the comment worklist (own posts in the window without a posted comment of mine, the row naming the post) and the message worklist (not messaged in N days, no refused stage or handling); rows add `handling`, `last_sent_date`, `last_reply_date` from `analysis` and leave empty values out. `fetch_user_activity(kinds)`. `get_job` answers short while a job runs and reports progress to the client while it waits. `sync_messages` returns the staged replies (`staged`); a live `get_contacts` no longer returns its connection rows. `update_suggested_message` says drafts are never queued. FastMCP 4.0.5. 33 tools. |
 | `v2.6.2` | `linkedin-outreach-00023-gfs` | `get_user_activity_summary` is described as the primary tool for analysis and `fetch_user_activity` as the text for writing only, shorter and in one order: purpose, when to call, fields. Summary rows add `industry`, `pipeline_stage`, `own_posts`, `profile_changed_fields`, `new_position` and `last_liked_at`, so analysis needs no fetch. Built from commit 6a2f046 plus the uncommitted activity changes. 33 tools. |
 | `v2.6.1` | `linkedin-outreach-00022-fg5` | Summary rows and `fetch_user_activity` carry `last_post_at`: the contact's newest post or repost the crawler has seen, older than its window too (a repost dated when reposted), null until a check that reads posts. Built from commit 6a2f046 plus the uncommitted `profile_changed_at` and `last_post_at` changes. 33 tools. |
 | `v2.6.0` | `linkedin-outreach-00021-f4t` | `comment_on_post(doc_id, post_id, text, mode)`: my comment on one of the contact's own posts in their `activity` record (never a repost), saved as a draft (`mode="draft"`, the default) or posted on LinkedIn (`mode="live"`, capped by `UNIPILE_MAX_COMMENTS_PER_DAY`, refused while writes are blocked). Summary rows carry `profile_changed_at` (the crawler check that first found the current profile changes; LinkedIn does not date them) and `my_comment_text`, `my_comment_mode` (`draft` or `posted`), `my_comment_date`; `fetch_user_activity` returns `profile_changed_at`, `my_comment`, `last_commented_at`, and a `post_id` on every post, taken from its link for posts stored before rows carried one. Built from commit 6a2f046 plus the uncommitted `profile_changed_at` change. 33 tools. |
@@ -238,7 +250,22 @@ steps in order. Each starts a job and returns its id; `get_job` follows it.
   but the job's own record. Run the dry one first, read what it says it would
   do, then run it for real.
 
-## The 29 tools, and when to reach for each
+## The four workflows (prompts)
+
+The service holds the agent's workflows as MCP prompts: pick one from the
+connector's prompts in the Claude app, or type it as a slash command in Claude
+Code. The same text is the resource `workflow://{name}`, which an unattended
+agent such as the routine reads itself, and the server instructions name all
+four. Spec: `docs/superpowers/specs/2026-09-19-agent-workflows-design.md`.
+
+| Prompt | What it does |
+|---|---|
+| `new_contacts(max_profiles=10, send=false)` | `get_contacts`, `classify_contacts` on what it stored, `send_intro`, a dry-run `send_messages`; stops to show who would get an intro unless `send=true` |
+| `new_messages()` | `sync_messages`; reports who replied and each staged reply (`staged`); `classify_stages` only when the sync staged its 50 |
+| `comment_on_posts(days=7, limit=10, live=false)` | the summary's `needs_comment` rows, then a comment draft per post (posted at once with `live=true`); drafts are posted when you say send |
+| `suggest_messages(days=14, not_messaged_days=30, limit=10)` | the summary's `not_messaged_days` rows, each contact's activity, then `update_suggested_message` drafts for the Suggested screen |
+
+## The 33 tools, and when to reach for each
 
 Every signature below is the real one, defaults included. Three things hold for
 all of them:
@@ -545,7 +572,8 @@ Every client needs the same two values:
 | **Key** | `OUTREACH_API_KEY` in `Python/.env`. |
 
 The key goes in one of exactly two headers: `x-api-key: <key>`, or
-`Authorization: Bearer <key>`. `tools/list` returns exactly 29 tools. **A
+`Authorization: Bearer <key>`. `tools/list` returns exactly 33 tools, `prompts/list` the four
+workflows. **A
 connector keeps the tool list it read when it connected** -- after a deploy that
 adds or renames tools, reconnect it.
 
@@ -568,8 +596,9 @@ Add the service as a custom connector that sends the key as a request header.
 6. **Add**, then **Connect**. On Team and Enterprise, members connect from
    **Customize -> Connectors**.
 7. **Set the write tools to "Ask", not "Always allow"** in the connector's tool
-   permissions: the six queueing and inbox tools, all eight of your own controls,
-   and the six process steps. The service refuses whatever its guards refuse
+   permissions: the eight queueing, inbox and activity tools (`comment_on_post` in
+   live mode posts publicly at once), all eight of your own controls, and the six
+   process steps. The service refuses whatever its guards refuse
    either way, and nothing sends until `send_messages` runs with
    `dry_run=false` -- this is about keeping you in the loop for what a chat
    session asks the service to do.
@@ -876,7 +905,8 @@ linkedinmcp/
   jobs.py           sync(), daily(), tick(), plan_intros(), handle_unipile_webhook()
   steps.py          the six process steps the MCP tools start as jobs
   monitor.py        the job monitor: start, run, follow; Cloud Tasks executor
-  mcp_server.py     the FastMCP server and its 29 tools
+  mcp_server.py     the FastMCP server and its 33 tools
+  workflows.py      the four workflow prompts, workflow:// resources and server instructions
   run_jobs.py       the CLI, and the run() the HTTP endpoint shares with it
   Dockerfile        the container image
   deploy.cmd        build, push and deploy to Cloud Run
@@ -1203,7 +1233,7 @@ uv run pytest tests/linkedinmcp
 | `test_app.py` | 37 | Every row of the endpoint table, `/mcp` served without a redirect and still behind the key, `/jobs/*` and `/webhooks/unipile` auth and routing, and that no route ends in `z`. |
 | `test_clients.py` | 3 | Each client factory returns a fresh instance per call. |
 | `test_clock.py` | 3 | UTC "now", local-date conversion, and naive-input rejection. |
-| `test_mcp_server.py` | 171 | All 29 tools: happy paths, refusal shapes and reason codes, the chat the queueing tools choose and a message without `due_at` being due now, a process step's job followed by `get_job`, campaign tags stored and found again, and that nothing ever returns an email or phone field. |
+| `test_mcp_server.py` | 171 | All 33 tools, the prompts and the instructions: happy paths, refusal shapes and reason codes, the chat the queueing tools choose and a message without `due_at` being due now, a process step's job followed by `get_job`, campaign tags stored and found again, and that nothing ever returns an email or phone field. |
 | `test_monitor.py` | 8 | A job runs once and reports its result, a live step refuses a second start until its job goes quiet, a running job hands its lock to its successor, a failed job frees its lock and raises the alert, a job taken for lost stops at its next report and keeps that record. |
 | `test_steps.py` | 15 | Each process step: a dry run spends nothing, settings narrow the run, the day's intro cap holds, `get_contacts` fetches only the connections it listed, `send_intro` says when writes are blocked; `send_messages` sends what is due a wait apart, stops at its limit, on a pause and on an unknown send, and starts the next job near its time limit. |
 | `test_state.py` | 37 | Every `RuntimeState` method, including lease and throttle-back-off contention, and the lease length. |

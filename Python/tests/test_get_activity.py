@@ -294,6 +294,48 @@ def test_the_summary_carries_what_analysis_needs():
     assert (row["profile_changed_fields"], row["new_position"]) == (["headline", "position"], "Director at Y")
 
 
+def test_the_comment_worklist_lists_own_posts_i_have_not_commented_on():
+    db = FakeFirestore()
+    activity = db.collection("activity")
+    base = {"last_activity": NOW - timedelta(days=1), "updated_at": NOW}
+
+    def own(post_id, days, text, repost=False):
+        return {"post_id": post_id, "date": NOW - timedelta(days=days), "text": text, "is_repost": repost}
+
+    activity.document("ann").set({**base, "posts": [own("a2", 1, "Newest"), own("a1", 3, "Older")],
+                                  "my_comment": {"post_id": "a2", "mode": "posted"}})  # the older one is next
+    activity.document("bob").set({**base, "posts": [own("b1", 2, "Shared", repost=True)]})  # a repost only
+    activity.document("cat").set({**base, "posts": [own("c1", 9, "Too old")]})
+    activity.document("dan").set({**base, "suggested_message": "Hi Dan", "posts": [own("d1", 2, "Answer me")],
+                                  "my_comment": {"post_id": "d1", "mode": "draft", "text": "Nice"}})
+
+    rows = {r["doc_id"]: r for r in get_activity.activity_summary(db, freshness=7, needs_comment=True, now=NOW)}
+
+    assert sorted(rows) == ["ann", "dan"]  # a message draft does not matter here; a comment draft is not posted
+    assert (rows["ann"]["comment_post_id"], rows["ann"]["comment_post_text"]) == ("a1", "Older")
+    assert (rows["dan"]["comment_post_date"], rows["dan"]["my_comment_mode"]) == (NOW - timedelta(days=2), "draft")
+
+
+def test_the_message_worklist_skips_contacts_messaged_recently_or_blocked():
+    db = FakeFirestore()
+    for doc_id, fields in {
+        "ann": {"last_sent_date": NOW - timedelta(days=40), "pipeline_stage": "lead"},
+        "bob": {"last_sent_date": NOW - timedelta(days=10)},  # messaged 10 days ago
+        "cat": {},  # never messaged
+        "dan": {"pipeline_stage": "soft_no"},  # a send would be refused
+        "eve": {"handling": "manual"},
+    }.items():
+        seed_contact(db, doc_id, **fields)
+        db.collection("activity").document(doc_id).set({"last_activity": NOW - timedelta(days=1), "updated_at": NOW})
+
+    rows = {r["doc_id"]: r for r in get_activity.activity_summary(db, freshness=14, not_messaged_days=30, now=NOW)}
+
+    assert sorted(rows) == ["ann", "cat"]
+    assert (rows["ann"]["last_sent_date"], rows["ann"]["pipeline_stage"]) == (NOW - timedelta(days=40), "lead")
+    with pytest.raises(ValueError):
+        get_activity.activity_summary(db, not_messaged_days=0, now=NOW)
+
+
 def test_last_post_at_is_the_newest_post_seen_even_outside_the_window():
     db, client = _setup()
     cat = provider_id_of("cat")

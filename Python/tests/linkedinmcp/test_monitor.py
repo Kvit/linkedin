@@ -146,6 +146,19 @@ def test_get_reads_a_scheduled_run_as_a_finished_job(db):
     assert monitor.get(db, "daily:20990101T000000000000Z") is None
 
 
+def test_wait_hands_each_read_of_a_live_job_to_on_poll(monkeypatch):
+    reads = iter([{"status": "running", "lost": False, "progress": {"done": 1}},
+                  {"status": "running", "lost": False, "progress": {"done": 2}},
+                  {"status": "succeeded", "lost": False}])
+    monkeypatch.setattr(monitor, "get", lambda db, job: next(reads))
+    monkeypatch.setattr(monitor, "_sleep", lambda seconds: None)
+    polls = []
+
+    found = monitor.wait(None, "demo:x", 45, on_poll=polls.append)
+
+    assert found["status"] == "succeeded" and [p["progress"]["done"] for p in polls] == [1, 2]
+
+
 def test_the_daily_job_is_refused_the_intro_lock_while_a_send_intro_job_is_live(db):
     live = monitor.start(db, jobs.INTRO_STEP, {}, NOW)
 

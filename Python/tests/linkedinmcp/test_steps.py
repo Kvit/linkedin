@@ -110,7 +110,7 @@ def test_get_contacts_stores_up_to_max_profiles_paced_and_leaves_them_unclassifi
     ))
 
     assert result["fetch_enqueued"] == 3
-    assert result["stored_slugs"] == ["ann", "bob"]
+    assert result["stored_slugs"] == ["ann", "bob"] and "connections" not in result  # the listing is the dry run's
     assert [call[0] for call in client.users.profile_calls] == ["ann", "bob"]
     assert db.collection("extracted").document("ann").get().exists
     assert not db.collection("analysis").document("ann").get().exists

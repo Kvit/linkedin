@@ -340,12 +340,14 @@ def _sync(db, client, now, *, dry_run, classify, beat=None) -> dict:
     unknown_sent, unknown_failed = _resolve_unknowns(db, now)
 
     classified = new_leads = 0
+    staged: list[dict] = []
     if classify is not None:
         if beat is not None:
             beat("staging new replies")
         rows = classify(db)
         classified = len(rows)
         new_leads = _alert_new_leads(db, rows, now)
+        staged = [{key: row.get(key) for key in ("doc_id", "previous_stage", "stage", "reason")} for row in rows[:50]]
 
     return {
         "stale_swept": len(swept),
@@ -357,6 +359,7 @@ def _sync(db, client, now, *, dry_run, classify, beat=None) -> dict:
         "unknown_failed": unknown_failed,
         "classified": classified,
         "new_leads": new_leads,
+        "staged": staged,
     }
 
 

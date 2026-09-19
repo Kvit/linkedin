@@ -150,11 +150,11 @@ def get_contacts(job) -> dict:
        up) is not fetched again. Stops early when none is left, fetches are
        paused, the day's profile budget is spent or writes are blocked.
 
-    The result lists the new connections (`connections`), what each fetch
-    did (`fetched`) and the slugs now stored (`stored_slugs`) -- exactly
-    what to pass to `classify_contacts(doc_ids=...)`. A dry run stops after
-    step 1: no queue entry, no profile view; its `would_fetch` counts what
-    step 3 would fetch.
+    The result says what each fetch did (`fetched`) and the slugs now stored
+    (`stored_slugs`) -- exactly what to pass to
+    `classify_contacts(doc_ids=...)`. A dry run stops after step 1: no queue
+    entry, no profile view; it lists the new connections (`connections`),
+    and its `would_fetch` counts what step 3 would fetch.
     """
     params = job.params
     days = int(params.get("days", 0))
@@ -180,10 +180,10 @@ def get_contacts(job) -> dict:
     new.sort(key=lambda relation: relation.created_at or datetime.min.replace(tzinfo=UTC), reverse=True)
 
     listed = {"new_connections": len(new), "unusable_slugs": unusable}
-    rows = [_connection_row(relation, fetch_queue.get(db, relation.public_identifier)) for relation in new[:MAX_ROWS]]
     job.report(done=0, total=max_profiles, note=f"{len(new)} new connections")
     scope = {relation.public_identifier for relation in new}
     if dry_run:
+        rows = [_connection_row(relation, fetch_queue.get(db, relation.public_identifier)) for relation in new[:MAX_ROWS]]
         fetchable = len(scope - fetch_queue.settled_ids(db))
         return {"dry_run": True, **listed, "would_fetch": min(max_profiles, fetchable), "connections": rows}
 
@@ -234,7 +234,6 @@ def get_contacts(job) -> dict:
         "stored_slugs": stored,
         "stopped": stopped,
         "fetch_queue": fetch_queue.counts(db),
-        "connections": rows,
     }
 
 

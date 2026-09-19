@@ -314,15 +314,18 @@ def get(db, job: str) -> dict | None:
     return {**data, "id": job, "status": status, "lost": lost}
 
 
-def wait(db, job: str, seconds: float) -> dict | None:
+def wait(db, job: str, seconds: float, *, on_poll: Callable[[dict], None] | None = None) -> dict | None:
     """`get(db, job)`, polled every `POLL_SECONDS` until the job is no
-    longer live or `seconds` (at most `MAX_WAIT_SECONDS`) have passed."""
+    longer live or `seconds` (at most `MAX_WAIT_SECONDS`) have passed;
+    `on_poll` sees each read of the live job before the next wait."""
     deadline = _monotonic() + max(0.0, min(float(seconds), MAX_WAIT_SECONDS))
     while True:
         found = get(db, job)
         remaining = deadline - _monotonic()
         if found is None or found["status"] not in LIVE or found["lost"] or remaining <= 0:
             return found
+        if on_poll is not None:
+            on_poll(found)
         _sleep(min(POLL_SECONDS, remaining))
 
 

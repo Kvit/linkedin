@@ -150,17 +150,23 @@ def get_contact_activity(
 
 
 def activity_summary(
-    db, *, freshness: int = 15, has_suggested_message: bool = False, limit: int | None = None,
-    now: datetime | None = None,
+    db, *, freshness: int = 15, has_suggested_message: bool = False, needs_comment: bool = False,
+    not_messaged_days: int | None = None, limit: int | None = None, now: datetime | None = None,
 ) -> list[dict]:
-    """Contacts with `last_activity` in the last `freshness` days, newest first, with a draft or needing one.
+    """Contacts with `last_activity` in the last `freshness` days, newest first.
 
-    Needing one: no draft, and none cleared or sent at or after `last_activity`."""
+    By default those with a draft (`has_suggested_message`) or needing one: no draft, and none cleared or sent
+    at or after `last_activity`. `needs_comment` lists instead those with an own post in the window that has no
+    posted comment of mine. `not_messaged_days` keeps those I have not messaged in that many days and whom a
+    send would not refuse (a skipped stage, special handling)."""
     if freshness < 1:
         raise ValueError("freshness must be at least 1 day")
     if limit is not None and limit < 1:
         raise ValueError("limit must be at least 1")
-    cutoff = (now or _utcnow()) - timedelta(days=freshness)
+    if not_messaged_days is not None and not_messaged_days < 1:
+        raise ValueError("not_messaged_days must be at least 1")
+    now = now or _utcnow()
+    cutoff = now - timedelta(days=freshness)
     # One range filter; the draft test runs here, as a second filter would need a composite index.
     query = db.collection(ACTIVITY_COLLECTION).where(filter=FieldFilter("last_activity", ">=", cutoff)).select(
         ["name", "industry", "pipeline_stage", "last_activity", "last_post_at", "updated_at", "suggested_message",
@@ -171,14 +177,18 @@ def activity_summary(
     for snapshot in query.stream():
         data = snapshot.to_dict() or {}
         draft = (data.get("suggested_message") or "").strip()
-        if bool(draft) != has_suggested_message:
-            continue
         changed = data.get("suggested_message_updated_at")
-        if not draft and changed is not None and changed >= data["last_activity"]:
+        post = _uncommented_post(data, cutoff) if needs_comment else None
+        if needs_comment and post is None:
+            continue
+        if not needs_comment and bool(draft) != has_suggested_message:
+            continue
+        if not needs_comment and not draft and changed is not None and changed >= data["last_activity"]:
             continue  # cleared or sent after this activity
         changes = data.get("profile_changes") or []
         row = {"doc_id": snapshot.id, "name": data.get("name"), "industry": data.get("industry"),
-               "pipeline_stage": data.get("pipeline_stage"), "last_activity": data.get("last_activity"),
+               "pipeline_stage": data.get("pipeline_stage"), "handling": None, "last_sent_date": None,
+               "last_reply_date": None, "last_activity": data.get("last_activity"),
                "last_post_at": data.get("last_post_at"), "updated_at": data.get("updated_at"),
                **{kind: len(data.get(kind) or []) for kind in COUNTED},
                "own_posts": sum(1 for p in data.get("posts") or [] if not p.get("is_repost")),
@@ -189,11 +199,46 @@ def activity_summary(
         mine = data.get("my_comment") or {}
         row.update(my_comment_text=mine.get("text"), my_comment_mode=mine.get("mode"),
                    my_comment_date=mine.get("posted_at") if mine.get("mode") == "posted" else mine.get("drafted_at"))
+        if post is not None:
+            row.update(comment_post_id=post.get("post_id") or _post_ref(post), comment_post_date=post.get("date"),
+                       comment_post_text=post.get("text"))
         if draft:
             row["suggested_message"] = draft
         rows.append(row)
+    _join_analysis(db, rows)
+    if not_messaged_days is not None:
+        since = now - timedelta(days=not_messaged_days)
+        rows = [row for row in rows if not _send_refused(row)
+                and (row["last_sent_date"] is None or row["last_sent_date"] < since)]
     rows.sort(key=lambda row: row["last_activity"], reverse=True)
     return rows if limit is None else rows[:limit]
+
+
+def _uncommented_post(data: dict, cutoff: datetime) -> dict | None:
+    """The newest own post (not a repost) dated after `cutoff` without a posted comment of mine, or `None`."""
+    mine = data.get("my_comment") or {}
+    posted = mine.get("post_id") if mine.get("mode") == "posted" else None
+    own = sorted((p for p in data.get("posts") or [] if not p.get("is_repost") and p.get("date")
+                  and p["date"] >= cutoff), key=lambda p: p["date"], reverse=True)
+    return next((p for p in own if not posted or posted not in (p.get("post_id"), _post_ref(p))), None)
+
+
+def _join_analysis(db, rows: list[dict]) -> None:
+    """Current stage and handling, and when I last sent and they last replied, from `analysis`."""
+    if not rows:
+        return
+    refs = [db.collection(ANALYSIS_COLLECTION).document(row["doc_id"]) for row in rows]
+    fields = ["pipeline_stage", "handling", "last_sent_date", "last_reply_date"]
+    found = {s.id: s.to_dict() or {} for s in db.get_all(refs, field_paths=fields) if s.exists}
+    for row in rows:
+        data = found.get(row["doc_id"], {})
+        row.update(pipeline_stage=data.get("pipeline_stage") or row["pipeline_stage"], handling=data.get("handling"),
+                   last_sent_date=data.get("last_sent_date"), last_reply_date=data.get("last_reply_date"))
+
+
+def _send_refused(row: dict) -> bool:
+    """A stage or handling the send guards refuse, as the crawler skips them."""
+    return row["pipeline_stage"] in SKIPPED_STAGES or bool(str(row.get("handling") or "").strip())
 
 
 def get_activity_record(db, doc_id: str) -> dict | None:

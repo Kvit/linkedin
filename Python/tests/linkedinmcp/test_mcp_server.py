@@ -48,7 +48,7 @@ import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
-from linkedinmcp import clients, clock, decisions, fetch_queue, guards, mcp_server, queue
+from linkedinmcp import clients, clock, decisions, fetch_queue, guards, mcp_server, monitor, queue
 from tests.linkedinmcp.fake_firestore import FakeFirestore
 from tests.linkedinmcp.fake_unipile import FakeUnipile, relation, seed_contact, seed_item, seed_message, store_snapshot
 
@@ -1916,14 +1916,84 @@ async def test_activity_summary_filters_by_freshness_and_draft(env, fake_db):
     row = fresh["contacts"][0]
     assert (row["doc_id"], row["posts"], row["comments"], row["reactions"], row["profile_changes"]) == ("ann", 1, 0, 2, 0)
     assert row["industry"] == "RCM" and row["last_activity"].endswith(TZ_OFFSET)
-    assert row["suggested_message_sent_at"] is None and fresh["contacts"][1]["suggested_message_sent_at"].endswith(TZ_OFFSET)
-    assert row["suggested_message_updated_at"] is None  # never drafted
+    assert "suggested_message_sent_at" not in row and fresh["contacts"][1]["suggested_message_sent_at"].endswith(TZ_OFFSET)
+    assert "suggested_message_updated_at" not in row  # never drafted: empty values are left out, 0 stays
     assert fresh["contacts"][1]["suggested_message_updated_at"].endswith(TZ_OFFSET)  # drafted, then wiped by newer activity
     assert [r["doc_id"] for r in wider["contacts"]] == ["ann", "fay", "cat"]  # newest first
     assert [(r["doc_id"], r["suggested_message"]) for r in drafted["contacts"]] == [("bob", "Congrats on the new role")]
     assert drafted["contacts"][0]["suggested_message_updated_at"] == "2026-09-18T17:30:00+05:30"
     assert [r["doc_id"] for r in first["contacts"]] == ["ann"]
     assert (await call_tool("get_user_activity_summary", {"freshness": 0}))["reason"] == "invalid"
+
+
+@pytest.mark.anyio
+async def test_activity_summary_lists_posts_to_comment_on_and_contacts_to_message(env, fake_db):
+    now = datetime.now(UTC)
+    post = {"post_id": "p1", "date": now - timedelta(days=1), "text": "Our lab went live", "is_repost": False}
+    _seed_activity(fake_db, "ann", days_ago=1, posts=[post])
+    _seed_activity(fake_db, "bob", days_ago=1)
+    seed_contact(fake_db, "bob", last_sent_date=now - timedelta(days=3))  # messaged lately
+
+    comment = await call_tool("get_user_activity_summary", {"needs_comment": True})
+    message = await call_tool("get_user_activity_summary", {"not_messaged_days": 30})
+
+    assert [(r["doc_id"], r["comment_post_id"], r["comment_post_text"]) for r in comment["contacts"]] == [
+        ("ann", "p1", "Our lab went live"),
+    ]
+    assert [r["doc_id"] for r in message["contacts"]] == ["ann"]
+    assert (await call_tool("get_user_activity_summary", {"not_messaged_days": 0}))["reason"] == "invalid"
+
+
+@pytest.mark.anyio
+async def test_fetch_user_activity_returns_only_the_kinds_asked_for(env, fake_db):
+    _seed_activity(fake_db, "ann", days_ago=1, posts=[{"text": "p"}], comments=[{"text": "c"}])
+
+    payload = await call_tool("fetch_user_activity", {"doc_id": "ann", "kinds": ["posts"]})
+
+    assert [p["text"] for p in payload["posts"]] == ["p"] and "comments" not in payload and "reactions" not in payload
+    assert (await call_tool("fetch_user_activity", {"doc_id": "ann", "kinds": ["likes"]}))["reason"] == "invalid"
+
+
+@pytest.mark.anyio
+async def test_get_job_answers_short_while_the_job_runs_and_reports_progress_while_it_waits(env, fake_db, monkeypatch):
+    job_id = "send_messages:20260919T120000000000Z"
+    running = {"id": job_id, "job": "send_messages", "status": "running", "lost": False, "params": {"limit": 3},
+               "progress": {"done": 1, "total": 3, "note": "waiting before the next message"}}
+    reads = iter([running, running, {**running, "status": "succeeded", "progress": None, "result": {"sent": 3}}])
+    monkeypatch.setattr(monitor, "get", lambda db, job: next(reads))
+    monkeypatch.setattr(monitor, "_sleep", lambda seconds: None)
+    seen = []
+
+    async def on_progress(progress, total, message):
+        seen.append((progress, total, message))
+
+    async with Client(mcp_server.mcp, progress_handler=on_progress) as client:
+        short = (await client.call_tool("get_job", {"job_id": job_id})).data
+        done = (await client.call_tool("get_job", {"job_id": job_id, "wait_seconds": 45})).data
+
+    assert short == {"ok": True, "job_id": job_id, "step": "send_messages", "status": "running", "lost": False,
+                     "progress": running["progress"]}
+    assert seen == [(1, 3, "waiting before the next message")]
+    assert (done["status"], done["result"], done["params"]) == ("succeeded", {"sent": 3}, {"limit": 3})
+
+
+@pytest.mark.anyio
+async def test_the_four_workflows_are_prompts_and_resources_and_the_instructions_name_them(env):
+    async with Client(mcp_server.mcp) as client:
+        prompts = {p.name for p in await client.list_prompts()}
+        rendered = await client.get_prompt("comment_on_posts", {"days": 5, "live": True})
+        recipe = await client.read_resource("workflow://suggest_messages")
+        instructions = client.instructions
+        tools = await client.list_tools()
+
+    assert prompts == {"new_contacts", "new_messages", "comment_on_posts", "suggest_messages"}
+    text = rendered.messages[0].content.text
+    assert "freshness=5" in text and 'mode="live"' in text
+    assert "not_messaged_days=30" in recipe[0].text
+    assert all(name in instructions for name in prompts) and len(instructions) <= 2048
+    touched = {"get_user_activity_summary", "fetch_user_activity", "get_job", "update_suggested_message",
+               "comment_on_post", "sync_messages", "send_messages"}
+    assert all(len(t.description) <= 2048 for t in tools if t.name in touched)  # Claude Code cuts at about 2 KB
 
 
 @pytest.mark.anyio

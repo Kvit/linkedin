@@ -157,6 +157,7 @@ def test_sync_with_no_cursor_runs_the_forward_pass_from_the_newest_stored_messag
         "unknown_failed": 0,
         "classified": 0,
         "new_leads": 0,
+        "staged": [],
     }
 
 
@@ -458,6 +459,10 @@ def test_a_change_to_lead_raises_one_alert_per_contact_and_newest_inbound(monkey
     assert calls == [db, db]
     assert (first["classified"], first["new_leads"]) == (4, 2)
     assert (second["classified"], second["new_leads"]) == (4, 0)
+    assert first["staged"][0] == {  # the agent reads who changed from the result
+        "doc_id": "erin", "previous_stage": "prospect", "stage": "lead", "reason": "erin asked what the pilot would cost.",
+    }
+    assert len(first["staged"]) == 4 and "TRANSCRIPT-MUST-NOT-LEAK" not in repr(first)
 
 
 def test_sync_without_a_classifier_raises_no_alert(monkeypatch, tmp_path):
