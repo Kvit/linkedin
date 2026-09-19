@@ -36,6 +36,7 @@ def _setup():
     seed_contact(db, "dan", industry="RCM")
     seed_contact(db, "eve", industry="Hospital")  # not a target
     seed_contact(db, "fay", industry="RCM", handling="exclude")
+    seed_contact(db, "hal", industry="RCM", handling="manual")  # any special handling leaves the crawl
     seed_contact(db, "gus", industry="RCM")  # not a connection
     checked = db.collection("activity")
     checked.document("cat").set({
@@ -43,7 +44,7 @@ def _setup():
     })
     checked.document("dan").set({"updated_at": NOW - timedelta(days=2)})
     client = FakeUnipile(relations=[
-        relation(slug, provider_id_of(slug), None, first=slug.title()) for slug in ("ann", "bob", "cat", "dan", "eve", "fay")
+        relation(slug, provider_id_of(slug), None, first=slug.title()) for slug in ("ann", "bob", "cat", "dan", "eve", "fay", "hal")
     ])
     return db, client
 
@@ -161,6 +162,18 @@ def test_the_newest_own_post_is_liked_once():
     off = get_activity.get_contact_activity(db, client, type="posts", industries=TARGETS, doc_ids=["ann"], like=False,
                                             now=NOW)
     assert off["likes"] == 0 and client.users.liked == ["urn:li:activity:own-new"]
+
+
+def test_soft_no_reject_and_not_relevant_are_not_crawled():
+    db, client = _setup()
+    for slug, stage in (("ann", "soft_no"), ("bob", "reject"), ("cat", "not_relevant")):
+        db.collection("analysis").document(slug).update({"pipeline_stage": stage})
+        client.users.posts[provider_id_of(slug)] = [post(f"own-{slug}", NOW - timedelta(days=1))]
+
+    found = get_activity.get_contact_activity(db, client, type="posts", industries=TARGETS, now=NOW)
+
+    assert (found["audience"], found["checked"], client.users.liked) == (1, 1, [])  # only dan is left
+    assert [call[1] for call in client.users.activity_calls] == [provider_id_of("dan")]
 
 
 def test_likes_stop_at_the_daily_cap():

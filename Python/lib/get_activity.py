@@ -48,6 +48,9 @@ FIELDS = (
 )
 COUNTED = ("posts", "comments", "reactions", "profile_changes")
 
+#: Stages never crawled (the user's rule, 2026-09-19).
+SKIPPED_STAGES = frozenset({"soft_no", "reject", "not_relevant"})
+
 _SKIP = (NotFound, UnprocessableError)  # noted on the contact; the crawl goes on
 _STOP = (RateLimited, PermissionDenied, CircuitOpen, ThrottleLockout, ServerError)  # ends the call
 
@@ -223,7 +226,7 @@ def _days(value: str | int) -> int:
 
 
 def _audience(db, client, industries: list[str]) -> list[dict]:
-    """First-degree connections whose `analysis` industry is a target, minus `handling == exclude`."""
+    """First-degree target-industry connections, minus special handling and `SKIPPED_STAGES`."""
     relations = {r.public_identifier: r for r in client.users.iter_relations()}
     query = db.collection(ANALYSIS_COLLECTION).where(filter=FieldFilter("industry", "in", industries)).select(
         ["industry", "pipeline_stage", "handling", "last_reply_date", "last_sent_date"]
@@ -232,7 +235,9 @@ def _audience(db, client, industries: list[str]) -> list[dict]:
     for snapshot in query.stream():
         relation = relations.get(snapshot.id)
         data = snapshot.to_dict() or {}
-        if relation is None or str(data.get("handling") or "").strip().lower() == "exclude":
+        if relation is None or str(data.get("handling") or "").strip():  # exclude, manual or any other hold
+            continue
+        if data.get("pipeline_stage") in SKIPPED_STAGES:
             continue
         name = f"{relation.first_name or ''} {relation.last_name or ''}".strip()
         audience.append({
