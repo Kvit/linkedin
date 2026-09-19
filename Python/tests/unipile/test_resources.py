@@ -450,6 +450,18 @@ def test_activity_lists_read_one_page(users, method, path, item, field, expected
 
 
 @respx.mock
+def test_get_post_reads_one_post(users):
+    route = respx.get(f"{BASE}/api/v1/posts/urn:li:ugcPost:751").mock(
+        return_value=httpx.Response(200, json={"id": "751", "text": "Hello", "author": {"name": "Kim Lee"}})
+    )
+
+    found = users.get_post("urn:li:ugcPost:751")
+
+    assert route.calls[0].request.url.params["account_id"] == ACCOUNT
+    assert (found.text, found.author.name) == ("Hello", "Kim Lee")
+
+
+@respx.mock
 def test_iter_invitations_sent_exposes_the_firestore_keys(users, invitations_sent_body):
     respx.get(f"{BASE}/api/v1/users/invite/sent").mock(
         return_value=httpx.Response(200, json=invitations_sent_body)

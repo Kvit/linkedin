@@ -56,8 +56,24 @@ design notes behind them are
 `2026-09-11-mcp-process-tools-design.md` (MCP v2) and
 `2026-09-14-send-messages-design.md` (`send_messages`, no schedule).
 
-**What is running right now:** `v2.4.0`, revision `linkedin-outreach-00016-gqb`,
-100% of traffic, deployed 2026-09-16 and checked straight after, read-only
+**What is running right now:** `v2.5.1`, revision `linkedin-outreach-00018-qcl`,
+100% of traffic, deployed 2026-09-19 and checked straight after on a temporary
+`activity` record, deleted afterwards: 32 tools, `get_status` `ok`;
+`update_suggested_message` set and then cleared a draft, and `fetch_user_activity`
+showed `suggested_message_updated_at` stamped both times.
+
+`v2.5.0`, revision `linkedin-outreach-00017-8xj`, deployed 2026-09-19, was
+checked straight after, read-only:
+`tools/list` returning 32 tools with the three activity tools among them;
+`get_status` answering `firestore` and `unipile` `ok`, not paused, writes not
+blocked; `get_user_activity_summary()` returning 6 contacts newest first;
+`fetch_user_activity` returning one whole record and `not_found` for an
+unknown id. `update_suggested_message` was checked the same day against the
+real `activity` collection from the dev container (a test draft set, listed,
+cleared).
+
+`v2.4.0`, revision `linkedin-outreach-00016-gqb`, deployed 2026-09-16, was
+checked straight after, read-only
 except one dry-run job record: `get_status` answering `firestore` and `unipile`
 `ok`; `tools/list` returning 29 tools, the `classify_contacts` and
 `classify_stages` descriptions naming `hand_set` and `contact_report`'s naming
@@ -117,6 +133,8 @@ read-only calls.
 
 | Version | Revision | What it changed |
 |---|---|---|
+| `v2.5.1` | `linkedin-outreach-00018-qcl` | `update_suggested_message` stamps `suggested_message_updated_at` on every write, clears included; the crawler never touches it, so a draft the crawler wiped still shows when it was written. The summary (rows with a draft) and `fetch_user_activity` return it. 32 tools. |
+| `v2.5.0` | `linkedin-outreach-00017-8xj` | Three tools over the `activity` collection that `lib.get_activity.get_contact_activity` fills: `get_user_activity_summary(freshness, has_suggested_message, limit)`, `fetch_user_activity(doc_id)` and `update_suggested_message(doc_id, text)`. `sync_messages` reads from its own cursor, `runtime_state/messages_sync.synced_through`, instead of the newest stored message (committed in 3d16ff5, first deployed here). Shared contact helpers moved to `lib.contacts`. 32 tools. |
 | `v2.4.0` | `linkedin-outreach-00016-gqb` | Fields set by hand in the contacts webapp, named in the contact's `hand_set`, are kept: `classify_contacts` fills only the other classification fields, and `classify_stages` and `sync_messages` leave a hand-set stage until the contact writes again or `force` is given. `contact_report`'s `date_connected` falls back to LinkedIn Helper's `connect.connectedAt` in `extracted`; `get_contact` and `list_contacts` take the headline from `miniProfile.headline` when `occupation` is empty. 29 tools. |
 | `v2.3.0` | `linkedin-outreach-00015-k68` | `contact_report(categories, handling, pipeline_stage, offset, limit)`: every `analysis` contact matching the filters, 500 rows a page, with `date_connected` from the fetch queue and counts on the first page. 29 tools. |
 | `v2.2.0` | `linkedin-outreach-00014-bgd` | `send_messages`: sends every due message from one call, one a minute by default, at most 50, chaining jobs past 30 minutes. No schedule: `scheduler.cmd` removed, intros and agent messages due at once, every tool description naming `send_messages` instead of the tick. 28 tools. |

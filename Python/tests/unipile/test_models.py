@@ -1,8 +1,8 @@
 """Models parse real API payloads and tolerate the API's inconsistencies."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 
-from lib.unipile.models import Chat, Profile, Relation, SentInvitation
+from lib.unipile.models import Chat, Comment, Post, Profile, Reaction, Relation, SentInvitation
 
 
 def test_relation_exposes_both_identifiers(relations_body):
@@ -146,3 +146,32 @@ def test_shared_secret_also_accepts_a_top_level_value():
     )
 
     assert invitation.shared_secret == "TOP-LEVEL"
+
+
+def test_reaction_date_is_decoded_from_its_linkedin_id():
+    # Live 2026-09-19: the id a reaction carries is its own activity's, created when the contact reacted.
+    assert Reaction(post_id="7506792921183117312").date == datetime(2026, 9, 18, 19, 15, 1, 878000, tzinfo=UTC)
+    assert Reaction(post_id="urn:li:ugcPost:abc").date is None
+    assert Reaction().date is None
+
+
+def test_a_post_without_text_says_what_it_holds():
+    assert Post(id="1", text="", attachments=[{"type": "img"}, {"type": "img"}]).display_text == "[image]"
+    assert Post(id="2", text=None, attachments=[{"type": "file"}]).display_text == "[document]"
+    assert Post(id="3", text="Hello", attachments=[{"type": "img"}]).display_text == "Hello"
+    assert Post(id="4").display_text == ""
+
+
+def test_a_repost_is_dated_by_when_the_contact_reposted_it():
+    # Live 2026-09-18: a repost's parsed_datetime is the original post's; repost_parsed_datetime is the repost.
+    repost = Post(id="1", is_repost=True, parsed_datetime="2026-09-15T16:13:32.134Z",
+                  repost_parsed_datetime="2026-09-16T04:37:51.025Z")
+    assert repost.action_date == datetime(2026, 9, 16, 4, 37, 51, 25000, tzinfo=UTC)
+    own = Post(id="2", parsed_datetime="2026-09-15T16:13:32.134Z")
+    assert own.action_date == datetime(2026, 9, 15, 16, 13, 32, 134000, tzinfo=UTC)
+
+
+def test_a_comment_names_its_post_the_way_the_posts_endpoint_expects():
+    assert Comment(id="c", post_id="750", post_urn="urn:li:activity:750").post_ref == "750"
+    assert Comment(id="c", post_id="751", post_urn="urn:li:ugcPost:751").post_ref == "urn:li:ugcPost:751"
+    assert Comment(id="c", post_id="752").post_ref == "752"

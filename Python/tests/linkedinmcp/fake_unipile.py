@@ -6,7 +6,7 @@ job test file shares.
 `messaging.send_message`, `messaging.start_chat`, `messaging.iter_chats`,
 `messaging.get_chat`, `messaging.count_messages_sent_since`,
 `users.iter_relations`,
-`users.get_profile`, `users.iter_posts` / `iter_comments` / `iter_reactions`,
+`users.get_profile`, `users.iter_posts` / `iter_comments` / `iter_reactions` / `get_post`,
 `budget.throttle`, `budget.reconcile` / `budget.remaining` /
 `budget.used`, and `writes_blocked` -- plus `messaging.iter_all_messages`,
 the one read the REAL `messages_sync.forward_pass` makes, for the
@@ -54,6 +54,7 @@ from lib.unipile.models import (
     Comment,
     MessageSent,
     Post,
+    PostAuthor,
     Profile,
     Reaction,
     Relation,
@@ -233,6 +234,8 @@ class FakeUsers:
         self.reactions: dict[str, list[Reaction]] = {}
         self.activity_calls: list[tuple] = []
         self.read_errors: dict[tuple[str, str], BaseException] = {}
+        self.posts_by_id: dict[str, Post] = {}  # what `get_post` finds
+        self.post_calls: list[str] = []
 
     def iter_relations(self):
         self.iter_relations_calls += 1
@@ -267,6 +270,16 @@ class FakeUsers:
     def iter_reactions(self, identifier, *, page_size=100, max_pages=None):
         return self._activity("iter_reactions", self.reactions, identifier, page_size, max_pages)
 
+    def get_post(self, post_id) -> Post:
+        self.post_calls.append(post_id)
+        error = self.read_errors.get(("get_post", post_id))
+        if error is not None:
+            _raise_as_transport(self._client, error)
+        found = self.posts_by_id.get(post_id)
+        if found is None:
+            raise unipile_errors.NotFound(status=404, title=f"no post configured for {post_id}")
+        return found
+
 
 class FakeUnipile:
     """The client object a job receives. `writes_blocked` is a plain
@@ -285,7 +298,7 @@ class FakeUnipile:
         self.messaging = FakeMessaging(self, chats=chats, sent_24h=sent_24h)
         self.users = FakeUsers(self, relations)
         self.budget = FakeBudget({"message": message_limit, "profile": profile_limit})
-        self.settings = SimpleNamespace(max_activity_checks_per_day=100)
+        self.settings = SimpleNamespace(max_activity_checks_per_day=100, activity_items_per_kind=5)
         self.closed = False
 
     def close(self) -> None:
@@ -340,14 +353,18 @@ def profile(slug: str | None, provider_id: str, **fields) -> Profile:
     return Profile.model_validate({"provider_id": provider_id, "public_identifier": slug, **fields})
 
 
-def post(post_id: str, when: datetime, *, text: str = "A post") -> Post:
-    """A real `Post` model, as `iter_posts()` yields it."""
-    return Post(id=post_id, text=text, date="1d", parsed_datetime=when, share_url=f"https://li/{post_id}")
+def post(post_id: str, when: datetime, *, text: str = "A post", reposted_at: datetime | None = None,
+         author: str = "Pat Doe") -> Post:
+    """A real `Post` model, as `iter_posts()` and `get_post()` return it, with LinkedIn's share-tracking
+    query. `reposted_at` makes it a repost of `author`'s post created at `when`."""
+    return Post(id=post_id, text=text, date="1d", parsed_datetime=when, is_repost=reposted_at is not None,
+                repost_parsed_datetime=reposted_at, author=PostAuthor(name=author),
+                share_url=f"https://li/{post_id}?utm_source=social_share_send&amp;rcm=ACoMe")
 
 
-def comment(comment_id: str, when: datetime, *, text: str = "A comment") -> Comment:
+def comment(comment_id: str, when: datetime, *, text: str = "A comment", post_id: str | None = None) -> Comment:
     """A real `Comment` model, as `iter_comments()` yields it."""
-    return Comment(id=comment_id, post_id=f"post-of-{comment_id}", text=text, date=when)
+    return Comment(id=comment_id, post_id=post_id or f"post-of-{comment_id}", text=text, date=when)
 
 
 def reaction(post_id: str, value: str = "LIKE") -> Reaction:

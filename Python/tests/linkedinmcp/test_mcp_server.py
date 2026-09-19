@@ -176,12 +176,14 @@ async def call_tool(name: str, args: dict) -> dict:
 READ_TOOLS = frozenset({
     "get_status", "list_contacts", "get_contact", "get_conversation",
     "list_queue", "list_decisions", "get_run_report", "get_job", "contact_report",
+    "get_user_activity_summary", "fetch_user_activity",
 })
 
 #: The agent-side write tools (task 2g; `queue_message` split into
 #: `send_follow_up` and `send_reply`, MCP v2).
 AGENT_WRITE_TOOLS = frozenset({
     "send_follow_up", "send_reply", "cancel_queued", "set_handling", "ask_user", "mark_decision_applied",
+    "update_suggested_message",
 })
 
 #: The human-side tools (task 2g; `clear_handling` by ruling P2-25): only ever
@@ -200,17 +202,17 @@ PROCESS_TOOLS = frozenset({
 
 @pytest.mark.anyio
 async def test_tool_set_is_exact(env, fake_db):
-    """The service exposes exactly twenty-nine tools: `get_status` and eight
-    read-only tools, six agent-side write tools, eight human-side tools and
-    the six process steps (MCP v2, `send_messages`, and `contact_report`
-    since 2026-09-15). Ledger ruling P2-11: this pins the
+    """The service exposes exactly thirty-two tools: `get_status` and ten
+    read-only tools, seven agent-side write tools, eight human-side tools and
+    the six process steps (MCP v2, `send_messages`, `contact_report` since
+    2026-09-15, and the three activity tools since 2026-09-19). Ledger ruling P2-11: this pins the
     exact set, so a task adding a tool has to change this line and justify
     it.
     """
     async with Client(mcp_server.mcp) as client:
         tools = await client.list_tools()
     assert {tool.name for tool in tools} == READ_TOOLS | AGENT_WRITE_TOOLS | HUMAN_TOOLS | PROCESS_TOOLS
-    assert len(tools) == 29
+    assert len(tools) == 32
     assert all(tool.description for tool in tools), "every tool's docstring is what the agent reads"
 
 
@@ -1879,3 +1881,75 @@ async def test_get_job_answers_not_found_for_an_unknown_id(env, fake_db):
     assert await call_tool("get_job", {"job_id": "send_intro:20990101T000000000000Z"}) == {
         "ok": False, "reason": "not_found",
     }
+
+
+# --- activity: get_user_activity_summary, fetch_user_activity, update_suggested_message ---
+
+
+def _seed_activity(db, doc_id, *, days_ago=None, suggested=None, **fields):
+    now = datetime.now(UTC)
+    body = {"doc_id": doc_id, "name": doc_id.title(), "updated_at": now, "suggested_message": suggested,
+            "posts": [], "comments": [], "reactions": [], "profile_changes": [], **fields}
+    if days_ago is not None:
+        body["last_activity"] = now - timedelta(days=days_ago)
+    db.collection("activity").document(doc_id).set(body)
+
+
+@pytest.mark.anyio
+async def test_activity_summary_filters_by_freshness_and_draft(env, fake_db):
+    _seed_activity(fake_db, "ann", days_ago=2, posts=[{"text": "p"}], reactions=[{"value": "LIKE"}] * 2, industry="RCM")
+    _seed_activity(fake_db, "bob", days_ago=5, suggested="Congrats on the new role",
+                   suggested_message_updated_at=datetime(2026, 9, 18, 12, 0, tzinfo=UTC))
+    _seed_activity(fake_db, "cat", days_ago=20)
+    _seed_activity(fake_db, "dan")  # no dated activity
+
+    fresh = await call_tool("get_user_activity_summary", {})
+    wider = await call_tool("get_user_activity_summary", {"freshness": 30})
+    drafted = await call_tool("get_user_activity_summary", {"has_suggested_message": True})
+    first = await call_tool("get_user_activity_summary", {"freshness": 30, "limit": 1})
+
+    assert fresh["count"] == 1
+    row = fresh["contacts"][0]
+    assert (row["doc_id"], row["posts"], row["comments"], row["reactions"], row["profile_changes"]) == ("ann", 1, 0, 2, 0)
+    assert "industry" not in row and row["last_activity"].endswith(TZ_OFFSET)
+    assert [r["doc_id"] for r in wider["contacts"]] == ["ann", "cat"]  # newest first
+    assert [(r["doc_id"], r["suggested_message"]) for r in drafted["contacts"]] == [("bob", "Congrats on the new role")]
+    assert drafted["contacts"][0]["suggested_message_updated_at"] == "2026-09-18T17:30:00+05:30"
+    assert [r["doc_id"] for r in first["contacts"]] == ["ann"]
+    assert (await call_tool("get_user_activity_summary", {"freshness": 0}))["reason"] == "invalid"
+
+
+@pytest.mark.anyio
+async def test_fetch_user_activity_returns_the_record_with_local_dates(env, fake_db):
+    posted = datetime(2026, 9, 18, 12, 0, tzinfo=UTC)
+    _seed_activity(fake_db, "ann", days_ago=1,
+                   comments=[{"text": "Agreed", "date": posted, "post": {"text": "The post", "date": posted}}])
+
+    payload = await call_tool("fetch_user_activity", {"doc_id": "ann"})
+
+    assert (payload["doc_id"], payload["name"]) == ("ann", "Ann")
+    assert payload["comments"][0]["text"] == "Agreed"
+    assert payload["comments"][0]["post"]["date"] == "2026-09-18T17:30:00+05:30"
+    assert await call_tool("fetch_user_activity", {"doc_id": "nobody"}) == {"ok": False, "reason": "not_found"}
+
+
+@pytest.mark.anyio
+async def test_update_suggested_message_sets_and_clears_the_draft(env, fake_db):
+    _seed_activity(fake_db, "ann", days_ago=1)
+    stored = lambda: fake_db.collection("activity").document("ann").get().to_dict()  # noqa: E731
+    before = datetime.now(UTC)
+
+    assert await call_tool("update_suggested_message", {"doc_id": "ann", "text": "  Saw your denials post.  "}) == {
+        "ok": True, "doc_id": "ann", "cleared": False,
+    }
+    assert stored()["suggested_message"] == "Saw your denials post."
+    set_at = stored()["suggested_message_updated_at"]
+    assert set_at >= before
+    assert (await call_tool("update_suggested_message", {"doc_id": "ann", "text": ""}))["cleared"] is True
+    assert stored()["suggested_message"] is None and stored()["suggested_message_updated_at"] >= set_at
+    assert (await call_tool("fetch_user_activity", {"doc_id": "ann"}))["suggested_message_updated_at"].endswith(TZ_OFFSET)
+    assert await call_tool("update_suggested_message", {"doc_id": "nobody", "text": "Hi"}) == {
+        "ok": False, "reason": "not_found",
+    }
+    assert not fake_db.collection("activity").document("nobody").get().exists
+    assert (await call_tool("update_suggested_message", {"doc_id": "ann", "text": "x" * 1201}))["reason"] == "invalid"

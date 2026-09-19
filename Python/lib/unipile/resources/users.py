@@ -200,6 +200,12 @@ class UsersResource:
     def iter_reactions(self, identifier: str, *, page_size: int = 100, max_pages: int | None = None) -> Iterator[Reaction]:
         return self._list(f"/api/v1/users/{identifier}/reactions", Reaction, page_size, max_pages=max_pages)
 
+    def get_post(self, post_id: str) -> Post:
+        """One post (``GET /posts/{id}``, kept with the activity reads)."""
+        return Post.model_validate(
+            self._transport.get(f"/api/v1/posts/{post_id}", params={"account_id": self._account_id()})
+        )
+
     # --- invitations ----------------------------------------------------------
 
     def iter_invitations_sent(self, *, page_size: int = 100) -> Iterator[SentInvitation]:

@@ -337,6 +337,11 @@ class ReceivedInvitation(UnipileModel):
     )
 
 
+#: How a post with no text is described, by attachment type.
+_ATTACHMENT_LABELS = {"img": "image", "video": "video", "file": "document", "audio": "audio",
+                      "linkedin_post": "post", "media_share": "link"}
+
+
 class PostAuthor(UnipileModel):
     id: str | None = None
     public_identifier: str | None = None
@@ -344,20 +349,39 @@ class PostAuthor(UnipileModel):
 
 
 class Post(UnipileModel):
-    """A post or repost from ``GET /users/{id}/posts``; ``date`` is relative ("1d")."""
+    """A post from ``GET /posts/{id}`` or ``GET /users/{id}/posts``; ``date`` is relative ("1d").
+
+    On a repost, ``author`` and ``parsed_datetime`` are the original post's;
+    ``repost_parsed_datetime`` is when the user reposted it.
+    """
 
     id: str
     share_url: str | None = None
     text: str | None = None
     date: str | None = None
     parsed_datetime: datetime | None = None
+    repost_parsed_datetime: datetime | None = None
     reaction_counter: int = 0
     comment_counter: int = 0
     repost_counter: int = 0
     is_repost: bool = False
     author: PostAuthor | None = None
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
 
-    _ts = field_validator("parsed_datetime", mode="before")(_parse_timestamp)
+    _ts = field_validator("parsed_datetime", "repost_parsed_datetime", mode="before")(_parse_timestamp)
+
+    @property
+    def action_date(self) -> datetime | None:
+        """When the user posted or reposted it."""
+        return (self.repost_parsed_datetime if self.is_repost else None) or self.parsed_datetime
+
+    @property
+    def display_text(self) -> str:
+        """The text, or what the post holds when it has none, e.g. "[image]"."""
+        if self.text:
+            return self.text
+        kinds = dict.fromkeys(_ATTACHMENT_LABELS.get(a.get("type"), a.get("type")) for a in self.attachments)
+        return f"[{', '.join(k for k in kinds if k)}]" if any(kinds) else ""
 
 
 class Comment(UnipileModel):
@@ -367,19 +391,38 @@ class Comment(UnipileModel):
 
     id: str
     post_id: str | None = None
+    post_urn: str | None = None
     text: str | None = None
     date: datetime | None = None
 
     _ts = field_validator("date", mode="before")(_parse_timestamp)
 
+    @property
+    def post_ref(self) -> str | None:
+        """The id ``GET /posts/{id}`` takes: the numeric id for an activity, else the full URN."""
+        if self.post_urn and not self.post_urn.startswith("urn:li:activity:"):
+            return self.post_urn
+        return self.post_id
+
 
 class Reaction(UnipileModel):
-    """A reaction from ``GET /users/{id}/reactions``. It carries no date."""
+    """A reaction from ``GET /users/{id}/reactions``.
+
+    ``post_id`` is the id of the reaction's own activity, which ``GET /posts/{id}``
+    resolves to the post reacted to (both measured live 2026-09-19).
+    """
 
     model_config = ConfigDict(coerce_numbers_to_str=True)
 
     value: str | None = None
     post_id: str | None = None
+
+    @property
+    def date(self) -> datetime | None:
+        """When the reaction happened: a numeric LinkedIn id holds its creation time (epoch ms) in the top 41 bits."""
+        if not (self.post_id or "").isdigit():
+            return None
+        return datetime.fromtimestamp((int(self.post_id) >> 22) / 1000, tz=UTC)
 
 
 class InvitationSentResult(UnipileModel):

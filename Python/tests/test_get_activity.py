@@ -22,6 +22,11 @@ NOW = datetime(2026, 9, 18, 12, 0, tzinfo=UTC)
 TARGETS = ["RCM", "Pathology"]
 
 
+def _post_id(when: datetime) -> str:
+    """A LinkedIn post id created at `when` (the top 41 bits hold epoch ms)."""
+    return str(int(when.timestamp() * 1000) << 22)
+
+
 def _setup():
     """Audience: ann, bob (never checked), cat (checked 9 days ago), dan (2 days ago)."""
     db = FakeFirestore()
@@ -51,10 +56,14 @@ def _doc(db, doc_id):
 def test_a_crawl_checks_never_checked_contacts_first_and_stores_recent_activity():
     db, client = _setup()
     ann, bob, cat = (provider_id_of(slug) for slug in ("ann", "bob", "cat"))
-    client.users.posts[ann] = [post("p-new", NOW - timedelta(days=2), text="Recent post"), post("p-old", NOW - timedelta(days=20))]
-    client.users.comments[ann] = [comment("c-new", NOW - timedelta(days=1), text="Recent comment"), comment("c-old", NOW - timedelta(days=15))]
-    client.users.reactions[ann] = [reaction(f"r-{n}") for n in range(7)]
+    client.users.posts[ann] = [post("p-new", NOW - timedelta(days=2), text="Recent M&amp;A post"), post("p-old", NOW - timedelta(days=20))]
+    client.users.comments[ann] = [comment("c-new", NOW - timedelta(days=1), text="Recent Q&amp;A comment"), comment("c-old", NOW - timedelta(days=15))]
+    client.users.reactions[ann] = [reaction(_post_id(NOW - timedelta(hours=12)))] + [reaction(f"r-{n}") for n in range(6)]
+    for reacted in client.users.reactions[ann]:
+        client.users.posts_by_id[reacted.post_id] = post(reacted.post_id, NOW - timedelta(days=4), text="Liked post")
+    client.users.posts_by_id["post-of-c-new"] = post("post-of-c-new", NOW - timedelta(days=2), text="The P&amp;L post", author="Kim Lee")
     client.users.posts[cat] = [post("p-cat", NOW - timedelta(days=40))]  # outside recency, still dates the activity
+    client.users.reactions[bob] = [reaction(_post_id(NOW - timedelta(days=20)))]  # outside recency: not kept or looked up
     db.collection("extracted").document("ann").set(
         {"occupation": "Biller", "currentPosition": None, "extra": {"locationName": "Austin", "summary": "About Ann"}}
     )
@@ -74,21 +83,73 @@ def test_a_crawl_checks_never_checked_contacts_first_and_stores_recent_activity(
     assert found["profile_reads"] == 3
     assert [call[1] for call in client.users.activity_calls if call[0] == "iter_posts"] == [ann, bob, cat]
     assert all(call[3] == 1 for call in client.users.activity_calls)  # one request per read
-    assert client.budget.throttle_calls == 9  # posts, comments, reactions for 3 contacts
+    assert client.budget.throttle_calls == 15  # 3 list reads for 3 contacts, then ann's 1 commented + 5 reacted posts
+    assert client.budget.reconcile_calls == [{"profile": 0}]  # seeded from the day's checks
     stored = _doc(db, "ann")
     assert stored["updated_at"] == NOW and stored["name"] == "Ann Doe"
-    assert [p["text"] for p in stored["posts"]] == ["Recent post"]
-    assert [c["text"] for c in stored["comments"]] == ["Recent comment"]
+    assert [p["text"] for p in stored["posts"]] == ["Recent M&A post"]  # HTML entities decoded
+    assert stored["posts"][0]["share_url"] == "https://li/p-new"  # tracking query dropped
+    assert [c["text"] for c in stored["comments"]] == ["Recent Q&A comment"]
+    assert stored["comments"][0]["post"] == {
+        "author": "Kim Lee", "text": "The P&L post", "url": "https://li/post-of-c-new", "date": NOW - timedelta(days=2),
+    }
     assert len(stored["reactions"]) == 5
-    assert stored["last_activity"] == NOW - timedelta(days=1)
+    assert stored["reactions"][0]["date"] == NOW - timedelta(hours=12)
+    assert [r["post"]["text"] for r in stored["reactions"]] == ["Liked post"] * 5
+    assert stored["last_activity"] == NOW - timedelta(hours=12)  # the reaction is newer than the comment
     assert stored["profile_changes"] == [{"field": "headline", "before": "Biller", "after": "RCM Director"}]
     assert stored["unknown_before"] == ["position"]
     assert _doc(db, "bob")["profile_changes"] == [] and _doc(db, "bob")["unknown_before"] == ["about"]
-    assert _doc(db, "bob")["last_activity"] is None
+    assert _doc(db, "bob")["reactions"] == [] and _doc(db, "bob")["last_activity"] == NOW - timedelta(days=20)
     assert _doc(db, "cat")["comments"] == []  # replaced
     assert _doc(db, "cat")["last_activity"] == NOW - timedelta(days=30)  # the stored date is later than the 40-day post
     assert _doc(db, "dan") == {"updated_at": NOW - timedelta(days=2)}
     assert [row["doc_id"] for row in found["contacts"]] == ["ann"]
+
+
+def test_the_newest_five_of_each_kind_are_kept_with_the_post_they_were_on():
+    db, client = _setup()
+    ann = provider_id_of("ann")
+    client.users.posts[ann] = [post(f"p{n}", NOW - timedelta(days=n)) for n in range(1, 7)] + [
+        post("rp", NOW - timedelta(days=30), reposted_at=NOW - timedelta(hours=2), author="Orig Co"),  # old post, new repost
+    ]
+    on = ["x1", "x1", "x2", "x3", "x4", "x5", "x6"]  # the two newest comments are on the same post
+    client.users.comments[ann] = [comment(f"c{n}", NOW - timedelta(hours=n + 1), post_id=target) for n, target in enumerate(on)]
+    client.users.reactions[ann] = [reaction(target) for target in ("x2", "y1", "y2", "y3", "y4", "y5")]
+    for target in {*on, "y1", "y2", "y3", "y4", "y5"}:
+        client.users.posts_by_id[target] = post(target, NOW - timedelta(days=3), text=f"Post {target}")
+
+    get_activity.get_contact_activity(db, client, type=["posts", "comments", "reactions"], industries=TARGETS,
+                                      limit=1, now=NOW)
+
+    stored = _doc(db, "ann")
+    assert len(stored["posts"]) == 5
+    assert stored["posts"][0]["date"] == NOW - timedelta(hours=2) and stored["posts"][0]["author"] == "Orig Co"
+    assert [c["post"]["text"] for c in stored["comments"]] == ["Post x1", "Post x1", "Post x2", "Post x3", "Post x4"]
+    assert [r["post"]["text"] for r in stored["reactions"]] == ["Post x2", "Post y1", "Post y2", "Post y3", "Post y4"]
+    assert client.users.post_calls == ["x1", "x2", "x3", "x4", "y1", "y2", "y3", "y4"]  # each post read once
+    assert stored["last_activity"] == NOW - timedelta(hours=1)  # the newest comment
+
+
+def test_doc_ids_recheck_exactly_those_contacts_in_order():
+    db, client = _setup()
+
+    found = get_activity.get_contact_activity(db, client, type="reactions", industries=TARGETS,
+                                              doc_ids=["dan", "gus", "cat"], now=NOW)
+
+    assert [call[1] for call in client.users.activity_calls] == [provider_id_of("dan"), provider_id_of("cat")]
+    assert (found["checked"], found["not_in_audience"]) == (2, ["gus"])  # gus is not a connection
+
+
+def test_each_contact_is_stamped_when_it_is_checked(monkeypatch):
+    db, client = _setup()
+    clock = iter([NOW, NOW + timedelta(minutes=3), NOW + timedelta(minutes=6)])
+    monkeypatch.setattr(get_activity, "_utcnow", lambda: next(clock))
+
+    get_activity.get_contact_activity(db, client, type="reactions", industries=TARGETS, limit=2)
+
+    assert _doc(db, "ann")["updated_at"] == NOW + timedelta(minutes=3)
+    assert _doc(db, "bob")["updated_at"] == NOW + timedelta(minutes=6)
 
 
 def test_suggested_message_is_cleared_only_when_last_activity_advances():

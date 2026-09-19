@@ -59,6 +59,9 @@ class UnipileSettings(BaseConfig):
     #: Contacts `lib.get_activity` checks per rolling 24 h, each up to four reads
     #: (posts, comments, reactions, profile). Unipile advises ~100 a day per route.
     max_activity_checks_per_day: int = 100
+    #: Newest posts, comments and reactions `lib.get_activity` keeps per contact. Each kept
+    #: comment and reaction costs one post read for its context (distinct posts only).
+    activity_items_per_kind: int = 5
 
     # Pacing. A person opening one profile, reading it and moving on takes far
     # longer than a script needs to, so every budgeted call waits first. See
