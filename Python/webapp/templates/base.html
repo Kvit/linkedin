@@ -17,6 +17,7 @@
     <nav>
       <a href="/"{% if path == "/" %} aria-current="page"{% endif %}>Home</a>
       <a href="/contacts"{% if path.startswith("/contacts") %} aria-current="page"{% endif %}>Contacts</a>
+      <a href="/suggested"{% if path.startswith("/suggested") %} aria-current="page"{% endif %}>Suggested</a>
     </nav>
     <form method="post" action="/refresh" class="refresh">
       <span>Data as of {{ built_at or "never" }}</span>

@@ -359,7 +359,7 @@ def post(post_id: str, when: datetime, *, text: str = "A post", reposted_at: dat
     query. `reposted_at` makes it a repost of `author`'s post created at `when`."""
     return Post(id=post_id, text=text, date="1d", parsed_datetime=when, is_repost=reposted_at is not None,
                 repost_parsed_datetime=reposted_at, author=PostAuthor(name=author),
-                share_url=f"https://li/{post_id}?utm_source=social_share_send&amp;rcm=ACoMe")
+                share_url=f"https://li/{post_id}?utm_source=social_share_send&rcm=ACoMe")
 
 
 def comment(comment_id: str, when: datetime, *, text: str = "A comment", post_id: str | None = None) -> Comment:

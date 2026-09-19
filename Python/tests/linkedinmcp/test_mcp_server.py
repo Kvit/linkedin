@@ -1897,22 +1897,29 @@ def _seed_activity(db, doc_id, *, days_ago=None, suggested=None, **fields):
 
 @pytest.mark.anyio
 async def test_activity_summary_filters_by_freshness_and_draft(env, fake_db):
+    now = datetime.now(UTC)
     _seed_activity(fake_db, "ann", days_ago=2, posts=[{"text": "p"}], reactions=[{"value": "LIKE"}] * 2, industry="RCM")
     _seed_activity(fake_db, "bob", days_ago=5, suggested="Congrats on the new role",
                    suggested_message_updated_at=datetime(2026, 9, 18, 12, 0, tzinfo=UTC))
     _seed_activity(fake_db, "cat", days_ago=20)
     _seed_activity(fake_db, "dan")  # no dated activity
+    _seed_activity(fake_db, "eve", days_ago=3, suggested_message_updated_at=now - timedelta(days=1))  # cleared since
+    _seed_activity(fake_db, "fay", days_ago=6, suggested_message_updated_at=now - timedelta(days=8),
+                   suggested_message_sent_at=now - timedelta(days=8))  # sent, then newer activity
 
     fresh = await call_tool("get_user_activity_summary", {})
     wider = await call_tool("get_user_activity_summary", {"freshness": 30})
     drafted = await call_tool("get_user_activity_summary", {"has_suggested_message": True})
     first = await call_tool("get_user_activity_summary", {"freshness": 30, "limit": 1})
 
-    assert fresh["count"] == 1
+    assert [r["doc_id"] for r in fresh["contacts"]] == ["ann", "fay"] and fresh["count"] == 2
     row = fresh["contacts"][0]
     assert (row["doc_id"], row["posts"], row["comments"], row["reactions"], row["profile_changes"]) == ("ann", 1, 0, 2, 0)
     assert "industry" not in row and row["last_activity"].endswith(TZ_OFFSET)
-    assert [r["doc_id"] for r in wider["contacts"]] == ["ann", "cat"]  # newest first
+    assert row["suggested_message_sent_at"] is None and fresh["contacts"][1]["suggested_message_sent_at"].endswith(TZ_OFFSET)
+    assert row["suggested_message_updated_at"] is None  # never drafted
+    assert fresh["contacts"][1]["suggested_message_updated_at"].endswith(TZ_OFFSET)  # drafted, then wiped by newer activity
+    assert [r["doc_id"] for r in wider["contacts"]] == ["ann", "fay", "cat"]  # newest first
     assert [(r["doc_id"], r["suggested_message"]) for r in drafted["contacts"]] == [("bob", "Congrats on the new role")]
     assert drafted["contacts"][0]["suggested_message_updated_at"] == "2026-09-18T17:30:00+05:30"
     assert [r["doc_id"] for r in first["contacts"]] == ["ann"]
@@ -1922,7 +1929,7 @@ async def test_activity_summary_filters_by_freshness_and_draft(env, fake_db):
 @pytest.mark.anyio
 async def test_fetch_user_activity_returns_the_record_with_local_dates(env, fake_db):
     posted = datetime(2026, 9, 18, 12, 0, tzinfo=UTC)
-    _seed_activity(fake_db, "ann", days_ago=1,
+    _seed_activity(fake_db, "ann", days_ago=1, suggested_message_sent_at=posted,
                    comments=[{"text": "Agreed", "date": posted, "post": {"text": "The post", "date": posted}}])
 
     payload = await call_tool("fetch_user_activity", {"doc_id": "ann"})
@@ -1930,6 +1937,7 @@ async def test_fetch_user_activity_returns_the_record_with_local_dates(env, fake
     assert (payload["doc_id"], payload["name"]) == ("ann", "Ann")
     assert payload["comments"][0]["text"] == "Agreed"
     assert payload["comments"][0]["post"]["date"] == "2026-09-18T17:30:00+05:30"
+    assert payload["suggested_message_sent_at"] == "2026-09-18T17:30:00+05:30"
     assert await call_tool("fetch_user_activity", {"doc_id": "nobody"}) == {"ok": False, "reason": "not_found"}
 
 

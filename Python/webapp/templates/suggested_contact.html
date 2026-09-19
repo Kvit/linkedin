@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}{{ record.name or contact.name or record.doc_id }}: suggested message{% endblock %}
+{% block content %}
+{% set name = record.name or contact.name or record.doc_id %}
+{% set base = "/suggested/" ~ record.doc_id|urlencode %}
+<div class="contact-head">
+  <h1>{{ name }}</h1>
+  <a href="{{ record.profile_url or contact.profileUrl or 'https://www.linkedin.com/in/' ~ record.doc_id }}" target="_blank" rel="noopener">LinkedIn profile</a>
+  <a href="/contacts/{{ record.doc_id|urlencode }}">Contact screen</a>
+  {% if contact.headline %}<p class="headline">{{ contact.headline }}</p>{% endif %}
+</div>
+{% if notice %}<p class="notice" role="status">{{ notice }}</p>{% endif %}
+
+<div class="contact-layout">
+<aside class="contact-side">
+<dl class="detail facts">
+  <dt>Stage</dt><dd>{{ contact.pipeline_stage or "none" }}</dd>
+  <dt>Handling</dt><dd>{{ contact.handling or "none" }}</dd>
+  <dt>Industry</dt><dd>{{ contact.industry or record.industry or "" }}</dd>
+  <dt>Sent / replied</dt><dd class="num">{{ contact.sent_total or 0 }} / {{ contact.replied_total or 0 }}</dd>
+  <dt>Last sent</dt><dd>{{ contact.last_sent_date|local(tz) }}</dd>
+  <dt>Last reply</dt><dd>{{ contact.last_reply_date|local(tz) }}</dd>
+  <dt>Connected</dt><dd>{{ contact.connected_at|local(tz) }}</dd>
+  <dt>Last activity</dt><dd>{{ record.last_activity|local(tz) }}</dd>
+  <dt>Checked</dt><dd>{{ record.updated_at|local(tz) }}</dd>
+  <dt>Drafted</dt><dd>{{ record.suggested_message_updated_at|local(tz) }}</dd>
+  <dt>Sent from here</dt><dd>{{ record.suggested_message_sent_at|local(tz) }}</dd>
+</dl>
+</aside>
+
+<div class="contact-main">
+<section class="compose" aria-labelledby="compose-title">
+  <h2 id="compose-title">Suggested message</h2>
+  {% if not saved %}<p class="muted">No draft stored.</p>{% endif %}
+  <form method="post" action="{{ base }}/send" class="compose-form" data-ai="{{ base }}/rework" data-limit="{{ max_chars }}"
+        data-ai-empty="The box is empty: Rework with AI rewrites the draft in it."
+        data-ai-busy="Rewriting the message. A Pro model can take half a minute.">
+    <input type="hidden" name="token" value="{{ compose.token }}">
+    {%- if compose.warnings %}<input type="hidden" name="confirm" value="1">{% endif %}
+    <textarea name="text" rows="7" aria-label="The message" data-saved="{{ saved }}">{{ compose.text }}</textarea>
+    <input type="text" name="instructions" class="instructions" aria-label="Instructions for Rework with AI"
+           placeholder="Instructions for Rework with AI, such as: shorter; mention their post on prior authorization">
+    <div class="compose-bar">
+      <span class="compose-count" aria-live="polite"><span data-count>{{ compose.text|length }}</span> / {{ "{:,}".format(max_chars) }} characters</span>
+      {#- Save is the first submit button: the one Enter would press if the script did not load. #}
+      <button type="submit" formaction="{{ base }}/save">Save</button>
+      <button type="button" data-cancel title="Put the saved draft back in the box">Cancel</button>
+      <button type="submit" formaction="{{ base }}/clear" data-confirm="Delete the suggested message for {{ name }}?">Clear</button>
+      <button type="button" data-ai-button>Rework with AI</button>
+      <button type="submit" class="primary">{{ "Send anyway" if compose.warnings else "Send" }}</button>
+    </div>
+    <p class="compose-status" data-status role="status" hidden></p>
+    {% include "_compose_feedback.html" %}
+  </form>
+</section>
+
+{% set first_name = name.split(" ")[0] or "Them" %}
+<section class="thread">
+  <div class="tab-list" role="tablist" aria-label="Before you send">
+    <button type="button" role="tab" id="tab-activity" aria-controls="panel-activity" aria-selected="true">What they did <span class="count">{{ items|length }}</span></button>
+    <button type="button" role="tab" id="tab-conversation" aria-controls="panel-conversation" aria-selected="false">Our conversation <span class="count">{{ sides.count("me") + sides.count("them") + unsynced|length }}</span></button>
+  </div>
+  <div role="tabpanel" id="panel-activity" aria-labelledby="tab-activity">
+    {% if items %}
+    <ol class="activity-list">
+      {% for item in items %}
+      <li>
+        <p class="activity-what">
+          <time>{{ item.date|local(tz) if item.date else "undated" }}</time> {{ item.label }}
+          {%- if item.url %} <a href="{{ item.url }}" target="_blank" rel="noopener">open</a>{% endif %}
+        </p>
+        {% if item.text %}<p class="activity-text">{{ item.text }}</p>{% endif %}
+        {% if item.kind != "post" %}
+          {% if item.post %}
+          <blockquote class="activity-post">
+            <span class="who">{{ item.post.author or "A post" }}</span> {{ item.post.text or "" }}
+            {%- if item.post.url %} <a href="{{ item.post.url }}" target="_blank" rel="noopener">open post</a>{% endif %}
+          </blockquote>
+          {% else %}<p class="thread-note">The post it was on could not be read.</p>{% endif %}
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}<p class="thread-note">No posts, comments or reactions stored.</p>{% endif %}
+    {% if record.profile_changes %}
+    <h3 class="thread-part">Profile changes</h3>
+    <ul>{% for change in record.profile_changes %}<li>{{ change.field }}: {{ change.before }} → {{ change.after }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if record.errors %}<p class="thread-note">Not read by the crawler: {{ record.errors|join("; ") }}</p>{% endif %}
+  </div>
+  <div role="tabpanel" id="panel-conversation" aria-labelledby="tab-conversation" hidden>
+    {% include "_thread.html" %}
+  </div>
+</section>
+</div>
+</div>
+<script src="/static/compose.js"></script>
+<script>
+  // The tabs under the box: one panel shown at a time.
+  const tabs = document.querySelectorAll('[role="tab"]');
+  for (const tab of tabs) {
+    tab.addEventListener("click", () => {
+      for (const each of tabs) {
+        each.setAttribute("aria-selected", each === tab);
+        document.getElementById(each.getAttribute("aria-controls")).hidden = each !== tab;
+      }
+    });
+  }
+</script>
+{% endblock %}

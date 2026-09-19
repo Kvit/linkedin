@@ -56,12 +56,12 @@ def _doc(db, doc_id):
 def test_a_crawl_checks_never_checked_contacts_first_and_stores_recent_activity():
     db, client = _setup()
     ann, bob, cat = (provider_id_of(slug) for slug in ("ann", "bob", "cat"))
-    client.users.posts[ann] = [post("p-new", NOW - timedelta(days=2), text="Recent M&amp;A post"), post("p-old", NOW - timedelta(days=20))]
-    client.users.comments[ann] = [comment("c-new", NOW - timedelta(days=1), text="Recent Q&amp;A comment"), comment("c-old", NOW - timedelta(days=15))]
+    client.users.posts[ann] = [post("p-new", NOW - timedelta(days=2), text="Recent post"), post("p-old", NOW - timedelta(days=20))]
+    client.users.comments[ann] = [comment("c-new", NOW - timedelta(days=1), text="Recent comment"), comment("c-old", NOW - timedelta(days=15))]
     client.users.reactions[ann] = [reaction(_post_id(NOW - timedelta(hours=12)))] + [reaction(f"r-{n}") for n in range(6)]
     for reacted in client.users.reactions[ann]:
         client.users.posts_by_id[reacted.post_id] = post(reacted.post_id, NOW - timedelta(days=4), text="Liked post")
-    client.users.posts_by_id["post-of-c-new"] = post("post-of-c-new", NOW - timedelta(days=2), text="The P&amp;L post", author="Kim Lee")
+    client.users.posts_by_id["post-of-c-new"] = post("post-of-c-new", NOW - timedelta(days=2), text="The post", author="Kim Lee")
     client.users.posts[cat] = [post("p-cat", NOW - timedelta(days=40))]  # outside recency, still dates the activity
     client.users.reactions[bob] = [reaction(_post_id(NOW - timedelta(days=20)))]  # outside recency: not kept or looked up
     db.collection("extracted").document("ann").set(
@@ -87,11 +87,11 @@ def test_a_crawl_checks_never_checked_contacts_first_and_stores_recent_activity(
     assert client.budget.reconcile_calls == [{"profile": 0}]  # seeded from the day's checks
     stored = _doc(db, "ann")
     assert stored["updated_at"] == NOW and stored["name"] == "Ann Doe"
-    assert [p["text"] for p in stored["posts"]] == ["Recent M&A post"]  # HTML entities decoded
+    assert [p["text"] for p in stored["posts"]] == ["Recent post"]
     assert stored["posts"][0]["share_url"] == "https://li/p-new"  # tracking query dropped
-    assert [c["text"] for c in stored["comments"]] == ["Recent Q&A comment"]
+    assert [c["text"] for c in stored["comments"]] == ["Recent comment"]
     assert stored["comments"][0]["post"] == {
-        "author": "Kim Lee", "text": "The P&L post", "url": "https://li/post-of-c-new", "date": NOW - timedelta(days=2),
+        "author": "Kim Lee", "text": "The post", "url": "https://li/post-of-c-new", "date": NOW - timedelta(days=2),
     }
     assert len(stored["reactions"]) == 5
     assert stored["reactions"][0]["date"] == NOW - timedelta(hours=12)

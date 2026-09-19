@@ -21,6 +21,9 @@ document it did not write would move the timestamp its next pass starts from.
 
 The item's id holds a token the page was rendered with, and the item is
 created create-only, so a form submitted twice sends one message.
+
+The Suggested screen (`suggested.py`) sends through `send_now` too, tagged
+`activity` as well, and asks Gemini through `generate`, with `STYLE`.
 """
 
 import asyncio
@@ -70,6 +73,15 @@ ABOUT = ". ".join(pipeline.PIPELINE_INSTRUCTIONS.split(
 
 NO_CONVERSATION = "No messages yet: this is the first message to them."
 
+#: How a message reads: the last section of Expand's and Rework's instructions.
+STYLE = """# Style: one executive writing to another
+- A business note between peers: direct, brief and courteous, with no eagerness, no deference and no pitch.
+- Start with the point. Never open by saying you are following up, checking in, reaching out, circling back or checking on the status.
+- End when the point is made. No closing offer of more information or help, and no "looking forward to hearing from you".
+- Greet with "Hi" and the first name at most. No sign-off and no name at the end: LinkedIn shows who wrote it.
+- No sales or marketing jargon and no stock phrases. Never: "jump on a call", "hop on a call", "a quick call", "grab some time", "touch base", "pick your brain", "just following up", "just checking in", "I hope this finds you well", "I wanted to reach out", "at your earliest convenience", "no pressure", "let me know if you have any questions", "don't hesitate to reach out", "feel free to", "value proposition", "add value", "pain points", "solution", "offering", "partner with you", "move the needle", "best-in-class", "industry-leading", "game-changer", "cutting-edge", "seamless", "leverage", "streamline", "synergy", "robust", "empower", "unlock", "revolutionize".
+- Name the specific thing -- their lab, their payer, the problem or the person they mentioned -- instead of general words about software."""
+
 
 def expand_instructions(max_chars: int) -> str:
     """The system instruction for **Expand with AI**."""
@@ -92,13 +104,7 @@ Write the one message Vitali sends next, in Vitali's voice, in the first person.
 - At most {max_chars} characters; keep it concise.
 - Answer with the message text only.
 
-# Style: one executive writing to another
-- A business note between peers: direct, brief and courteous, with no eagerness, no deference and no pitch.
-- Start with the point. Never open by saying you are following up, checking in, reaching out, circling back or checking on the status.
-- End when the point is made. No closing offer of more information or help, and no "looking forward to hearing from you".
-- Greet with "Hi" and the first name at most. No sign-off and no name at the end: LinkedIn shows who wrote it.
-- No sales or marketing jargon and no stock phrases. Never: "jump on a call", "hop on a call", "a quick call", "grab some time", "touch base", "pick your brain", "just following up", "just checking in", "I hope this finds you well", "I wanted to reach out", "at your earliest convenience", "no pressure", "let me know if you have any questions", "don't hesitate to reach out", "feel free to", "value proposition", "add value", "pain points", "solution", "offering", "partner with you", "move the needle", "best-in-class", "industry-leading", "game-changer", "cutting-edge", "seamless", "leverage", "streamline", "synergy", "robust", "empower", "unlock", "revolutionize".
-- Name the specific thing -- their lab, their payer, the problem or the person they mentioned -- instead of general words about software."""
+{STYLE}"""
 
 
 def expand_prompt(contact: dict, conversation: dict | None, note: str) -> str:
@@ -128,45 +134,35 @@ class ExpandRequest(BaseModel):
     text: str
 
 
-@router.post("/contacts/{doc_id}/expand")
-async def expand(request: Request, doc_id: str, body: ExpandRequest) -> dict:
-    """The box's text turned into the message, for the page's script to put
-    in the box: `{ok, text, model, seconds, problem}`, `problem` being the
-    text check's sentence when the answer would be refused on Send; or
-    `{ok: false, detail}`."""
-    note = body.text.strip()
-    if not note:
-        return {"ok": False, "detail": "Write a note first: Expand with AI turns it into the message."}
-    settings, outreach = request.app.state.settings, request.app.state.outreach
-    db = clients.firestore_client()
-    contact = await asyncio.to_thread(reads.get_contact, db, outreach, doc_id, full=True)
-    if contact is None:
-        raise HTTPException(status_code=404, detail="No such contact.")
-    conversation = await asyncio.to_thread(reads.get_conversation, db, doc_id)
+async def generate(app, doc_id: str, label: str, system_instruction: str, contents: str) -> dict:
+    """Gemini's message for a box, for the page's script to put in it:
+    `{ok, text, model, seconds, problem}`, `problem` being the text check's
+    sentence when the answer would be refused on Send; or `{ok: false,
+    detail}`. `label` names the button in the log."""
+    settings, outreach = app.state.settings, app.state.outreach
     started = time.monotonic()
     try:
         response = await gemini().aio.models.generate_content(
             model=settings.expand_model,
-            contents=expand_prompt(contact, conversation, note),
+            contents=contents,
             config=types.GenerateContentConfig(
-                system_instruction=expand_instructions(
-                    outreach.message_max_chars),
+                system_instruction=system_instruction,
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(
                     disable=True),
             ),
         )
     except Exception as error:
-        logger.exception("Expand with AI failed for %s", doc_id)
+        logger.exception("%s failed for %s", label, doc_id)
         return {"ok": False, "detail": f"Gemini did not answer: {type(error).__name__}: {error}"}
     seconds = round(time.monotonic() - started, 1)
     text = (response.text or "").strip()
     if not text:
         finish = response.candidates[0].finish_reason if response.candidates else None
-        return {"ok": False, "detail": f"Gemini answered without text (finish reason {finish}). Try again or rewrite the note."}
+        return {"ok": False, "detail": f"Gemini answered without text (finish reason {finish}). Try again."}
     usage = response.usage_metadata
     logger.info(
-        "Expand with AI for %s: %s in %.1f s, %s prompt tokens, %s thinking, %s output",
-        doc_id, response.model_version, seconds, getattr(
+        "%s for %s: %s in %.1f s, %s prompt tokens, %s thinking, %s output",
+        label, doc_id, response.model_version, seconds, getattr(
             usage, "prompt_token_count", None),
         getattr(usage, "thoughts_token_count", None), getattr(
             usage, "candidates_token_count", None),
@@ -176,6 +172,24 @@ async def expand(request: Request, doc_id: str, body: ExpandRequest) -> dict:
         "ok": True, "text": text, "model": response.model_version or settings.expand_model, "seconds": seconds,
         "problem": None if verdict.ok else verdict.detail,
     }
+
+
+@router.post("/contacts/{doc_id}/expand")
+async def expand(request: Request, doc_id: str, body: ExpandRequest) -> dict:
+    """The box's text turned into the message (`generate`'s answer)."""
+    note = body.text.strip()
+    if not note:
+        return {"ok": False, "detail": "Write a note first: Expand with AI turns it into the message."}
+    outreach = request.app.state.outreach
+    db = clients.firestore_client()
+    contact = await asyncio.to_thread(reads.get_contact, db, outreach, doc_id, full=True)
+    if contact is None:
+        raise HTTPException(status_code=404, detail="No such contact.")
+    conversation = await asyncio.to_thread(reads.get_conversation, db, doc_id)
+    return await generate(
+        request.app, doc_id, "Expand with AI", expand_instructions(outreach.message_max_chars),
+        expand_prompt(contact, conversation, note),
+    )
 
 
 @dataclass
@@ -296,9 +310,11 @@ def _after_failure(db, outreach, runtime, now: datetime, item: dict, error: Exce
     )
 
 
-def send_now(app, doc_id: str, text: str, token: str, *, confirmed: bool, cancel_item: str = "") -> Outcome:
-    """Every check, then the LinkedIn call and its records. Blocking: the
-    route runs it in a thread."""
+def send_now(
+    app, doc_id: str, text: str, token: str, *, confirmed: bool, cancel_item: str = "", tags: tuple[str, ...] = (TAG,)
+) -> Outcome:
+    """Every check, then the LinkedIn call and its records, the queue item
+    carrying `tags`. Blocking: the route runs it in a thread."""
     outreach = app.state.outreach
     verdict = guards.validate_text(text, outreach)
     if not verdict.ok:
@@ -384,7 +400,7 @@ def send_now(app, doc_id: str, text: str, token: str, *, confirmed: bool, cancel
         item, created = queue.start_manual(
             db, queue_id,
             {"contact_doc_id": doc_id, "text": text, "chat_id": chat_id, "provider_id": provider_id,
-             "tags": [TAG], "created_by": OWNER},
+             "tags": list(tags), "created_by": OWNER},
             OWNER, now,
         )
         if not created:

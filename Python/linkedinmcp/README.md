@@ -56,11 +56,24 @@ design notes behind them are
 `2026-09-11-mcp-process-tools-design.md` (MCP v2) and
 `2026-09-14-send-messages-design.md` (`send_messages`, no schedule).
 
-**What is running right now:** `v2.5.1`, revision `linkedin-outreach-00018-qcl`,
-100% of traffic, deployed 2026-09-19 and checked straight after on a temporary
-`activity` record, deleted afterwards: 32 tools, `get_status` `ok`;
-`update_suggested_message` set and then cleared a draft, and `fetch_user_activity`
-showed `suggested_message_updated_at` stamped both times.
+**What is running right now:** `v2.5.3`, revision `linkedin-outreach-00020-g8k`,
+100% of traffic, deployed 2026-09-19 and checked straight after, read-only: 32
+tools, `get_status` `ok`; every summary row carries `suggested_message_updated_at`,
+9 rows needing a draft (`kathleen-quill-noyes` showing her wiped draft's time,
+the others null) and 6 with a draft.
+
+`v2.5.2`, revision `linkedin-outreach-00019-bwv`, deployed 2026-09-19, was
+checked straight after, read-only: 32 tools with the new
+`get_user_activity_summary` description, `get_status` `ok`; the default summary
+listed 4 contacts needing a draft, among them `kathleen-quill-noyes`, whose
+draft the crawler had cleared on newer activity, every row carrying
+`suggested_message_sent_at`; 6 contacts had a draft.
+
+`v2.5.1`, revision `linkedin-outreach-00018-qcl`, deployed 2026-09-19, was
+checked straight after on a temporary `activity` record, deleted afterwards: 32
+tools, `get_status` `ok`; `update_suggested_message` set and then cleared a
+draft, and `fetch_user_activity` showed `suggested_message_updated_at` stamped
+both times.
 
 `v2.5.0`, revision `linkedin-outreach-00017-8xj`, deployed 2026-09-19, was
 checked straight after, read-only:
@@ -133,6 +146,8 @@ read-only calls.
 
 | Version | Revision | What it changed |
 |---|---|---|
+| `v2.5.3` | `linkedin-outreach-00020-g8k` | Every `get_user_activity_summary` row carries `suggested_message_updated_at`, rows without a draft too (null when never drafted), so a draft the crawler wiped still shows when it was written. 32 tools. |
+| `v2.5.2` | `linkedin-outreach-00019-bwv` | `get_user_activity_summary`'s default list is the contacts that need a draft: no draft, and none cleared or sent at or after their `last_activity` (the contacts webapp's Clear and Send, or `update_suggested_message` with empty text). Its rows, and `fetch_user_activity`, carry `suggested_message_sent_at`, which the contacts webapp's Suggested screen sets on a send. 32 tools. |
 | `v2.5.1` | `linkedin-outreach-00018-qcl` | `update_suggested_message` stamps `suggested_message_updated_at` on every write, clears included; the crawler never touches it, so a draft the crawler wiped still shows when it was written. The summary (rows with a draft) and `fetch_user_activity` return it. 32 tools. |
 | `v2.5.0` | `linkedin-outreach-00017-8xj` | Three tools over the `activity` collection that `lib.get_activity.get_contact_activity` fills: `get_user_activity_summary(freshness, has_suggested_message, limit)`, `fetch_user_activity(doc_id)` and `update_suggested_message(doc_id, text)`. `sync_messages` reads from its own cursor, `runtime_state/messages_sync.synced_through`, instead of the newest stored message (committed in 3d16ff5, first deployed here). Shared contact helpers moved to `lib.contacts`. 32 tools. |
 | `v2.4.0` | `linkedin-outreach-00016-gqb` | Fields set by hand in the contacts webapp, named in the contact's `hand_set`, are kept: `classify_contacts` fills only the other classification fields, and `classify_stages` and `sync_messages` leave a hand-set stage until the contact writes again or `force` is given. `contact_report`'s `date_connected` falls back to LinkedIn Helper's `connect.connectedAt` in `extracted`; `get_contact` and `list_contacts` take the headline from `miniProfile.headline` when `occupation` is empty. 29 tools. |

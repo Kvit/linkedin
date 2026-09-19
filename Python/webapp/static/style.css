@@ -429,3 +429,54 @@ pre {
   max-width: 80ch;
 }
 details summary { cursor: pointer; margin: 2rem 0 0.5rem; font-weight: 600; }
+
+/* The Suggested screen: the draft box with its instructions, and what they did. */
+
+.filters input[type="number"] {
+  width: 5rem;
+  background: var(--slide);
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  padding: 0.25rem 0.45rem;
+  min-height: 2rem;
+}
+.compose .instructions {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 0.6rem;
+  padding: 0.35rem 0.6rem;
+  background: var(--slide);
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+}
+.contact-side > .detail.facts:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.activity-list { list-style: none; margin: 0.75rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 1.1rem; }
+.activity-what { margin: 0; color: var(--muted); font-size: 0.875rem; }
+.activity-what time { font-variant-numeric: tabular-nums; }
+.activity-text { margin: 0.2rem 0 0; font-family: var(--serif); line-height: 1.6; }
+.activity-post {
+  margin: 0.35rem 0 0;
+  padding: 0.4rem 0.75rem;
+  border-left: 3px solid var(--rule-strong);
+  color: var(--muted);
+  font-family: var(--serif);
+  line-height: 1.55;
+}
+.activity-post .who { font-family: var(--sans); font-weight: 600; color: var(--ink); }
+.tab-list { display: flex; flex-wrap: wrap; gap: 0.25rem; margin: -0.25rem 0 1rem; border-bottom: 1px solid var(--rule); }
+.tab-list [role="tab"] {
+  background: none;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  border-radius: 0;
+  margin-bottom: -1px;
+  padding: 0.35rem 0.75rem;
+  color: var(--muted);
+  font-size: 1.05rem;
+}
+.tab-list [role="tab"]:hover { background: var(--hematoxylin-wash); }
+.tab-list [role="tab"][aria-selected="true"] { color: var(--ink); border-bottom-color: var(--hematoxylin); }
+.tab-list .count { margin-left: 0.25rem; color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
+tr.selected td { background: var(--hematoxylin-wash); }
+tr.selected td:first-child { box-shadow: inset 3px 0 0 var(--hematoxylin); font-weight: 600; }

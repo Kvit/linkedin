@@ -5,10 +5,11 @@ one at import would read settings and break test collection. Pass
 `settings`, `outreach` and `contacts` to skip the environment entirely --
 the path every test takes.
 
-Three screens: Home (`/`, with the buttons of `routine.py`), Contacts
-(`/contacts`) and Contact (`/contacts/{doc_id}`, in `contacts.py`, with the
-message box of `compose.py`). The header's My Stars button (`POST /stars`)
-marks the contacts whose LinkedIn conversation is starred
+Four screens: Home (`/`, with the buttons of `routine.py`), Contacts
+(`/contacts`), Contact (`/contacts/{doc_id}`, in `contacts.py`, with the
+message box of `compose.py`) and Suggested (`/suggested`, in `suggested.py`:
+the drafts stored on `activity` records). The header's My Stars button
+(`POST /stars`) marks the contacts whose LinkedIn conversation is starred
 (`linkedinmcp.stars`) and lists them. All but `/health` sit behind
 `auth.IapMiddleware`.
 """
@@ -24,7 +25,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from linkedinmcp import clients, clock, settings as outreach_cfg, stars
-from webapp import auth, compose, contacts as contact_screen, projection, render, routine, settings as cfg
+from webapp import auth, compose, contacts as contact_screen, projection, render, routine, settings as cfg, suggested
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,7 @@ def create_app(
     app.include_router(contact_screen.router)
     app.include_router(compose.router)
     app.include_router(routine.router)
+    app.include_router(suggested.router)
 
     @app.get("/health")
     def health() -> dict[str, bool]:

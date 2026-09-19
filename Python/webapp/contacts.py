@@ -164,6 +164,17 @@ def unsynced_sends(db, doc_id: str) -> list[dict]:
     return [item for item in reversed(items) if item.get("status") != queue.SENT or item.get("message_id") not in stored]
 
 
+def conversation_context(db, doc_id: str) -> dict:
+    """What `_thread.html` shows: the conversation, its parts and sides, and the unsynced sends."""
+    conversation = reads.get_conversation(db, doc_id)
+    parts = thread(conversation)
+    return {
+        "conversation": conversation, "parts": parts,
+        "sides": [message["side"] for part in parts for message in part["messages"]],
+        "unsynced": unsynced_sends(db, doc_id),
+    }
+
+
 @router.get("/contacts/{doc_id}")
 def contact_screen(request: Request, doc_id: str):
     return render_contact(request, doc_id, notice=_notice(request.query_params))
@@ -181,7 +192,6 @@ def render_contact(request: Request, doc_id: str, *, notice: str = "", compose: 
     listed = projection.contact_row(request.app.state.contacts.frame, doc_id)
     if listed is not None and listed["headline"]:
         contact["headline"] = listed["headline"]
-    conversation = reads.get_conversation(db, doc_id)
     fetch = db.collection(FETCH_COLLECTION).document(doc_id).get()
     connected_at = (fetch.to_dict() or {}).get("connected_at") if fetch.exists else None
     if connected_at is None and listed is not None:
@@ -198,16 +208,14 @@ def render_contact(request: Request, doc_id: str, *, notice: str = "", compose: 
         {"name": name, "label": label, "options": options, "current": current[name], "by_hand": name in by_hand}
         for name, (label, options) in CHOICES.items()
     ]
-    parts = thread(conversation)
     return render.templates.TemplateResponse(
         request, "contact.html",
         render.page_context(
-            request, contact=contact, conversation=conversation, parts=parts,
-            sides=[message["side"] for part in parts for message in part["messages"]],
+            request, contact=contact, **conversation_context(db, doc_id),
             connected_at=connected_at, fields=fields, notice=notice,
             compose={"text": "", "refusal": None, "warnings": [], "open_item": None, **(compose or {}),
                      "token": secrets.token_urlsafe(16)},
-            max_chars=request.app.state.outreach.message_max_chars, unsynced=unsynced_sends(db, doc_id),
+            max_chars=request.app.state.outreach.message_max_chars,
         ),
     )
 

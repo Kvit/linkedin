@@ -9,7 +9,6 @@ about every 10 calls).
 A 429, a restriction, a 5xx or a profile throttle lockout ends the call.
 """
 
-import html
 import re
 import time
 from collections.abc import Iterable
@@ -39,11 +38,11 @@ COMMENTS_PAGE = 20
 TEXT_CHARS = 300
 MAX_RECENCY_DAYS = 365
 
-#: Every field a crawler check writes on `activity/{doc_id}`.
+#: The `activity/{doc_id}` fields `get_activity_record` returns.
 FIELDS = (
     "doc_id", "name", "industry", "pipeline_stage", "profile_url", "updated_at", "recency_days", "last_activity",
-    "suggested_message", "suggested_message_updated_at", "errors", "posts", "comments", "reactions",
-    "profile_changes", "unknown_before",
+    "suggested_message", "suggested_message_updated_at", "suggested_message_sent_at", "errors", "posts", "comments",
+    "reactions", "profile_changes", "unknown_before",
 )
 COUNTED = ("posts", "comments", "reactions", "profile_changes")
 
@@ -131,7 +130,9 @@ def activity_summary(
     db, *, freshness: int = 15, has_suggested_message: bool = False, limit: int | None = None,
     now: datetime | None = None,
 ) -> list[dict]:
-    """Contacts with `last_activity` in the last `freshness` days, newest first, with or without a draft."""
+    """Contacts with `last_activity` in the last `freshness` days, newest first, with a draft or needing one.
+
+    Needing one: no draft, and none cleared or sent at or after `last_activity`."""
     if freshness < 1:
         raise ValueError("freshness must be at least 1 day")
     if limit is not None and limit < 1:
@@ -139,7 +140,8 @@ def activity_summary(
     cutoff = (now or _utcnow()) - timedelta(days=freshness)
     # One range filter; the draft test runs here, as a second filter would need a composite index.
     query = db.collection(ACTIVITY_COLLECTION).where(filter=FieldFilter("last_activity", ">=", cutoff)).select(
-        ["name", "last_activity", "updated_at", "suggested_message", "suggested_message_updated_at", *COUNTED]
+        ["name", "last_activity", "updated_at", "suggested_message", "suggested_message_updated_at",
+         "suggested_message_sent_at", *COUNTED]
     )
     rows = []
     for snapshot in query.stream():
@@ -147,11 +149,14 @@ def activity_summary(
         draft = (data.get("suggested_message") or "").strip()
         if bool(draft) != has_suggested_message:
             continue
+        changed = data.get("suggested_message_updated_at")
+        if not draft and changed is not None and changed >= data["last_activity"]:
+            continue  # cleared or sent after this activity
         row = {"doc_id": snapshot.id, "name": data.get("name"), "last_activity": data.get("last_activity"),
-               "updated_at": data.get("updated_at"), **{kind: len(data.get(kind) or []) for kind in COUNTED}}
+               "updated_at": data.get("updated_at"), **{kind: len(data.get(kind) or []) for kind in COUNTED},
+               "suggested_message_updated_at": changed, "suggested_message_sent_at": data.get("suggested_message_sent_at")}
         if draft:
             row["suggested_message"] = draft
-            row["suggested_message_updated_at"] = data.get("suggested_message_updated_at")
         rows.append(row)
     rows.sort(key=lambda row: row["last_activity"], reverse=True)
     return rows if limit is None else rows[:limit]
@@ -172,6 +177,17 @@ def set_suggested_message(db, doc_id: str, text: str, now: datetime | None = Non
     if not reference.get().exists:
         return False
     reference.update({"suggested_message": text.strip() or None, "suggested_message_updated_at": now or _utcnow()})
+    return True
+
+
+def mark_suggested_message_sent(db, doc_id: str, now: datetime | None = None) -> bool:
+    """The draft went out: clear it and set `suggested_message_sent_at`; `False` when there is no record."""
+    reference = db.collection(ACTIVITY_COLLECTION).document(doc_id)
+    if not reference.get().exists:
+        return False
+    now = now or _utcnow()
+    reference.update({"suggested_message": None, "suggested_message_updated_at": now,
+                      "suggested_message_sent_at": now})
     return True
 
 
@@ -342,12 +358,11 @@ def _position(value) -> str | None:
 
 
 def _text(value: str | None) -> str:
-    """Unipile returns HTML-escaped text ("M&amp;A"); decode it and cap its length."""
-    return html.unescape(value or "")[:TEXT_CHARS]
+    return (value or "")[:TEXT_CHARS]
 
 
 def _clean_url(url: str | None) -> str | None:
-    """Drop LinkedIn's share-tracking query (it carries the viewer's own member id)."""
+    """Drop LinkedIn's share-tracking query (its `rcm` carries the viewer's own member id)."""
     return url.split("?")[0] if url else url
 
 
