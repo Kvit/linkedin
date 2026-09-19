@@ -453,11 +453,16 @@ def get_user_activity_summary(
     none stored, and none cleared or sent since their latest activity; true
     lists those that have one, with its text as `suggested_message`.
     `limit`: at most this many rows (default: all). Each row: `doc_id`, `name`,
-    `last_activity`, `updated_at` (when the crawler last checked them), the
-    counts `posts`, `comments`, `reactions`, `profile_changes`,
-    `suggested_message_updated_at` (when a draft was last written or cleared,
-    or null; the crawler's clearing leaves it), `suggested_message_sent_at`
-    (when a draft to them was last sent, or null), and my comment on their post
+    `last_activity`, `last_post_at` (their newest post or repost the crawler
+    has seen, older than its window too, a repost dated when reposted; null
+    when none seen yet), `updated_at` (when the crawler last checked them),
+    the counts `posts`, `comments`, `reactions`, `profile_changes`,
+    `profile_changed_at` (the crawler check that first found the current
+    profile changes, or null; LinkedIn does not date a profile change, so the
+    change itself can be older), `suggested_message_updated_at` (when a draft
+    was last written or cleared, or null; the crawler's clearing leaves it),
+    `suggested_message_sent_at` (when a draft to them was last sent, or
+    null), and my comment on their post
     (`comment_on_post`): `my_comment_text`, `my_comment_mode` (`draft` or
     `posted`) and `my_comment_date` (posted, else drafted), each null when none.
     Dates are in the service's timezone. `fetch_user_activity` returns the
@@ -480,8 +485,11 @@ def get_user_activity_summary(
 def fetch_user_activity(doc_id: str) -> dict[str, Any]:
     """One contact's whole activity record: their newest `posts`, `comments` and
     `reactions` (each comment and reaction with the `post` it was on),
-    `profile_changes` against the stored profile, `unknown_before`, `errors`,
-    `last_activity`, `updated_at`, `suggested_message` with
+    `profile_changes` against the stored profile, `profile_changed_at` (the
+    check that first found them; the change itself can be older),
+    `unknown_before`, `errors`,
+    `last_activity`, `last_post_at` (their newest post or repost seen),
+    `updated_at`, `suggested_message` with
     `suggested_message_updated_at`, `suggested_message_sent_at` (when a
     draft was last sent from the contacts webapp), `my_comment` (my comment
     on one of their posts: see `comment_on_post`) and `last_commented_at`.

@@ -56,11 +56,29 @@ design notes behind them are
 `2026-09-11-mcp-process-tools-design.md` (MCP v2) and
 `2026-09-14-send-messages-design.md` (`send_messages`, no schedule).
 
-**What is running right now:** `v2.5.3`, revision `linkedin-outreach-00020-g8k`,
-100% of traffic, deployed 2026-09-19 and checked straight after, read-only: 32
-tools, `get_status` `ok`; every summary row carries `suggested_message_updated_at`,
-9 rows needing a draft (`kathleen-quill-noyes` showing her wiped draft's time,
-the others null) and 6 with a draft.
+**What is running right now:** `v2.6.1`, revision `linkedin-outreach-00022-fg5`,
+100% of traffic, deployed 2026-09-19 and checked straight after, read-only: 33
+tools, `get_status` `ok`; the summary listed 27 contacts needing a draft and
+13 with one, every row carrying `last_post_at`, which only `vickidifrancesco`
+had yet (2025-03-28, from a posts-only crawler check that morning; her posts
+were all older than the crawl's 10 days, so none are stored), and
+`fetch_user_activity` returned the same date.
+
+`v2.6.0`, revision `linkedin-outreach-00021-f4t`, deployed 2026-09-19, was
+checked straight after, read-only: 33
+tools with `comment_on_post` among them, `get_status` `ok` (Firestore and
+Unipile, not paused, writes not blocked); the default summary listed 27
+contacts needing a draft and 13 with one, every row carrying
+`profile_changed_at` and the three `my_comment_*` fields; `fetch_user_activity`
+returned `edisontoole`'s `profile_changed_at`, and a `post_id` on all 5 posts of
+a record crawled before post rows stored one. `comment_on_post` has not been
+called on the deployed service.
+
+`v2.5.3`, revision `linkedin-outreach-00020-g8k`, deployed 2026-09-19, was
+checked straight after, read-only: 32 tools, `get_status` `ok`; every summary
+row carries `suggested_message_updated_at`, 9 rows needing a draft
+(`kathleen-quill-noyes` showing her wiped draft's time, the others null) and 6
+with a draft.
 
 `v2.5.2`, revision `linkedin-outreach-00019-bwv`, deployed 2026-09-19, was
 checked straight after, read-only: 32 tools with the new
@@ -146,6 +164,8 @@ read-only calls.
 
 | Version | Revision | What it changed |
 |---|---|---|
+| `v2.6.1` | `linkedin-outreach-00022-fg5` | Summary rows and `fetch_user_activity` carry `last_post_at`: the contact's newest post or repost the crawler has seen, older than its window too (a repost dated when reposted), null until a check that reads posts. Built from commit 6a2f046 plus the uncommitted `profile_changed_at` and `last_post_at` changes. 33 tools. |
+| `v2.6.0` | `linkedin-outreach-00021-f4t` | `comment_on_post(doc_id, post_id, text, mode)`: my comment on one of the contact's own posts in their `activity` record (never a repost), saved as a draft (`mode="draft"`, the default) or posted on LinkedIn (`mode="live"`, capped by `UNIPILE_MAX_COMMENTS_PER_DAY`, refused while writes are blocked). Summary rows carry `profile_changed_at` (the crawler check that first found the current profile changes; LinkedIn does not date them) and `my_comment_text`, `my_comment_mode` (`draft` or `posted`), `my_comment_date`; `fetch_user_activity` returns `profile_changed_at`, `my_comment`, `last_commented_at`, and a `post_id` on every post, taken from its link for posts stored before rows carried one. Built from commit 6a2f046 plus the uncommitted `profile_changed_at` change. 33 tools. |
 | `v2.5.3` | `linkedin-outreach-00020-g8k` | Every `get_user_activity_summary` row carries `suggested_message_updated_at`, rows without a draft too (null when never drafted), so a draft the crawler wiped still shows when it was written. 32 tools. |
 | `v2.5.2` | `linkedin-outreach-00019-bwv` | `get_user_activity_summary`'s default list is the contacts that need a draft: no draft, and none cleared or sent at or after their `last_activity` (the contacts webapp's Clear and Send, or `update_suggested_message` with empty text). Its rows, and `fetch_user_activity`, carry `suggested_message_sent_at`, which the contacts webapp's Suggested screen sets on a send. 32 tools. |
 | `v2.5.1` | `linkedin-outreach-00018-qcl` | `update_suggested_message` stamps `suggested_message_updated_at` on every write, clears included; the crawler never touches it, so a draft the crawler wiped still shows when it was written. The summary (rows with a draft) and `fetch_user_activity` return it. 32 tools. |

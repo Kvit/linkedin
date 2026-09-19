@@ -43,8 +43,9 @@ MAX_RECENCY_DAYS = 365
 #: The `activity/{doc_id}` fields `get_activity_record` returns.
 FIELDS = (
     "doc_id", "name", "industry", "pipeline_stage", "profile_url", "updated_at", "recency_days", "last_activity",
-    "suggested_message", "suggested_message_updated_at", "suggested_message_sent_at", "errors", "posts", "comments",
-    "reactions", "profile_changes", "unknown_before", "last_liked_at", "my_comment", "last_commented_at",
+    "last_post_at", "suggested_message", "suggested_message_updated_at", "suggested_message_sent_at", "errors", "posts", "comments",
+    "reactions", "profile_changes", "profile_changed_at", "unknown_before", "last_liked_at", "my_comment",
+    "last_commented_at",
 )
 COUNTED = ("posts", "comments", "reactions", "profile_changes")
 
@@ -122,16 +123,20 @@ def get_contact_activity(
         doc.update(updated_at=now if fixed_now else _utcnow(), recency_days=days)
         previous = stored[contact["doc_id"]]
         doc["last_activity"] = _latest(doc.pop("_dates"), previous.get("last_activity"))
+        if "last_post_at" in doc:  # posts were read; an empty read keeps the stored date
+            doc["last_post_at"] = _latest([doc["last_post_at"]], previous.get("last_post_at"))
         if not previous or doc["last_activity"] != previous.get("last_activity"):
             doc["suggested_message"] = None  # created empty; a draft is stale once newer activity appears
         if "my_comment" not in previous:
             doc["my_comment"] = {}  # provisioned once; only save_my_comment writes it
+        if "profile_changes" in doc:  # the profile was read
+            doc["profile_changed_at"] = _changed_at(doc["profile_changes"], previous, doc["updated_at"])
         activity.document(contact["doc_id"]).set(doc, merge=True)  # kinds not checked keep their values
         checked += 1
         if doc.get("posts") or doc.get("comments") or doc.get("reactions") or doc.get("profile_changes"):
             rows.append({key: doc.get(key) for key in (
-                "doc_id", "name", "industry", "pipeline_stage", "profile_url", "last_activity",
-                "posts", "comments", "reactions", "profile_changes",
+                "doc_id", "name", "industry", "pipeline_stage", "profile_url", "last_activity", "last_post_at",
+                "posts", "comments", "reactions", "profile_changes", "profile_changed_at",
             )})
 
     rows.sort(key=lambda row: (row["last_activity"] is not None, row["last_activity"]), reverse=True)
@@ -158,8 +163,8 @@ def activity_summary(
     cutoff = (now or _utcnow()) - timedelta(days=freshness)
     # One range filter; the draft test runs here, as a second filter would need a composite index.
     query = db.collection(ACTIVITY_COLLECTION).where(filter=FieldFilter("last_activity", ">=", cutoff)).select(
-        ["name", "last_activity", "updated_at", "suggested_message", "suggested_message_updated_at",
-         "suggested_message_sent_at", "my_comment", *COUNTED]
+        ["name", "last_activity", "last_post_at", "updated_at", "suggested_message", "suggested_message_updated_at",
+         "suggested_message_sent_at", "my_comment", "profile_changed_at", *COUNTED]
     )
     rows = []
     for snapshot in query.stream():
@@ -171,8 +176,8 @@ def activity_summary(
         if not draft and changed is not None and changed >= data["last_activity"]:
             continue  # cleared or sent after this activity
         row = {"doc_id": snapshot.id, "name": data.get("name"), "last_activity": data.get("last_activity"),
-               "updated_at": data.get("updated_at"), **{kind: len(data.get(kind) or []) for kind in COUNTED},
-               "suggested_message_updated_at": changed, "suggested_message_sent_at": data.get("suggested_message_sent_at")}
+               "last_post_at": data.get("last_post_at"), "updated_at": data.get("updated_at"), **{kind: len(data.get(kind) or []) for kind in COUNTED},
+               "profile_changed_at": data.get("profile_changed_at"), "suggested_message_updated_at": changed, "suggested_message_sent_at": data.get("suggested_message_sent_at")}
         mine = data.get("my_comment") or {}
         row.update(my_comment_text=mine.get("text"), my_comment_mode=mine.get("mode"),
                    my_comment_date=mine.get("posted_at") if mine.get("mode") == "posted" else mine.get("drafted_at"))
@@ -313,11 +318,12 @@ def _audience(db, client, industries: list[str]) -> list[dict]:
 
 
 def _stored(db, activity, audience: list[dict]) -> dict[str, dict]:
-    """`updated_at`, `last_activity` and `my_comment` of each audience contact's `activity` document ({} if none)."""
+    """The fields a check builds on, from each audience contact's `activity` document ({} if none)."""
     stored = {c["doc_id"]: {} for c in audience}
     if audience:
         refs = [activity.document(c["doc_id"]) for c in audience]
-        for snapshot in db.get_all(refs, field_paths=["updated_at", "last_activity", "my_comment"]):
+        fields = ["updated_at", "last_activity", "last_post_at", "my_comment", "profile_changes", "profile_changed_at"]
+        for snapshot in db.get_all(refs, field_paths=fields):
             if snapshot.exists:
                 stored[snapshot.id] = snapshot.to_dict() or {}
     return stored
@@ -334,7 +340,9 @@ def _check(db, client, contact: dict, kinds: list[str], cutoff: datetime, state:
     if "posts" in kinds:
         posts = _read(client, doc, "posts", lambda: client.users.iter_posts(pid, page_size=POSTS_PAGE, max_pages=1))
         if posts is not None:
-            doc["_dates"] += [p.action_date for p in posts if p.action_date]
+            dated = [p.action_date for p in posts if p.action_date]
+            doc["_dates"] += dated
+            doc["last_post_at"] = max(dated, default=None)  # newest seen, in the window or not
             recent = sorted((p for p in posts if p.action_date and p.action_date >= cutoff),
                             key=lambda p: p.action_date, reverse=True)[:items]
             doc["posts"] = [
@@ -468,6 +476,19 @@ def _norm(value) -> str | None:
     """Whitespace-collapsed text, so line-ending differences are not changes."""
     text = " ".join(str(value).split()) if value is not None else ""
     return text or None
+
+
+def _changed_at(changes: list[dict], previous: dict, now: datetime) -> datetime | None:
+    """The check that first found the current profile changes; `None` when there are none.
+
+    LinkedIn dates none of them. A field this check skipped (withheld) is no new change; a record
+    from before this field keeps its last check."""
+    found = {(c["field"], c["after"]) for c in changes}
+    if not found:
+        return None
+    if found - {(c.get("field"), c.get("after")) for c in previous.get("profile_changes") or []}:
+        return now
+    return previous.get("profile_changed_at") or previous.get("updated_at")
 
 
 def _latest(dates: list[datetime], previous: datetime | None) -> datetime | None:

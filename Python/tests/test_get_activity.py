@@ -133,6 +133,7 @@ def test_the_newest_five_of_each_kind_are_kept_with_the_post_they_were_on():
     assert [r["post"]["text"] for r in stored["reactions"]] == ["Post x2", "Post y1", "Post y2", "Post y3", "Post y4"]
     assert client.users.post_calls == ["x1", "x2", "x3", "x4", "y1", "y2", "y3", "y4"]  # each post read once
     assert stored["last_activity"] == NOW - timedelta(hours=1)  # the newest comment
+    assert stored["last_post_at"] == NOW - timedelta(hours=2)  # a repost counts, dated when reposted
 
 
 def test_doc_ids_recheck_exactly_those_contacts_in_order():
@@ -274,6 +275,51 @@ def test_the_summary_shows_my_comment_text_mode_and_date():
     assert tuple(rows["ann"][f] for f in fields) == ("Draft note", "draft", NOW)
     assert tuple(rows["bob"][f] for f in fields) == ("Posted note", "posted", NOW)
     assert tuple(rows["cat"][f] for f in fields) == (None, None, None)
+
+
+def test_last_post_at_is_the_newest_post_seen_even_outside_the_window():
+    db, client = _setup()
+    cat = provider_id_of("cat")
+    client.users.posts[cat] = [post("old", NOW - timedelta(days=40)), post("older", NOW - timedelta(days=60))]
+
+    def check(kinds="posts"):
+        get_activity.get_contact_activity(db, client, type=kinds, industries=TARGETS, doc_ids=["cat"], like=False,
+                                          now=NOW)
+        return _doc(db, "cat")
+
+    stored = check()
+    assert stored["posts"] == [] and stored["last_post_at"] == NOW - timedelta(days=40)
+    client.users.posts[cat] = []
+    assert check()["last_post_at"] == NOW - timedelta(days=40)  # an empty read keeps it
+    assert check("reactions")["last_post_at"] == NOW - timedelta(days=40)  # posts not read: kept
+    row = next(r for r in get_activity.activity_summary(db, freshness=60, now=NOW) if r["doc_id"] == "cat")
+    assert row["last_post_at"] == NOW - timedelta(days=40)
+
+
+def test_profile_changed_at_is_the_check_that_first_found_the_current_changes():
+    db, client = _setup()
+    ann, cat = provider_id_of("ann"), provider_id_of("cat")
+    for slug in ("ann", "cat"):
+        db.collection("extracted").document(slug).set({"occupation": "Biller"})
+    client.users.profiles[cat] = profile("cat", cat, headline="Coder")
+    db.collection("activity").document("cat").update(  # found by a check before the field existed
+        {"profile_changes": [{"field": "headline", "before": "Biller", "after": "Coder"}]})
+    day = [NOW + timedelta(days=n) for n in range(5)]
+
+    def check(when, headline, kinds="profile"):
+        client.users.profiles[ann] = profile("ann", ann, headline=headline)
+        get_activity.get_contact_activity(db, client, type=kinds, industries=TARGETS, doc_ids=["ann", "cat"],
+                                          like=False, now=when)
+        return _doc(db, "ann").get("profile_changed_at")
+
+    assert check(day[0], "RCM Director") == day[0]  # first found
+    assert _doc(db, "cat")["profile_changed_at"] == NOW - timedelta(days=9)  # its earlier check
+    assert check(day[1], "RCM Director") == day[0]  # the same change: kept
+    assert check(day[2], "VP RCM") == day[2]  # a new value
+    assert check(day[3], "Biller", kinds="posts") == day[2]  # profile not read: kept
+    assert check(day[4], "Biller") is None  # no changes left
+    row = next(r for r in get_activity.activity_summary(db, freshness=60, now=day[4]) if r["doc_id"] == "cat")
+    assert row["profile_changed_at"] == NOW - timedelta(days=9)
 
 
 def test_the_daily_allowance_counts_checks_in_the_last_24_hours():
