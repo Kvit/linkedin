@@ -183,7 +183,7 @@ READ_TOOLS = frozenset({
 #: `send_follow_up` and `send_reply`, MCP v2).
 AGENT_WRITE_TOOLS = frozenset({
     "send_follow_up", "send_reply", "cancel_queued", "set_handling", "ask_user", "mark_decision_applied",
-    "update_suggested_message",
+    "update_suggested_message", "comment_on_post",
 })
 
 #: The human-side tools (task 2g; `clear_handling` by ruling P2-25): only ever
@@ -202,8 +202,8 @@ PROCESS_TOOLS = frozenset({
 
 @pytest.mark.anyio
 async def test_tool_set_is_exact(env, fake_db):
-    """The service exposes exactly thirty-two tools: `get_status` and ten
-    read-only tools, seven agent-side write tools, eight human-side tools and
+    """The service exposes exactly thirty-three tools: `get_status` and ten
+    read-only tools, eight agent-side write tools, eight human-side tools and
     the six process steps (MCP v2, `send_messages`, `contact_report` since
     2026-09-15, and the three activity tools since 2026-09-19). Ledger ruling P2-11: this pins the
     exact set, so a task adding a tool has to change this line and justify
@@ -212,7 +212,7 @@ async def test_tool_set_is_exact(env, fake_db):
     async with Client(mcp_server.mcp) as client:
         tools = await client.list_tools()
     assert {tool.name for tool in tools} == READ_TOOLS | AGENT_WRITE_TOOLS | HUMAN_TOOLS | PROCESS_TOOLS
-    assert len(tools) == 32
+    assert len(tools) == 33
     assert all(tool.description for tool in tools), "every tool's docstring is what the agent reads"
 
 
@@ -1961,3 +1961,19 @@ async def test_update_suggested_message_sets_and_clears_the_draft(env, fake_db):
     }
     assert not fake_db.collection("activity").document("nobody").get().exists
     assert (await call_tool("update_suggested_message", {"doc_id": "ann", "text": "x" * 1201}))["reason"] == "invalid"
+
+
+@pytest.mark.anyio
+async def test_comment_on_post_saves_a_draft_and_refuses_bad_input(env, fake_db):
+    _seed_activity(fake_db, "ann", days_ago=1, posts=[
+        {"post_id": "own", "is_repost": False, "text": "Their post", "share_url": "https://li/own"},
+    ])
+
+    drafted = await call_tool("comment_on_post", {"doc_id": "ann", "post_id": "own", "text": "Well said."})
+
+    assert (drafted["ok"], drafted["mode"], drafted["my_comment"]["text"]) == (True, "draft", "Well said.")
+    assert fake_db.collection("activity").document("ann").get().to_dict()["my_comment"]["mode"] == "draft"
+    loud = {"doc_id": "ann", "post_id": "own", "text": "x", "mode": "loud"}
+    assert (await call_tool("comment_on_post", loud))["reason"] == "invalid"
+    assert (await call_tool("comment_on_post", {"doc_id": "ann", "post_id": "nope", "text": "x"}))["reason"] == "invalid"
+    assert (await call_tool("comment_on_post", {"doc_id": "nobody", "post_id": "own", "text": "x"}))["reason"] == "not_found"

@@ -65,6 +65,8 @@ class UnipileSettings(BaseConfig):
     activity_items_per_kind: int = 5
     #: Likes `lib.get_activity` sends per rolling 24 h (one per contact per check, own posts only).
     max_reactions_per_day: int = 20
+    #: Comments posted per rolling 24 h through `lib.get_activity.save_my_comment` in live mode.
+    max_comments_per_day: int = 10
 
     # Pacing. A person opening one profile, reading it and moving on takes far
     # longer than a script needs to, so every budgeted call waits first. See

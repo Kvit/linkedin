@@ -383,6 +383,10 @@ class Post(UnipileModel):
         return self.permissions.get("can_react", True) is not False
 
     @property
+    def can_comment(self) -> bool:
+        return self.permissions.get("can_post_comments", True) is not False
+
+    @property
     def display_text(self) -> str:
         """The text, or what the post holds when it has none, e.g. "[image]"."""
         if self.text:
@@ -430,6 +434,12 @@ class Reaction(UnipileModel):
         if not (self.post_id or "").isdigit():
             return None
         return datetime.fromtimestamp((int(self.post_id) >> 22) / 1000, tz=UTC)
+
+
+class CommentSent(UnipileModel):
+    """Response to ``POST /posts/{social_id}/comments``."""
+
+    comment_id: str | None = None
 
 
 class InvitationSentResult(UnipileModel):

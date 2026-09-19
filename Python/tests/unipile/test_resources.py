@@ -32,7 +32,7 @@ class RecordingBudget(SendBudget):
     def __init__(self, limits=None, **kwargs):
         super().__init__(
             account_id=ACCOUNT,
-            limits=limits or {"invite": 5, "message": 5, "profile": 5, "reaction": 5},
+            limits=limits or {"invite": 5, "message": 5, "profile": 5, "reaction": 5, "comment": 5},
             cadence=HumanCadence(
                 0.0, 0.0, long_pause_every=0, long_pause_min=0.0, long_pause_max=0.0
             ),
@@ -577,6 +577,19 @@ def test_react_to_post_sends_a_like_and_charges_the_budget(users, budget):
     assert _json.loads(route.calls[0].request.content) == {
         "account_id": ACCOUNT, "post_id": "urn:li:activity:7506761988874616833", "reaction_type": "like",
     }
+
+
+@respx.mock
+def test_comment_on_post_posts_multipart_and_charges_the_budget(users, budget):
+    route = respx.post(f"{BASE}/api/v1/posts/urn:li:activity:7506761988874616833/comments").mock(
+        return_value=httpx.Response(201, json={"object": "CommentSent", "comment_id": "c-9"})
+    )
+
+    comment_id = users.comment_on_post("urn:li:activity:7506761988874616833", "Well said.")
+
+    assert comment_id == "c-9"
+    assert budget.calls == ["check:comment", "throttle", "record:comment"]
+    assert b'name="text"' in route.calls[0].request.content and b"Well said." in route.calls[0].request.content
 
 
 @respx.mock

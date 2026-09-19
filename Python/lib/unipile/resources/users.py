@@ -9,6 +9,7 @@ from ..budget import SendBudget
 from ..errors import ProfileIncomplete, ThrottleLockout
 from ..models import (
     Comment,
+    CommentSent,
     InvitationSentResult,
     Post,
     Profile,
@@ -208,6 +209,15 @@ class UsersResource:
             "account_id": self._account_id(), "post_id": post_id, "reaction_type": reaction_type,
         })
         self._budget.record("reaction")
+
+    def comment_on_post(self, social_id: str, text: str) -> str | None:
+        """Comment on a post by its `social_id`; budgeted and paced like a message. Returns the comment id."""
+        self._budget.check("comment")
+        self._budget.throttle()
+        body = self._transport.post_form(f"/api/v1/posts/{social_id}/comments",
+                                         data={"account_id": self._account_id(), "text": text})
+        self._budget.record("comment")
+        return CommentSent.model_validate(body).comment_id
 
     def get_post(self, post_id: str) -> Post:
         """One post (``GET /posts/{id}``, kept with the activity reads)."""

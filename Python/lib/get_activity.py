@@ -44,9 +44,12 @@ MAX_RECENCY_DAYS = 365
 FIELDS = (
     "doc_id", "name", "industry", "pipeline_stage", "profile_url", "updated_at", "recency_days", "last_activity",
     "suggested_message", "suggested_message_updated_at", "suggested_message_sent_at", "errors", "posts", "comments",
-    "reactions", "profile_changes", "unknown_before", "last_liked_at",
+    "reactions", "profile_changes", "unknown_before", "last_liked_at", "my_comment", "last_commented_at",
 )
 COUNTED = ("posts", "comments", "reactions", "profile_changes")
+
+#: LinkedIn's own limit on a comment's length.
+COMMENT_MAX_CHARS = 1250
 
 #: Stages never crawled (the user's rule, 2026-09-19).
 SKIPPED_STAGES = frozenset({"soft_no", "reject", "not_relevant"})
@@ -121,6 +124,8 @@ def get_contact_activity(
         doc["last_activity"] = _latest(doc.pop("_dates"), previous.get("last_activity"))
         if not previous or doc["last_activity"] != previous.get("last_activity"):
             doc["suggested_message"] = None  # created empty; a draft is stale once newer activity appears
+        if "my_comment" not in previous:
+            doc["my_comment"] = {}  # provisioned once; only save_my_comment writes it
         activity.document(contact["doc_id"]).set(doc, merge=True)  # kinds not checked keep their values
         checked += 1
         if doc.get("posts") or doc.get("comments") or doc.get("reactions") or doc.get("profile_changes"):
@@ -154,7 +159,7 @@ def activity_summary(
     # One range filter; the draft test runs here, as a second filter would need a composite index.
     query = db.collection(ACTIVITY_COLLECTION).where(filter=FieldFilter("last_activity", ">=", cutoff)).select(
         ["name", "last_activity", "updated_at", "suggested_message", "suggested_message_updated_at",
-         "suggested_message_sent_at", *COUNTED]
+         "suggested_message_sent_at", "my_comment", *COUNTED]
     )
     rows = []
     for snapshot in query.stream():
@@ -168,6 +173,9 @@ def activity_summary(
         row = {"doc_id": snapshot.id, "name": data.get("name"), "last_activity": data.get("last_activity"),
                "updated_at": data.get("updated_at"), **{kind: len(data.get(kind) or []) for kind in COUNTED},
                "suggested_message_updated_at": changed, "suggested_message_sent_at": data.get("suggested_message_sent_at")}
+        mine = data.get("my_comment") or {}
+        row.update(my_comment_text=mine.get("text"), my_comment_mode=mine.get("mode"),
+                   my_comment_date=mine.get("posted_at") if mine.get("mode") == "posted" else mine.get("drafted_at"))
         if draft:
             row["suggested_message"] = draft
         rows.append(row)
@@ -181,6 +189,8 @@ def get_activity_record(db, doc_id: str) -> dict | None:
     if not snapshot.exists:
         return None
     data = {**(snapshot.to_dict() or {}), "doc_id": doc_id}
+    for row in data.get("posts") or []:
+        row.setdefault("post_id", _post_ref(row))  # rows crawled before `post_id` was stored
     return {key: data[key] for key in FIELDS if key in data}
 
 
@@ -202,6 +212,60 @@ def mark_suggested_message_sent(db, doc_id: str, now: datetime | None = None) ->
     reference.update({"suggested_message": None, "suggested_message_updated_at": now,
                       "suggested_message_sent_at": now})
     return True
+
+
+def save_my_comment(db, client, doc_id: str, post_id: str, text: str, *, live: bool = False,
+                    now: datetime | None = None) -> dict | None:
+    """Draft my comment on one of the contact's own posts, or post it on LinkedIn (`live`).
+
+    Returns the stored `my_comment`, or `None` when the contact has no record. Raises `ValueError` for a post
+    not in the record, a repost, blank or over-long text, or a post already commented on. In live mode an
+    empty `text` posts the saved draft; LinkedIn errors and `BudgetExhausted` propagate and nothing is written.
+    """
+    reference = db.collection(ACTIVITY_COLLECTION).document(doc_id)
+    snapshot = reference.get()
+    if not snapshot.exists:
+        return None
+    record = snapshot.to_dict() or {}
+    row = next((p for p in record.get("posts") or [] if post_id in (p.get("post_id"), _post_ref(p))), None)
+    if row is None:
+        raise ValueError(f"post {post_id} is not among this contact's stored posts")
+    if row.get("is_repost"):
+        raise ValueError("that post is a repost; comments go only on the contact's own posts")
+    mine = record.get("my_comment") or {}
+    same_post = mine.get("post_id") == post_id
+    if same_post and mine.get("mode") == "posted":
+        raise ValueError("a comment is already posted on that post")
+    text = text.strip() or (mine.get("text") or "" if live and same_post else "")
+    if not text:
+        raise ValueError("comment text is blank")
+    if len(text) > COMMENT_MAX_CHARS:
+        raise ValueError(f"comment is longer than {COMMENT_MAX_CHARS} characters")
+    now = now or _utcnow()
+    comment = {"post_id": post_id, "post_text": row.get("text"), "post_url": row.get("share_url"), "text": text,
+               "mode": "draft", "drafted_at": now, "posted_at": None, "comment_id": None}
+    if not live:
+        reference.update({"my_comment": comment})
+        return comment
+    if same_post and mine.get("drafted_at"):
+        comment["drafted_at"] = mine["drafted_at"]  # keep when the draft was written
+    post = client.users.get_post(_post_ref(row))  # the current social id and permissions
+    if not post.social_id or not post.can_comment:
+        raise ValueError("LinkedIn does not allow comments on that post")
+    since = now - timedelta(hours=24)
+    posted = db.collection(ACTIVITY_COLLECTION).where(filter=FieldFilter("last_commented_at", ">=", since))
+    client.budget.reconcile(comment=int(posted.count().get()[0][0].value))
+    comment.update(mode="posted", posted_at=now, comment_id=client.users.comment_on_post(post.social_id, text))
+    reference.update({"my_comment": comment, "last_commented_at": now})
+    return comment
+
+
+def _post_ref(row: dict) -> str | None:
+    """The id `GET /posts/{id}` takes for a stored post row: a ugcPost needs its URN (per the API docs)."""
+    match = re.search(r"(activity|ugcPost)-(\d{15,})", row.get("share_url") or "")  # not a number in the slug
+    if match:
+        return match.group(2) if match.group(1) == "activity" else f"urn:li:ugcPost:{match.group(2)}"
+    return row.get("post_id")
 
 
 def _utcnow() -> datetime:
@@ -249,11 +313,11 @@ def _audience(db, client, industries: list[str]) -> list[dict]:
 
 
 def _stored(db, activity, audience: list[dict]) -> dict[str, dict]:
-    """`updated_at` and `last_activity` of each audience contact's `activity` document ({} if none)."""
+    """`updated_at`, `last_activity` and `my_comment` of each audience contact's `activity` document ({} if none)."""
     stored = {c["doc_id"]: {} for c in audience}
     if audience:
         refs = [activity.document(c["doc_id"]) for c in audience]
-        for snapshot in db.get_all(refs, field_paths=["updated_at", "last_activity"]):
+        for snapshot in db.get_all(refs, field_paths=["updated_at", "last_activity", "my_comment"]):
             if snapshot.exists:
                 stored[snapshot.id] = snapshot.to_dict() or {}
     return stored
@@ -274,7 +338,8 @@ def _check(db, client, contact: dict, kinds: list[str], cutoff: datetime, state:
             recent = sorted((p for p in posts if p.action_date and p.action_date >= cutoff),
                             key=lambda p: p.action_date, reverse=True)[:items]
             doc["posts"] = [
-                {"date": p.action_date, "text": _text(p.display_text), "share_url": _clean_url(p.share_url),
+                {"post_id": p.id, "date": p.action_date, "text": _text(p.display_text),
+                 "share_url": _clean_url(p.share_url),
                  "author": _text(p.author.name if p.author else None), "reactions": p.reaction_counter,
                  "comments": p.comment_counter, "is_repost": p.is_repost, "liked_at": None}
                 for p in recent

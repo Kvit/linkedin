@@ -77,6 +77,7 @@ def test_a_crawl_checks_never_checked_contacts_first_and_stores_recent_activity(
     client.users.profiles[bob] = profile("bob", bob, headline="Pathologist", location="Boise", summary="New about",
                                          work_experience=[{"position": "Pathologist", "company": "Lab Co"}])
     client.users.profiles[cat] = profile("cat", cat, headline="Coder")
+    db.collection("activity").document("cat").update({"my_comment": {"text": "kept"}})
 
     found = get_activity.get_contact_activity(db, client, industries=TARGETS, limit=3, now=NOW)
 
@@ -90,6 +91,8 @@ def test_a_crawl_checks_never_checked_contacts_first_and_stores_recent_activity(
     assert stored["updated_at"] == NOW and stored["name"] == "Ann Doe"
     assert [p["text"] for p in stored["posts"]] == ["Recent post"]
     assert stored["posts"][0]["share_url"] == "https://li/p-new"  # tracking query dropped
+    assert stored["posts"][0]["post_id"] == "p-new" and stored["my_comment"] == {}  # provisioned empty
+    assert _doc(db, "cat")["my_comment"] == {"text": "kept"}  # never touched once present
     assert [c["text"] for c in stored["comments"]] == ["Recent comment"]
     assert stored["comments"][0]["post"] == {
         "author": "Kim Lee", "text": "The post", "url": "https://li/post-of-c-new", "date": NOW - timedelta(days=2),
@@ -213,6 +216,64 @@ def test_suggested_message_is_cleared_only_when_last_activity_advances():
     assert _doc(db, "ann")["suggested_message"] is None  # first check: the field exists, empty
     assert _doc(db, "cat")["suggested_message"] is None
     assert _doc(db, "dan")["suggested_message"] == "Draft for dan"
+
+
+def test_my_comment_is_drafted_then_posted_on_the_contacts_own_post():
+    db, client = _setup()
+    client.users.posts[provider_id_of("ann")] = [
+        post("own", NOW - timedelta(days=1)), post("rp", NOW - timedelta(days=9), reposted_at=NOW - timedelta(hours=1)),
+    ]
+    get_activity.get_contact_activity(db, client, type="posts", industries=TARGETS, doc_ids=["ann"], like=False, now=NOW)
+    client.users.posts_by_id["own"] = post("own", NOW - timedelta(days=1))
+    later = NOW + timedelta(minutes=5)
+
+    drafted = get_activity.save_my_comment(db, client, "ann", "own", " Well said. ", now=NOW)
+    assert (drafted["mode"], drafted["text"], client.users.commented) == ("draft", "Well said.", [])
+    posted = get_activity.save_my_comment(db, client, "ann", "own", "", live=True, now=later)  # posts the draft
+
+    assert client.users.commented == [("urn:li:activity:own", "Well said.")]
+    stored = _doc(db, "ann")
+    assert stored["my_comment"] == posted == {
+        "post_id": "own", "post_text": "A post", "post_url": "https://li/own", "text": "Well said.",
+        "mode": "posted", "drafted_at": NOW, "posted_at": later, "comment_id": "comment-1",
+    }
+    assert stored["last_commented_at"] == later
+    for post_id, text, live in (("rp", "Hi", False), ("nope", "Hi", False), ("own", "x" * 1251, False),
+                                ("own", "  ", False), ("own", "Again", True)):
+        with pytest.raises(ValueError):  # repost, unknown post, too long, blank, already posted
+            get_activity.save_my_comment(db, client, "ann", post_id, text, live=live, now=NOW)
+    assert get_activity.save_my_comment(db, client, "nobody", "own", "Hi", now=NOW) is None
+
+
+def test_older_post_rows_get_their_id_from_the_link():
+    db = FakeFirestore()
+    db.collection("activity").document("ann").set({"posts": [  # crawled before rows stored `post_id`
+        {"share_url": "https://www.linkedin.com/posts/pat_physical-activity-2026-plan-activity-7506012621213691905-To2m"},
+        {"share_url": "https://www.linkedin.com/posts/pat_team-ugcPost-7503136829458747392-teU9"},
+    ]})
+
+    record = get_activity.get_activity_record(db, "ann")
+
+    assert [p["post_id"] for p in record["posts"]] == ["7506012621213691905", "urn:li:ugcPost:7503136829458747392"]
+
+
+def test_the_summary_shows_my_comment_text_mode_and_date():
+    db = FakeFirestore()
+    activity = db.collection("activity")
+    activity.document("ann").set({"name": "Ann", "last_activity": NOW - timedelta(days=1), "updated_at": NOW,
+                                  "my_comment": {"text": "Draft note", "mode": "draft", "drafted_at": NOW}})
+    activity.document("bob").set({"name": "Bob", "last_activity": NOW - timedelta(days=2), "updated_at": NOW,
+                                  "my_comment": {"text": "Posted note", "mode": "posted",
+                                                 "drafted_at": NOW - timedelta(hours=1), "posted_at": NOW}})
+    activity.document("cat").set({"name": "Cat", "last_activity": NOW - timedelta(days=3), "updated_at": NOW,
+                                  "my_comment": {}})
+
+    rows = {row["doc_id"]: row for row in get_activity.activity_summary(db, now=NOW)}
+
+    fields = ("my_comment_text", "my_comment_mode", "my_comment_date")
+    assert tuple(rows["ann"][f] for f in fields) == ("Draft note", "draft", NOW)
+    assert tuple(rows["bob"][f] for f in fields) == ("Posted note", "posted", NOW)
+    assert tuple(rows["cat"][f] for f in fields) == (None, None, None)
 
 
 def test_the_daily_allowance_counts_checks_in_the_last_24_hours():

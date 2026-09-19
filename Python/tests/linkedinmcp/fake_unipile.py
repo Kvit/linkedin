@@ -6,7 +6,8 @@ job test file shares.
 `messaging.send_message`, `messaging.start_chat`, `messaging.iter_chats`,
 `messaging.get_chat`, `messaging.count_messages_sent_since`,
 `users.iter_relations`,
-`users.get_profile`, `users.iter_posts` / `iter_comments` / `iter_reactions` / `get_post`,
+`users.get_profile`, `users.iter_posts` / `iter_comments` / `iter_reactions` / `get_post` /
+`comment_on_post`,
 `budget.throttle`, `users.react_to_post`, `budget.reconcile` / `budget.remaining` /
 `budget.used`, and `writes_blocked` -- plus `messaging.iter_all_messages`,
 the one read the REAL `messages_sync.forward_pass` makes, for the
@@ -235,6 +236,7 @@ class FakeUsers:
         self.activity_calls: list[tuple] = []
         self.read_errors: dict[tuple[str, str], BaseException] = {}
         self.posts_by_id: dict[str, Post] = {}  # what `get_post` finds
+        self.commented: list[tuple[str, str]] = []  # `comment_on_post` calls: (social id, text)
         self.post_calls: list[str] = []
         self.liked: list[str] = []  # `react_to_post` calls, by social id
 
@@ -279,6 +281,15 @@ class FakeUsers:
         self.liked.append(post_id)
         budget.record("reaction")
 
+    def comment_on_post(self, social_id, text) -> str:
+        """Charged like the real client: `check` raises `BudgetExhausted` at the cap."""
+        budget = self._client.budget
+        if budget.remaining("comment") <= 0:
+            raise unipile_errors.BudgetExhausted(type="local/budget_exhausted", title="comment budget spent")
+        self.commented.append((social_id, text))
+        budget.record("comment")
+        return f"comment-{len(self.commented)}"
+
     def get_post(self, post_id) -> Post:
         self.post_calls.append(post_id)
         error = self.read_errors.get(("get_post", post_id))
@@ -302,12 +313,13 @@ class FakeUnipile:
 
     def __init__(
         self, *, chats=(), relations=(), sent_24h: int = 0, message_limit: int = 50, profile_limit: int = 250,
-        reaction_limit: int = 20,
+        reaction_limit: int = 20, comment_limit: int = 10,
     ) -> None:
         self.writes_blocked = False
         self.messaging = FakeMessaging(self, chats=chats, sent_24h=sent_24h)
         self.users = FakeUsers(self, relations)
-        self.budget = FakeBudget({"message": message_limit, "profile": profile_limit, "reaction": reaction_limit})
+        self.budget = FakeBudget({"message": message_limit, "profile": profile_limit, "reaction": reaction_limit,
+                                  "comment": comment_limit})
         self.settings = SimpleNamespace(max_activity_checks_per_day=100, activity_items_per_kind=5)
         self.closed = False
 
