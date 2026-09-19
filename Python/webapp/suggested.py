@@ -8,8 +8,10 @@ Design: the spec's correction 10. The list and the page read
 `suggested_message_updated_at`. Send is the Contact screen's
 `compose.send_now`, tagged `activity` too; once LinkedIn accepts it,
 `mark_suggested_message_sent` clears the draft and sets
-`suggested_message_sent_at`. Under the box, two tabs: what they did, and
-the conversation as the Contact screen shows it.
+`suggested_message_sent_at`, and the page shows the sent message locked
+until a newer draft arrives. Save, Clear and Send all return to the page.
+Under the box, two tabs: what they did, and the conversation as the
+Contact screen shows it.
 """
 
 import asyncio
@@ -25,7 +27,7 @@ from pydantic import BaseModel
 
 import pipeline
 from lib import get_activity
-from linkedinmcp import clients, clock, contacts as reads
+from linkedinmcp import clients, clock, contacts as reads, queue
 from webapp import compose, contacts as contact_screen, projection, render, routine
 
 logger = logging.getLogger(__name__)
@@ -33,7 +35,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 #: The tags a message sent from here carries, and `messages.tags` after a sync.
-TAGS = (compose.TAG, "activity")
+TAG = "activity"
+TAGS = (compose.TAG, TAG)
 
 #: The frame columns the page's side shows; `None` for a contact the frame lacks.
 FACTS = (
@@ -115,20 +118,32 @@ def rework_prompt(contact: dict, conversation: dict | None, record: dict, draft:
     )
 
 
-def _name(request: Request, doc_id: str) -> str:
-    listed = projection.contact_row(request.app.state.contacts.frame, doc_id)
-    return (listed or {}).get("name") or doc_id
+def _notice(params) -> str:
+    """The line a Send, Clear or Save leaves on the page, read from its redirect."""
+    at = {name: params.get(name, "") for name in ("sent", "cleared", "saved")}
+    at = {name: value for name, value in at.items() if re.fullmatch(r"\d{2}:\d{2}", value)}
+    if "sent" in at:
+        return f"Sent at {at['sent']}. {contact_screen.SYNC_NOTES.get(params.get('sync'), '')}".strip()
+    if "cleared" in at:
+        return f"Draft cleared at {at['cleared']}."
+    return f"Saved at {at['saved']}." if "saved" in at else ""
 
 
-def _list_notice(request: Request) -> str:
-    """The line a Send or Clear leaves on the list, read from its redirect."""
-    params = request.query_params
-    if re.fullmatch(r"\d{2}:\d{2}", params.get("sent", "")) and params.get("to"):
-        sync = contact_screen.SYNC_NOTES.get(params.get("sync"), "")
-        return f"Sent to {_name(request, params['to'])} at {params['sent']}. {sync}".strip()
-    if params.get("cleared"):
-        return f"Draft for {_name(request, params['cleared'])} cleared."
-    return ""
+def _back(doc_id: str, **notice) -> RedirectResponse:
+    """Back to the page, carrying what the write did."""
+    return RedirectResponse(f"/suggested/{quote(doc_id, safe='')}?{urlencode(notice)}", status_code=303)
+
+
+def _hhmm(request: Request, value) -> str:
+    return render.local(value, request.app.state.outreach.tz)[11:]
+
+
+def _sent_text(db, doc_id: str) -> str | None:
+    """The newest message sent from this screen: the text of its `activity`-tagged queue item."""
+    return next((
+        item.get("text") for item in queue.items_for_contact(db, doc_id)
+        if item.get("kind") == queue.MANUAL and TAG in (item.get("tags") or []) and item.get("status") == queue.SENT
+    ), None)
 
 
 @router.get("/suggested")
@@ -142,20 +157,20 @@ def suggested_list(request: Request, days: int = 15):
     for row in rows:
         row["stage"] = (projection.contact_row(frame, row["doc_id"]) or {}).get("pipeline_stage")
     return render.templates.TemplateResponse(
-        request, "suggested.html", render.page_context(request, rows=rows, days=days, notice=_list_notice(request))
+        request, "suggested.html", render.page_context(request, rows=rows, days=days)
     )
 
 
 @router.get("/suggested/{doc_id}")
 def suggested_contact(request: Request, doc_id: str):
-    saved = request.query_params.get("saved", "")
-    return render_suggested(request, doc_id, notice=f"Saved at {saved}." if re.fullmatch(r"\d{2}:\d{2}", saved) else "")
+    return render_suggested(request, doc_id, notice=_notice(request.query_params))
 
 
 def render_suggested(request: Request, doc_id: str, *, notice: str = "", box: dict | None = None):
     """The review page. `box` is the message box after a refused Save or
     Send: its `text`, and `refusal`, `warnings` or `open_item`. Every render
-    carries a new send token."""
+    carries a new send token. Once a draft is sent, and until a newer one is
+    stored, the box is the sent message, locked."""
     db = clients.firestore_client()
     record = get_activity.get_activity_record(db, doc_id)
     if record is None:
@@ -163,10 +178,13 @@ def render_suggested(request: Request, doc_id: str, *, notice: str = "", box: di
     record = {**dict.fromkeys(get_activity.FIELDS), **record}
     listed = projection.contact_row(request.app.state.contacts.frame, doc_id)
     saved = record["suggested_message"] or ""
+    sent_at, changed = record["suggested_message_sent_at"], record["suggested_message_updated_at"]
+    locked = sent_at is not None and not saved and (changed is None or changed <= sent_at)
     return render.templates.TemplateResponse(
         request, "suggested_contact.html",
         render.page_context(
             request, record=record, contact={key: (listed or {}).get(key) for key in FACTS}, saved=saved,
+            locked=locked, sent_text=_sent_text(db, doc_id) if locked else None,
             items=activity_items(record), **contact_screen.conversation_context(db, doc_id), notice=notice,
             max_chars=request.app.state.outreach.message_max_chars,
             compose={"text": saved, "refusal": None, "warnings": [], "open_item": None, **(box or {}),
@@ -189,16 +207,17 @@ def save(request: Request, doc_id: str, text: Annotated[str, Form()] = ""):
     now = clock.utcnow()
     if not get_activity.set_suggested_message(clients.firestore_client(), doc_id, text, now=now):
         raise HTTPException(status_code=404, detail=NO_RECORD)
-    saved = render.local(now, request.app.state.outreach.tz)[11:]
-    return RedirectResponse(f"/suggested/{quote(doc_id, safe='')}?{urlencode({'saved': saved})}", status_code=303)
+    return _back(doc_id, saved=_hhmm(request, now))
 
 
 @router.post("/suggested/{doc_id}/clear")
 def clear(request: Request, doc_id: str):
-    """Delete the draft; `suggested_message_updated_at` keeps when. Back to the list."""
-    if not get_activity.set_suggested_message(clients.firestore_client(), doc_id, "", now=clock.utcnow()):
+    """Delete the draft; `suggested_message_updated_at` keeps when. The page
+    stays, with an empty box to write a new message in."""
+    now = clock.utcnow()
+    if not get_activity.set_suggested_message(clients.firestore_client(), doc_id, "", now=now):
         raise HTTPException(status_code=404, detail=NO_RECORD)
-    return RedirectResponse(f"/suggested?{urlencode({'cleared': doc_id})}", status_code=303)
+    return _back(doc_id, cleared=_hhmm(request, now))
 
 
 class ReworkRequest(BaseModel):
@@ -236,8 +255,8 @@ async def send(
 ):
     """Send the box's text as the Contact screen sends it, tagged `activity`
     too. Sent: the draft cleared and `suggested_message_sent_at` set, Sync
-    Messages started, back to the list. Not sent: this page again, the text
-    in the box."""
+    Messages started, the page again with the message locked. Not sent: the
+    page again, the text in the box."""
     outcome = await asyncio.to_thread(
         compose.send_now, request.app, doc_id, text, token, confirmed=confirm == "1", cancel_item=cancel_item,
         tags=TAGS,
@@ -253,5 +272,4 @@ async def send(
         logger.warning("sent to %s, but there is no activity record to mark", doc_id)
     run = await routine.start(request.app, "sync-messages")
     sync = "busy" if run is None else "failed" if run.error else "started"
-    notice = {"sent": render.local(outcome.sent_at, request.app.state.outreach.tz)[11:], "to": doc_id, "sync": sync}
-    return RedirectResponse(f"/suggested?{urlencode(notice)}", status_code=303)
+    return _back(doc_id, sent=_hhmm(request, outcome.sent_at), sync=sync)

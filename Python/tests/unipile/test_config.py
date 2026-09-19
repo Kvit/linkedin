@@ -55,6 +55,7 @@ def test_defaults_match_the_conservative_budget(monkeypatch):
     assert settings.max_profile_fetches_per_day == 250
     assert settings.max_activity_checks_per_day == 100
     assert settings.activity_items_per_kind == 5
+    assert settings.max_reactions_per_day == 20
     assert settings.account_id is None
 
 

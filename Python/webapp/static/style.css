@@ -480,3 +480,4 @@ details summary { cursor: pointer; margin: 2rem 0 0.5rem; font-weight: 600; }
 .tab-list .count { margin-left: 0.25rem; color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
 tr.selected td { background: var(--hematoxylin-wash); }
 tr.selected td:first-child { box-shadow: inset 3px 0 0 var(--hematoxylin); font-weight: 600; }
+.compose textarea[readonly] { background: var(--glass); cursor: default; }

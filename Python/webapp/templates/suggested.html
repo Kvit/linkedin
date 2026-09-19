@@ -6,7 +6,6 @@
   <label>Activity in the last <input type="number" name="days" value="{{ days }}" min="1" max="365"> days</label>
   <button type="submit">Show</button>
 </form>
-{% if notice %}<p class="notice" role="status">{{ notice }}</p>{% endif %}
 <p class="muted">{{ rows|length }} draft{{ "" if rows|length == 1 else "s" }}, newest activity first</p>
 {% if rows %}
 <div class="table-scroll">

@@ -32,7 +32,7 @@ class RecordingBudget(SendBudget):
     def __init__(self, limits=None, **kwargs):
         super().__init__(
             account_id=ACCOUNT,
-            limits=limits or {"invite": 5, "message": 5, "profile": 5},
+            limits=limits or {"invite": 5, "message": 5, "profile": 5, "reaction": 5},
             cadence=HumanCadence(
                 0.0, 0.0, long_pause_every=0, long_pause_min=0.0, long_pause_max=0.0
             ),
@@ -561,6 +561,22 @@ def test_send_invitation_feeds_the_provider_usage_signal_into_the_budget(users, 
 
     with pytest.raises(BudgetExhausted):
         users.send_invitation("ACoAAA1")
+
+
+@respx.mock
+def test_react_to_post_sends_a_like_and_charges_the_budget(users, budget):
+    route = respx.post(f"{BASE}/api/v1/posts/reaction").mock(
+        return_value=httpx.Response(201, json={"object": "ReactionAdded"})
+    )
+
+    users.react_to_post("urn:li:activity:7506761988874616833")
+
+    assert budget.calls == ["check:reaction", "throttle", "record:reaction"]
+    import json as _json
+
+    assert _json.loads(route.calls[0].request.content) == {
+        "account_id": ACCOUNT, "post_id": "urn:li:activity:7506761988874616833", "reaction_type": "like",
+    }
 
 
 @respx.mock

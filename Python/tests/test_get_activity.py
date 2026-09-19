@@ -84,7 +84,7 @@ def test_a_crawl_checks_never_checked_contacts_first_and_stores_recent_activity(
     assert [call[1] for call in client.users.activity_calls if call[0] == "iter_posts"] == [ann, bob, cat]
     assert all(call[3] == 1 for call in client.users.activity_calls)  # one request per read
     assert client.budget.throttle_calls == 15  # 3 list reads for 3 contacts, then ann's 1 commented + 5 reacted posts
-    assert client.budget.reconcile_calls == [{"profile": 0}]  # seeded from the day's checks
+    assert client.budget.reconcile_calls == [{"profile": 0}, {"reaction": 0}]  # seeded from the day's checks and likes
     stored = _doc(db, "ann")
     assert stored["updated_at"] == NOW and stored["name"] == "Ann Doe"
     assert [p["text"] for p in stored["posts"]] == ["Recent post"]
@@ -139,6 +139,40 @@ def test_doc_ids_recheck_exactly_those_contacts_in_order():
 
     assert [call[1] for call in client.users.activity_calls] == [provider_id_of("dan"), provider_id_of("cat")]
     assert (found["checked"], found["not_in_audience"]) == (2, ["gus"])  # gus is not a connection
+
+
+def test_the_newest_own_post_is_liked_once():
+    db, client = _setup()
+    ann, bob, cat = (provider_id_of(slug) for slug in ("ann", "bob", "cat"))
+    client.users.posts[ann] = [
+        post("rp", NOW - timedelta(days=9), reposted_at=NOW - timedelta(hours=1)),  # a repost: never liked
+        post("own-new", NOW - timedelta(days=1)),
+        post("own-old", NOW - timedelta(days=3)),
+    ]
+    client.users.posts[bob] = [post("liked", NOW - timedelta(days=1), user_reacted="LIKE")]  # already liked
+    client.users.posts[cat] = [post("stale", NOW - timedelta(days=20))]  # outside recency
+
+    found = get_activity.get_contact_activity(db, client, type="posts", industries=TARGETS, limit=3, now=NOW)
+
+    assert client.users.liked == ["urn:li:activity:own-new"] and found["likes"] == 1
+    stored = _doc(db, "ann")
+    assert [p["liked_at"] for p in stored["posts"]] == [None, NOW, None] and stored["last_liked_at"] == NOW
+    assert "last_liked_at" not in _doc(db, "bob")
+    off = get_activity.get_contact_activity(db, client, type="posts", industries=TARGETS, doc_ids=["ann"], like=False,
+                                            now=NOW)
+    assert off["likes"] == 0 and client.users.liked == ["urn:li:activity:own-new"]
+
+
+def test_likes_stop_at_the_daily_cap():
+    db, client = _setup()
+    client.budget.limits["reaction"] = 1
+    db.collection("activity").document("dan").update({"last_liked_at": NOW - timedelta(hours=2)})  # today's one like
+    client.users.posts[provider_id_of("ann")] = [post("own", NOW - timedelta(days=1))]
+
+    found = get_activity.get_contact_activity(db, client, type="posts", industries=TARGETS, limit=1, now=NOW)
+
+    assert (found["likes"], found["likes_skipped"], client.users.liked) == (0, "budget", [])
+    assert client.budget.reconcile_calls[-1] == {"reaction": 1}
 
 
 def test_each_contact_is_stamped_when_it_is_checked(monkeypatch):

@@ -63,6 +63,8 @@ class UnipileSettings(BaseConfig):
     #: Newest posts, comments and reactions `lib.get_activity` keeps per contact. Each kept
     #: comment and reaction costs one post read for its context (distinct posts only).
     activity_items_per_kind: int = 5
+    #: Likes `lib.get_activity` sends per rolling 24 h (one per contact per check, own posts only).
+    max_reactions_per_day: int = 20
 
     # Pacing. A person opening one profile, reading it and moving on takes far
     # longer than a script needs to, so every budgeted call waits first. See

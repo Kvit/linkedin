@@ -246,11 +246,15 @@ assertion itself as well: its signature, the audience
 the issuer, and the email. Anyone else gets a Google "access denied" page or a
 403.
 
-**Running now:** `v1.2.0`, revision `linkedin-contacts-00009-wjx`, deployed
-2026-09-19 02:05 (UTC) at `https://linkedin-contacts-5czydyxqoa-uc.a.run.app`,
-with the Suggested screen. Its application startup took 27 seconds. Before it,
-`v1.1.0`, revision `linkedin-contacts-00008-zxd`, 2026-09-17 03:09 (UTC), 31
-seconds.
+**Running now:** `v1.2.2`, revision `linkedin-contacts-00011-d2j`, deployed
+2026-09-19 03:22 (UTC) at `https://linkedin-contacts-5czydyxqoa-uc.a.run.app`:
+on the Suggested screen, Save, Clear and Send stay on the page, and a sent
+message is shown locked. Its application startup took 32 seconds. Before it,
+`v1.2.1`, revision `linkedin-contacts-00010-ncm`, 03:12 (UTC), 28 seconds, the
+two tabs, What they did and Our conversation; `v1.2.0`, revision
+`linkedin-contacts-00009-wjx`, 2026-09-19 02:05 (UTC), 27 seconds, the first
+Suggested screen; and `v1.1.0`, revision `linkedin-contacts-00008-zxd`,
+2026-09-17 03:09 (UTC), 31 seconds.
 
 **The deploy needed no console step.** IAP's built-in sign-in admits accounts
 of the organization that owns the project, and `vk-linkedin` belongs to the

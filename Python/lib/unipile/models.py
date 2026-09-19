@@ -356,6 +356,7 @@ class Post(UnipileModel):
     """
 
     id: str
+    social_id: str | None = None  # what `POST /posts/reaction` takes
     share_url: str | None = None
     text: str | None = None
     date: str | None = None
@@ -367,6 +368,8 @@ class Post(UnipileModel):
     is_repost: bool = False
     author: PostAuthor | None = None
     attachments: list[dict[str, Any]] = Field(default_factory=list)
+    user_reacted: str | None = None  # the account's own reaction, if any
+    permissions: dict[str, Any] = Field(default_factory=dict)
 
     _ts = field_validator("parsed_datetime", "repost_parsed_datetime", mode="before")(_parse_timestamp)
 
@@ -374,6 +377,10 @@ class Post(UnipileModel):
     def action_date(self) -> datetime | None:
         """When the user posted or reposted it."""
         return (self.repost_parsed_datetime if self.is_repost else None) or self.parsed_datetime
+
+    @property
+    def can_react(self) -> bool:
+        return self.permissions.get("can_react", True) is not False
 
     @property
     def display_text(self) -> str:

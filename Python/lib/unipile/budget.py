@@ -28,7 +28,7 @@ from typing import Any, Literal
 from .errors import BudgetExhausted
 from .pacing import HumanCadence
 
-Kind = Literal["invite", "message", "profile"]
+Kind = Literal["invite", "message", "profile", "reaction"]
 
 #: Reserved keys holding LinkedIn's own quota reading and when it was taken.
 #: They share the per-account bucket with the counters; the leading underscore

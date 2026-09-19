@@ -104,9 +104,13 @@ def test_save_stores_the_draft_and_clear_deletes_it(client, db):
     assert _stored(db)["suggested_message"] == "Hi Ann, shorter."
 
     response = client.post("/suggested/ann/clear", follow_redirects=False)
-    assert response.headers["location"] == "/suggested?cleared=ann"
+    assert response.headers["location"] == "/suggested/ann?cleared=07%3A00"
     assert _stored(db)["suggested_message"] is None and "suggested_message_sent_at" not in _stored(db)
-    assert "Draft for Ann Lee cleared." in client.get(response.headers["location"]).text
+    page = client.get(response.headers["location"]).text
+    assert "Draft cleared at 07:00." in page and "write a new message here" in page and 'name="text"' in page
+
+    client.post("/suggested/ann/save", data={"text": "Hi Ann, a new one."})  # from scratch, after Clear
+    assert _stored(db)["suggested_message"] == "Hi Ann, a new one."
 
 
 def test_rework_rewrites_the_draft_with_the_activity_as_context(client, monkeypatch):
@@ -132,15 +136,17 @@ def test_rework_rewrites_the_draft_with_the_activity_as_context(client, monkeypa
 
 def test_send_tags_the_message_and_records_the_send_on_the_activity_record(client, db, linkedin, outreach):
     response = client.post("/suggested/ann/send", data={"text": DRAFT, "token": TOKEN}, follow_redirects=False)
-    assert response.headers["location"] == "/suggested?sent=07%3A00&to=ann&sync=started"
+    assert response.headers["location"] == "/suggested/ann?sent=07%3A00&sync=started"
     assert linkedin.messaging.attempts == [("send_message", "chat-1", DRAFT)]
     [item] = [item for item in queue.items_for_contact(db, "ann") if item.get("kind") == queue.MANUAL]
     assert (item["status"], item["tags"]) == ("sent", ["manual", "activity"])
     stored = _stored(db)
     assert (stored["suggested_message"], stored["suggested_message_updated_at"], stored["suggested_message_sent_at"]) == (None, NOW, NOW)
     assert outreach == [("sync_messages", {"classify": True, "dry_run": False})]
-    page = client.get(response.headers["location"]).text
-    assert "Sent to Ann Lee at 07:00. Sync Messages started" in page and "0 drafts," in page
+    page = client.get(response.headers["location"]).text  # the same page, the message locked
+    assert "Sent at 07:00. Sync Messages started" in page and f"readonly>{DRAFT}</textarea>" in page
+    assert "formaction" not in page and "Rework with AI</button>" not in page
+    assert "0 drafts," in client.get("/suggested").text
 
 
 def test_a_refused_send_keeps_the_text_and_records_nothing(client, db, linkedin, outreach):

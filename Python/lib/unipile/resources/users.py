@@ -200,6 +200,15 @@ class UsersResource:
     def iter_reactions(self, identifier: str, *, page_size: int = 100, max_pages: int | None = None) -> Iterator[Reaction]:
         return self._list(f"/api/v1/users/{identifier}/reactions", Reaction, page_size, max_pages=max_pages)
 
+    def react_to_post(self, post_id: str, reaction_type: str = "like") -> None:
+        """React to a post by its `social_id`; budgeted and paced like a message."""
+        self._budget.check("reaction")
+        self._budget.throttle()
+        self._transport.post_json("/api/v1/posts/reaction", json={
+            "account_id": self._account_id(), "post_id": post_id, "reaction_type": reaction_type,
+        })
+        self._budget.record("reaction")
+
     def get_post(self, post_id: str) -> Post:
         """One post (``GET /posts/{id}``, kept with the activity reads)."""
         return Post.model_validate(

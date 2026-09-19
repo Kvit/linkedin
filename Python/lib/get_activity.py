@@ -5,7 +5,9 @@ first), then the oldest `updated_at`. At most `UNIPILE_MAX_ACTIVITY_CHECKS_PER_D
 contacts per rolling 24 h. A check is four reads (posts, comments, reactions,
 profile) plus one read per distinct post its newest comments and reactions were on,
 each preceded by the client's human cadence (random 20-40 s gaps, a 2-5 min break
-about every 10 calls).
+about every 10 calls). Unless `like=False`, it also likes each contact's newest own
+post in the window (never a repost, never one already liked), within
+`UNIPILE_MAX_REACTIONS_PER_DAY`.
 A 429, a restriction, a 5xx or a profile throttle lockout ends the call.
 """
 
@@ -42,7 +44,7 @@ MAX_RECENCY_DAYS = 365
 FIELDS = (
     "doc_id", "name", "industry", "pipeline_stage", "profile_url", "updated_at", "recency_days", "last_activity",
     "suggested_message", "suggested_message_updated_at", "suggested_message_sent_at", "errors", "posts", "comments",
-    "reactions", "profile_changes", "unknown_before",
+    "reactions", "profile_changes", "unknown_before", "last_liked_at",
 )
 COUNTED = ("posts", "comments", "reactions", "profile_changes")
 
@@ -55,12 +57,14 @@ _SECTIONS = {"position": {"work_experience", "experience"}, "about": {"about", "
 
 def get_contact_activity(
     db, client, *, type: str | list[str] = "All", recency: str | int = 10, limit: int | None = None,
-    industries: Iterable[str] | None = None, doc_ids: Iterable[str] | None = None, now: datetime | None = None,
+    industries: Iterable[str] | None = None, doc_ids: Iterable[str] | None = None, like: bool = True,
+    now: datetime | None = None,
 ) -> dict:
     """Check the next contacts in the crawl and return what they did in the last `recency` days.
 
     `type`: "All" or any of posts, comments, reactions, profile. `limit` narrows today's allowance.
     `doc_ids` re-checks exactly those audience contacts, in that order, instead of the crawl order.
+    `like` likes the newest own post in the window of each contact checked (posts only).
     """
     kinds = _kinds(type)
     days = _days(recency)
@@ -96,7 +100,12 @@ def get_contact_activity(
     if "profile" in kinds:
         client.budget.reconcile(profile=used)  # about one profile read per contact checked today
     profile_start = client.budget.used("profile")
-    state = {"profile": "profile" in kinds, "profile_skipped": None}
+    liking = like and "posts" in kinds
+    if liking:
+        liked = activity.where(filter=FieldFilter("last_liked_at", ">=", since)).count().get()[0][0].value
+        client.budget.reconcile(reaction=int(liked))  # one like per contact per check
+    state = {"profile": "profile" in kinds, "profile_skipped": None, "like": liking, "likes": 0,
+             "likes_skipped": None, "stamp": (lambda: now) if fixed_now else _utcnow}
     rows, checked, stopped = [], 0, None
     for contact in order[:take]:
         try:
@@ -121,6 +130,7 @@ def get_contact_activity(
     return {
         "audience": len(audience), "never_checked": len(never), "allowance": allowance, "checked": checked,
         "profile_reads": client.budget.used("profile") - profile_start, "profile_skipped": state["profile_skipped"],
+        "likes": state["likes"], "likes_skipped": state["likes_skipped"],
         "stopped": stopped, "not_in_audience": missing, "seconds": round(time.monotonic() - started, 1),
         "contacts": rows,
     }
@@ -261,9 +271,11 @@ def _check(db, client, contact: dict, kinds: list[str], cutoff: datetime, state:
             doc["posts"] = [
                 {"date": p.action_date, "text": _text(p.display_text), "share_url": _clean_url(p.share_url),
                  "author": _text(p.author.name if p.author else None), "reactions": p.reaction_counter,
-                 "comments": p.comment_counter, "is_repost": p.is_repost}
+                 "comments": p.comment_counter, "is_repost": p.is_repost, "liked_at": None}
                 for p in recent
             ]
+            if state["like"]:
+                _like(client, doc, recent, state)
     if "comments" in kinds:
         comments = _read(client, doc, "comments",
                          lambda: client.users.iter_comments(pid, page_size=COMMENTS_PAGE, max_pages=1))
@@ -300,6 +312,22 @@ def _check(db, client, contact: dict, kinds: list[str], cutoff: datetime, state:
                 snapshot.to_dict() if snapshot.exists else {}, fresh
             )
     return doc
+
+
+def _like(client, doc: dict, recent: list, state: dict) -> None:
+    """Like the newest own post in the window, unless already liked; `BudgetExhausted` ends liking for the call."""
+    index = next((i for i, p in enumerate(recent) if not p.is_repost), None)
+    if index is None or recent[index].user_reacted or not recent[index].social_id or not recent[index].can_react:
+        return
+    try:
+        client.users.react_to_post(recent[index].social_id)  # paced and charged by the client
+    except BudgetExhausted:
+        state.update(like=False, likes_skipped="budget")
+    except _SKIP as error:
+        doc["errors"].append(f"like: {error.__class__.__name__}: {error.title}")
+    else:
+        doc["posts"][index]["liked_at"] = doc["last_liked_at"] = state["stamp"]()
+        state["likes"] += 1
 
 
 def _read(client, doc: dict, kind: str, fetch) -> list | None:

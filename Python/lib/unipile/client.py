@@ -52,6 +52,7 @@ class UnipileClient:
                 "invite": settings.max_invites_per_day,
                 "message": settings.max_messages_per_day,
                 "profile": settings.max_profile_fetches_per_day,
+                "reaction": settings.max_reactions_per_day,
             },
             cadence=HumanCadence(
                 settings.min_delay_seconds,

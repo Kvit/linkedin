@@ -171,6 +171,11 @@ def test_a_repost_is_dated_by_when_the_contact_reposted_it():
     assert own.action_date == datetime(2026, 9, 15, 16, 13, 32, 134000, tzinfo=UTC)
 
 
+def test_a_post_says_whether_it_can_still_be_liked():
+    assert Post(id="1", permissions={"can_react": False}).can_react is False
+    assert Post(id="2").can_react is True  # no permissions block: assume allowed, LinkedIn refuses if not
+
+
 def test_a_comment_names_its_post_the_way_the_posts_endpoint_expects():
     assert Comment(id="c", post_id="750", post_urn="urn:li:activity:750").post_ref == "750"
     assert Comment(id="c", post_id="751", post_urn="urn:li:ugcPost:751").post_ref == "urn:li:ugcPost:751"
