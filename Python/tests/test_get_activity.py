@@ -431,3 +431,52 @@ def test_bad_arguments_raise_before_any_request():
         with pytest.raises(ValueError):
             get_activity.get_contact_activity(db, client, industries=TARGETS, now=NOW, **kwargs)
     assert client.users.iter_relations_calls == 0
+
+
+def _crawler(**overrides):
+    """Crawler settings for tests, never read from `.env`."""
+    return get_activity.CrawlerSettings(
+        _env_file=None,
+        **{"batch_size": 2, "batch_pause_min_seconds": 30.0, "batch_pause_max_seconds": 40.0,
+           "min_delay_seconds": 8.0, "max_delay_seconds": 20.0, **overrides},
+    )
+
+
+def test_a_crawl_pauses_between_batches(monkeypatch):
+    """Four contacts in batches of two: one pause, before the third contact."""
+    db, client = _setup()
+    slept = []
+    monkeypatch.setattr(get_activity, "_sleep", slept.append)
+
+    found = get_activity.get_contact_activity(db, client, type="posts", industries=TARGETS, like=False,
+                                              crawler_settings=_crawler(), now=NOW)
+
+    assert found["checked"] == 4 and found["batches"] == 2
+    assert len(slept) == 1 and 30.0 <= slept[0] <= 40.0
+    assert found["paused_seconds"] == round(slept[0], 1)
+
+
+def test_a_crawl_shorter_than_one_batch_never_pauses(monkeypatch):
+    db, client = _setup()
+    slept = []
+    monkeypatch.setattr(get_activity, "_sleep", slept.append)
+
+    found = get_activity.get_contact_activity(db, client, type="posts", industries=TARGETS, limit=2, like=False,
+                                              crawler_settings=_crawler(), now=NOW)
+
+    assert found["checked"] == 2 and found["batches"] == 1 and found["paused_seconds"] == 0
+    assert slept == []
+
+
+def test_a_crawl_runs_at_the_crawler_pace(monkeypatch):
+    """Its own delays, and no long breaks -- the batch pause is the break."""
+    db, client = _setup()
+    monkeypatch.setattr(get_activity, "_sleep", lambda _seconds: None)
+
+    get_activity.get_contact_activity(db, client, type="posts", industries=TARGETS, limit=1, like=False,
+                                      crawler_settings=_crawler(min_delay_seconds=5.0, max_delay_seconds=11.0),
+                                      now=NOW)
+
+    used = client.budget.cadences[-1]
+    assert (used.min_delay, used.max_delay) == (5.0, 11.0)
+    assert used.long_pause_every == 0  # no long break can be drawn

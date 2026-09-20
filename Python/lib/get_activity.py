@@ -3,25 +3,37 @@
 Each call checks contacts one at a time: never-checked first (most senior first, then
 most recently active), then the oldest `updated_at`. At most `UNIPILE_MAX_ACTIVITY_CHECKS_PER_DAY`
 contacts per rolling 24 h. A check is four reads (posts, comments, reactions,
-profile) plus one read per distinct post its newest comments and reactions were on,
-each preceded by the client's human cadence (random 20-40 s gaps, a 2-5 min break
-about every 10 calls). Unless `like=False`, it also likes each contact's newest own
+profile) plus one read per distinct post its newest comments and reactions were on.
+The crawl paces itself rather than at the client's own cadence: a gap of
+`CRAWLER_MIN_DELAY_SECONDS` to `CRAWLER_MAX_DELAY_SECONDS` before each call, no long
+breaks, and a pause of `CRAWLER_BATCH_PAUSE_MIN_SECONDS` to
+`CRAWLER_BATCH_PAUSE_MAX_SECONDS` every `CRAWLER_BATCH_SIZE` contacts. These reads
+are the bulk of what the account does and cost less than a write, so they run faster
+than the pace the client gives everything else, and rest in longer stretches.
+Unless `like=False`, it also likes each contact's newest own
 post in the window (never a repost, never one already liked), within
 `UNIPILE_MAX_REACTIONS_PER_DAY`.
 A 429, a restriction, a 5xx or a profile throttle lockout ends the call.
 """
 
+import logging
+import random
 import re
 import time
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
+from typing import ClassVar
 
 from google.cloud.firestore_v1.base_query import FieldFilter
+from pydantic import Field
+from pydantic_settings import SettingsConfigDict
 
+from lib.config import BaseConfig
 from lib.contacts import TARGET_INDUSTRIES, activity_key, headline
 from lib.unipile.errors import (
     BudgetExhausted,
     CircuitOpen,
+    ConfigError,
     NotFound,
     PermissionDenied,
     RateLimited,
@@ -29,6 +41,12 @@ from lib.unipile.errors import (
     ThrottleLockout,
     UnprocessableError,
 )
+from lib.unipile.pacing import HumanCadence, humanize
+
+log = logging.getLogger(__name__)
+
+#: Test seam, like `_utcnow`: the batch pause is minutes long.
+_sleep = time.sleep
 
 ACTIVITY_COLLECTION = "activity"
 ANALYSIS_COLLECTION = "analysis"
@@ -67,19 +85,49 @@ _STOP = (RateLimited, PermissionDenied, CircuitOpen, ThrottleLockout, ServerErro
 _SECTIONS = {"position": {"work_experience", "experience"}, "about": {"about", "summary"}}
 
 
+class CrawlerSettings(BaseConfig):
+    """The crawl's own pace, `CRAWLER_*` in .env.
+
+    Separate from `UnipileSettings`: the crawl is reads, and slowing every write
+    to its pace (or raising every write to the crawl's) is not the same trade.
+    The measured cost is about 1.6 min a contact at these values.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="CRAWLER_",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    error_class: ClassVar[type[Exception]] = ConfigError
+    subject: ClassVar[str] = "Crawler settings"
+
+    #: Contacts checked between batch pauses.
+    batch_size: int = Field(default=10, ge=1)
+    #: Shortest and longest pause between batches, drawn uniformly. This is the
+    #: crawl's only long break, in place of the client's `UNIPILE_LONG_PAUSE_*`.
+    batch_pause_min_seconds: float = 4 * 60.0
+    batch_pause_max_seconds: float = 8 * 60.0
+    #: Gap before each call, drawn like every other: skewed toward the shortest.
+    min_delay_seconds: float = 8.0
+    max_delay_seconds: float = 20.0
+
+
 def get_contact_activity(
     db, client, *, type: str | list[str] = "All", recency: str | int = 10, limit: int | None = None,
     industries: Iterable[str] | None = None, doc_ids: Iterable[str] | None = None, like: bool = True,
-    now: datetime | None = None,
+    crawler_settings: CrawlerSettings | None = None, now: datetime | None = None,
 ) -> dict:
     """Check the next contacts in the crawl and return what they did in the last `recency` days.
 
     `type`: "All" or any of posts, comments, reactions, profile. `limit` narrows today's allowance.
     `doc_ids` re-checks exactly those audience contacts, in that order, instead of the crawl order.
     `like` likes the newest own post in the window of each contact checked (posts only).
+    `crawler_settings` overrides the `CRAWLER_*` pace read from .env.
     """
     kinds = _kinds(type)
     days = _days(recency)
+    pace = crawler_settings or CrawlerSettings.from_env()
     if limit is not None and limit < 1:
         raise ValueError("limit must be at least 1")
     industries = list(TARGET_INDUSTRIES if industries is None else industries)
@@ -119,37 +167,47 @@ def get_contact_activity(
         client.budget.reconcile(reaction=int(liked))  # one like per contact per check
     state = {"profile": "profile" in kinds, "profile_skipped": None, "like": liking, "likes": 0,
              "likes_skipped": None, "stamp": (lambda: now) if fixed_now else _utcnow}
-    rows, checked, stopped = [], 0, None
-    for contact in order[:take]:
-        try:
-            doc = _check(db, client, contact, kinds, cutoff, state)
-        except _STOP as error:
-            stopped = f"{error.__class__.__name__}: {error.title}"
-            break
-        doc.update(updated_at=now if fixed_now else _utcnow(), recency_days=days)
-        previous = stored[contact["doc_id"]]
-        doc["last_activity"] = _latest(doc.pop("_dates"), previous.get("last_activity"))
-        if "last_post_at" in doc:  # posts were read; an empty read keeps the stored date
-            doc["last_post_at"] = _latest([doc["last_post_at"]], previous.get("last_post_at"))
-        if not previous or doc["last_activity"] != previous.get("last_activity"):
-            doc["suggested_message"] = None  # created empty; a draft is stale once newer activity appears
-        if "my_comment" not in previous:
-            doc["my_comment"] = {}  # provisioned once; only save_my_comment writes it
-        if "profile_changes" in doc:  # the profile was read
-            doc["profile_changed_at"] = _changed_at(doc["profile_changes"], previous, doc["updated_at"])
-        activity.document(contact["doc_id"]).set(doc, merge=True)  # kinds not checked keep their values
-        checked += 1
-        if doc.get("posts") or doc.get("comments") or doc.get("reactions") or doc.get("profile_changes"):
-            rows.append({key: doc.get(key) for key in (
-                "doc_id", "name", "industry", "pipeline_stage", "profile_url", "last_activity", "last_post_at",
-                "posts", "comments", "reactions", "profile_changes", "profile_changed_at",
-            )})
+    rows, checked, stopped, batches, paused = [], 0, None, 0, 0.0
+    cadence = HumanCadence(pace.min_delay_seconds, pace.max_delay_seconds,  # the batch pause is the crawl's break
+                           long_pause_every=0, long_pause_min=0.0, long_pause_max=0.0)
+    with client.budget.using_cadence(cadence):
+        for position, contact in enumerate(order[:take]):
+            if position and not position % pace.batch_size:  # before the next batch, never after the last contact
+                rest = random.uniform(pace.batch_pause_min_seconds, pace.batch_pause_max_seconds)
+                log.info("%d contacts checked -- pausing %s before the next batch.", position, humanize(rest))
+                _sleep(rest)
+                paused += rest
+            batches = position // pace.batch_size + 1
+            try:
+                doc = _check(db, client, contact, kinds, cutoff, state)
+            except _STOP as error:
+                stopped = f"{error.__class__.__name__}: {error.title}"
+                break
+            doc.update(updated_at=now if fixed_now else _utcnow(), recency_days=days)
+            previous = stored[contact["doc_id"]]
+            doc["last_activity"] = _latest(doc.pop("_dates"), previous.get("last_activity"))
+            if "last_post_at" in doc:  # posts were read; an empty read keeps the stored date
+                doc["last_post_at"] = _latest([doc["last_post_at"]], previous.get("last_post_at"))
+            if not previous or doc["last_activity"] != previous.get("last_activity"):
+                doc["suggested_message"] = None  # created empty; a draft is stale once newer activity appears
+            if "my_comment" not in previous:
+                doc["my_comment"] = {}  # provisioned once; only save_my_comment writes it
+            if "profile_changes" in doc:  # the profile was read
+                doc["profile_changed_at"] = _changed_at(doc["profile_changes"], previous, doc["updated_at"])
+            activity.document(contact["doc_id"]).set(doc, merge=True)  # kinds not checked keep their values
+            checked += 1
+            if doc.get("posts") or doc.get("comments") or doc.get("reactions") or doc.get("profile_changes"):
+                rows.append({key: doc.get(key) for key in (
+                    "doc_id", "name", "industry", "pipeline_stage", "profile_url", "last_activity", "last_post_at",
+                    "posts", "comments", "reactions", "profile_changes", "profile_changed_at",
+                )})
 
     rows.sort(key=lambda row: (row["last_activity"] is not None, row["last_activity"]), reverse=True)
     return {
         "audience": len(audience), "never_checked": len(never), "allowance": allowance, "checked": checked,
         "profile_reads": client.budget.used("profile") - profile_start, "profile_skipped": state["profile_skipped"],
-        "likes": state["likes"], "likes_skipped": state["likes_skipped"],
+        "likes": state["likes"], "likes_skipped": state["likes_skipped"], "batches": batches,
+        "paused_seconds": round(paused, 1),
         "stopped": stopped, "not_in_audience": missing, "seconds": round(time.monotonic() - started, 1),
         "contacts": rows,
     }

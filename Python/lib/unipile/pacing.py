@@ -81,6 +81,18 @@ class HumanCadence:
     def backoff(self) -> float:
         return self._backoff
 
+    @property
+    def min_delay(self) -> float:
+        return self._min_delay
+
+    @property
+    def max_delay(self) -> float:
+        return self._max_delay
+
+    @property
+    def long_pause_every(self) -> int:
+        return self._long_pause_every
+
     # --- waiting --------------------------------------------------------------
 
     def wait(self) -> float:

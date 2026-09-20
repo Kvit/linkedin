@@ -303,3 +303,18 @@ def test_the_usage_halt_does_not_block_messages():
         budget.note_usage(95.0)
 
     budget.check("message")
+
+
+def test_using_cadence_runs_at_another_pace_and_restores_the_first():
+    """The activity crawl paces itself; the client's own cadence comes back
+    afterwards, including when the crawl raises."""
+    budget = make()
+    own, crawl = budget.cadence, cadence(min_delay=8.0, max_delay=20.0)
+
+    with budget.using_cadence(crawl):
+        assert budget.cadence is crawl
+    assert budget.cadence is own
+
+    with pytest.raises(RuntimeError), budget.using_cadence(crawl):
+        raise RuntimeError("the crawl stopped")
+    assert budget.cadence is own

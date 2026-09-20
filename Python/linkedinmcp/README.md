@@ -362,6 +362,13 @@ The activity crawler (`lib.get_activity`, run from the dev container) stores
 what first-degree target contacts posted, commented on and reacted to in
 `activity/{doc_id}`. These four tools read and write those records.
 
+The crawl paces itself with the `CRAWLER_*` settings in `.env`, not the
+`UNIPILE_*` delays that pace messages and every other call: a gap of 8-20 s
+before each call, no long breaks mid-contact, and a pause of 4-8 min every 10
+contacts. That is about 1.6 min a contact inside a batch, against about 8 min at
+the `UNIPILE_*` pace. A run returns `batches` and `paused_seconds` alongside
+`checked`.
+
 **`get_user_activity_summary(freshness=15, has_suggested_message=False, limit=None)`**
 The tool for analysis: one row per contact active in the last `freshness` days,
 newest first, with every stored date and count -- industry and stage,

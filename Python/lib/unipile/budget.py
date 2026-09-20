@@ -21,7 +21,8 @@ is logged, loudly, the first time it happens.
 """
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
@@ -117,6 +118,25 @@ class SendBudget:
                 detail="Allowance returns as earlier actions age out of the "
                 "24-hour window; re-run later, or raise the cap in .env.",
             )
+
+    @property
+    def cadence(self) -> HumanCadence:
+        """The pace calls are waiting at right now."""
+        return self._cadence
+
+    @contextmanager
+    def using_cadence(self, cadence: HumanCadence) -> Iterator[None]:
+        """Pace calls differently for the duration of one operation.
+
+        The activity crawl reads far more than it writes and paces itself
+        (`CRAWLER_*` in .env). Restoring on the way out, exception or not, keeps
+        that choice from leaking into whatever the caller does next.
+        """
+        previous, self._cadence = self._cadence, cadence
+        try:
+            yield
+        finally:
+            self._cadence = previous
 
     def throttle(self) -> None:
         """Wait one human-looking interval before the next call."""

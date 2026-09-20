@@ -8,7 +8,8 @@ job test file shares.
 `users.iter_relations`,
 `users.get_profile`, `users.iter_posts` / `iter_comments` / `iter_reactions` / `get_post` /
 `comment_on_post`,
-`budget.throttle`, `users.react_to_post`, `budget.reconcile` / `budget.remaining` /
+`budget.throttle`, `budget.using_cadence`, `users.react_to_post`,
+`budget.reconcile` / `budget.remaining` /
 `budget.used`, and `writes_blocked` -- plus `messaging.iter_all_messages`,
 the one read the REAL `messages_sync.forward_pass` makes, for the
 end-to-end sync test. It opens no socket and constructs no `httpx.Client`,
@@ -44,6 +45,7 @@ support modules like this one and `fake_firestore.py`.
 """
 
 import copy
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -81,7 +83,7 @@ class FakeBudget:
     fetch on every 200 LinkedIn answers, complete or not), `used(kind)` is
     the current count, and `remaining(kind)` is the configured limit minus
     that count, never below zero. `reconcile` and `remaining` calls are
-    recorded.
+    recorded, and so is every cadence `using_cadence` is handed.
     """
 
     def __init__(self, limits: dict[str, int] | None = None) -> None:
@@ -90,6 +92,7 @@ class FakeBudget:
         self.reconcile_calls: list[dict] = []
         self.remaining_calls: list[str] = []
         self.throttle_calls = 0
+        self.cadences: list = []
 
     def reconcile(self, **observed: int) -> None:
         self.reconcile_calls.append(dict(observed))
@@ -107,6 +110,11 @@ class FakeBudget:
 
     def throttle(self) -> None:
         self.throttle_calls += 1
+
+    @contextmanager
+    def using_cadence(self, cadence):
+        self.cadences.append(cadence)
+        yield
 
 
 class FakeMessaging:
