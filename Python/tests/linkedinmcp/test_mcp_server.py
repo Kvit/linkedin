@@ -1910,6 +1910,7 @@ async def test_activity_summary_filters_by_freshness_and_draft(env, fake_db):
     fresh = await call_tool("get_user_activity_summary", {})
     wider = await call_tool("get_user_activity_summary", {"freshness": 30})
     drafted = await call_tool("get_user_activity_summary", {"has_suggested_message": True})
+    everyone = await call_tool("get_user_activity_summary", {"has_suggested_message": None})
     first = await call_tool("get_user_activity_summary", {"freshness": 30, "limit": 1})
 
     assert [r["doc_id"] for r in fresh["contacts"]] == ["ann", "fay"] and fresh["count"] == 2
@@ -1922,6 +1923,7 @@ async def test_activity_summary_filters_by_freshness_and_draft(env, fake_db):
     assert [r["doc_id"] for r in wider["contacts"]] == ["ann", "fay", "cat"]  # newest first
     assert [(r["doc_id"], r["suggested_message"]) for r in drafted["contacts"]] == [("bob", "Congrats on the new role")]
     assert drafted["contacts"][0]["suggested_message_updated_at"] == "2026-09-18T17:30:00+05:30"
+    assert [r["doc_id"] for r in everyone["contacts"]] == ["ann", "eve", "bob", "fay"]  # eve was cleared since
     assert [r["doc_id"] for r in first["contacts"]] == ["ann"]
     assert (await call_tool("get_user_activity_summary", {"freshness": 0}))["reason"] == "invalid"
 

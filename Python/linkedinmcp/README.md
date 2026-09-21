@@ -396,7 +396,7 @@ newest first, with every stored date and count -- industry and stage,
 comments and reactions, which profile fields changed and the new position, and
 my like, draft and comment. Null or 0 means nothing was found. By default it
 lists contacts needing a draft; `has_suggested_message=True` lists those with
-one.
+one, and `has_suggested_message=None` lists them all, draft or not.
 
 **`fetch_user_activity(doc_id)`**
 One contact's activity text: their newest posts, comments and reactions, each

@@ -452,7 +452,7 @@ def get_contact(doc_id: str, full: bool = False) -> dict[str, Any]:
 
 @mcp.tool
 def get_user_activity_summary(
-    freshness: int = 15, has_suggested_message: bool = False, needs_comment: bool = False,
+    freshness: int = 15, has_suggested_message: bool | None = False, needs_comment: bool = False,
     not_messaged_days: int | None = None, limit: int | None = None,
 ) -> dict[str, Any]:
     """PRIMARY tool for analyzing contacts' LinkedIn activity: one row per
@@ -465,6 +465,7 @@ def get_user_activity_summary(
     Which contacts: by default those needing a message draft (none stored,
     none cleared or sent since their latest activity);
     `has_suggested_message=true`, those with one (`suggested_message`);
+    `has_suggested_message=null`, all of them, draft or not;
     `needs_comment=true`, those with an own post in the window that has no
     posted comment of mine, the row naming it (`comment_post_id`,
     `comment_post_date`, `comment_post_text`: all `comment_on_post` needs).

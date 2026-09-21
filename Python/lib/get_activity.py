@@ -214,13 +214,13 @@ def get_contact_activity(
 
 
 def activity_summary(
-    db, *, freshness: int = 15, has_suggested_message: bool = False, needs_comment: bool = False,
+    db, *, freshness: int = 15, has_suggested_message: bool | None = False, needs_comment: bool = False,
     not_messaged_days: int | None = None, limit: int | None = None, now: datetime | None = None,
 ) -> list[dict]:
     """Contacts with `last_activity` in the last `freshness` days, newest first.
 
     By default those with a draft (`has_suggested_message`) or needing one: no draft, and none cleared or sent
-    at or after `last_activity`. `needs_comment` lists instead those with an own post in the window that has no
+    at or after `last_activity`; `has_suggested_message=None` keeps all, draft or not. `needs_comment` lists instead those with an own post in the window that has no
     posted comment of mine. `not_messaged_days` keeps those I have not messaged in that many days and whom a
     send would not refuse (a skipped stage, special handling)."""
     if freshness < 1:
@@ -245,9 +245,10 @@ def activity_summary(
         post = _uncommented_post(data, cutoff) if needs_comment else None
         if needs_comment and post is None:
             continue
-        if not needs_comment and bool(draft) != has_suggested_message:
+        by_draft = not needs_comment and has_suggested_message is not None
+        if by_draft and bool(draft) != has_suggested_message:
             continue
-        if not needs_comment and not draft and changed is not None and changed >= data["last_activity"]:
+        if by_draft and not draft and changed is not None and changed >= data["last_activity"]:
             continue  # cleared or sent after this activity
         changes = data.get("profile_changes") or []
         row = {"doc_id": snapshot.id, "name": data.get("name"), "industry": data.get("industry"),
