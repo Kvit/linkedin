@@ -363,11 +363,31 @@ what first-degree target contacts posted, commented on and reacted to in
 `activity/{doc_id}`. These four tools read and write those records.
 
 The crawl paces itself with the `CRAWLER_*` settings in `.env`, not the
-`UNIPILE_*` delays that pace messages and every other call: a gap of 8-20 s
-before each call, no long breaks mid-contact, and a pause of 4-8 min every 10
-contacts. That is about 1.6 min a contact inside a batch, against about 8 min at
-the `UNIPILE_*` pace. A run returns `batches` and `paused_seconds` alongside
+`UNIPILE_*` delays that pace messages and every other call: a short gap before
+each call (`CRAWLER_MIN_DELAY_SECONDS` to `CRAWLER_MAX_DELAY_SECONDS`), no long
+breaks mid-contact, and a pause every `CRAWLER_BATCH_SIZE` contacts. `.env` holds
+the running values and `.env.example` explains each. Measured 2026-09-19/20 over
+190 contacts at gaps of 8-20 s and batches of 10: 1.2-1.6 min a contact inside a
+batch, against about 8 min at the `UNIPILE_*` pace, with no 429, restriction or
+withheld profile section. A run returns `batches` and `paused_seconds` alongside
 `checked`.
+
+`crawl-activity.py --limit 100` runs one crawl from the command line. It runs only
+inside the dev container and refuses to start on the host, whose own venv is not
+the one this code is written against:
+
+    docker exec -u vscode <id> bash -lc 'cd /workspaces/linkedin/Python && uv run python crawl-activity.py --limit 100'
+
+It takes every limit and the pace from `.env` and overrides nothing. Its output is
+what the routine reads: each request logged in order, the result as one JSON line
+starting with `{"audience"`, and a line starting with `FAILED:` when the run raised
+or LinkedIn stopped it (429, restriction, 5xx, lockout).
+
+The Claude desktop routine `linkedin-activity-crawl` (7am and 7pm Central,
+`~/.claude/scheduled-tasks/linkedin-activity-crawl/SKILL.md`) starts the dev
+container if it is down, refuses to start a second crawl, starts this script
+detached with its log in `Python/.crawl-logs/`, and reports what the previous run
+did. It runs only while the desktop app is open.
 
 **`get_user_activity_summary(freshness=15, has_suggested_message=False, limit=None)`**
 The tool for analysis: one row per contact active in the last `freshness` days,

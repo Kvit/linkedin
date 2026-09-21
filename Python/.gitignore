@@ -1,6 +1,9 @@
 # Environment variables
 .env
 
+# Logs of crawl-activity.py runs started by the linkedin-activity-crawl routine
+.crawl-logs/
+
 # Every .json is ignored -- service-account keys, the budget state file and
 # captured profiles all land here. Anything the repo genuinely needs is
 # re-added by name below.
