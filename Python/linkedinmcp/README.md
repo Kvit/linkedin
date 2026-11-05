@@ -798,7 +798,7 @@ All optional. The default applies unless you set the variable in `Python/.env`.
 |---|---|---|
 | `OUTREACH_API_KEY` | *required* | The one credential. At least 16 characters. |
 | `OUTREACH_TZ` | `UTC` | IANA timezone for every reported date and for "today" in the daily caps. UTC is deliberately wrong for a person, so forgetting to set it is visible. The live service runs `America/Chicago`. |
-| `OUTREACH_INTRO_DAILY_CAP` | `10` | Intros one planning run may queue. |
+| `OUTREACH_INTRO_DAILY_CAP` | `10` | Intros queued per day, counted from local midnight: the daily job and `send_intro` together. Production runs `50`, set in `Python/.env` on 2026-11-04. |
 | `OUTREACH_INTRO_GAP_MIN_MINUTES` | `0` | Shortest random gap between one queued intro's due time and the next. |
 | `OUTREACH_INTRO_GAP_MAX_MINUTES` | `0` | Longest one. May not be below the minimum. Both 0 (since 2026-09-14; 1 to 5 before) makes intros due at once, a millisecond apart to keep their order; `send_messages` spaces the sends. |
 | `OUTREACH_MIN_DAYS_BETWEEN_TOUCHES` | `5` | Minimum days between messages to one contact. |
