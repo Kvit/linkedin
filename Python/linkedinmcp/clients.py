@@ -1,6 +1,6 @@
-"""The three client factories the rest of the service builds on.
+"""The four client factories the rest of the service builds on.
 
-Every LinkedIn, Firestore and Gemini call in this service goes through one of
+Every LinkedIn, Firestore, Cloud Storage and Gemini call in this service goes through one of
 these functions, and none of them is ever imported by name -- callers do::
 
     from linkedinmcp import clients
@@ -33,6 +33,16 @@ def firestore_client():
     from lib import firestore
 
     return firestore.client()
+
+
+def storage_client():
+    """A new Cloud Storage client, with the credentials Firestore uses."""
+    from google.cloud import storage
+
+    from lib import firestore
+
+    firestore.use_local_credentials_if_present()
+    return storage.Client(project=firestore.PROJECT)
 
 
 def unipile_client():

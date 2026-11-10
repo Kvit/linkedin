@@ -9,7 +9,7 @@
 <p class="muted">{{ rows|length }} draft{{ "" if rows|length == 1 else "s" }}, newest activity first</p>
 {% if rows %}
 <div class="table-scroll">
-<table class="list">
+<table class="list" data-selected-key="suggested:selected">
   <thead><tr>
     <th>Name</th><th>Stage</th><th>Last activity</th>
     <th class="num">Posts</th><th class="num">Comments</th><th class="num">Reactions</th>
@@ -17,7 +17,7 @@
   </tr></thead>
   <tbody>
   {% for row in rows %}
-    <tr data-doc="{{ row.doc_id }}">
+    <tr data-row="{{ row.doc_id }}">
       <td><a href="/suggested/{{ row.doc_id|urlencode }}" target="_blank">{{ row.name or row.doc_id }}</a></td>
       <td>{{ row.stage or "" }}</td>
       <td>{{ row.last_activity|local(tz) }}</td>
@@ -29,21 +29,6 @@
   </tbody>
 </table>
 </div>
-<script>
-  // The row last clicked stays marked until another is clicked, also after a reload of this tab.
-  (() => {
-    const key = "suggested:selected";
-    const mark = (doc) => {
-      for (const row of document.querySelectorAll("tr[data-doc]")) row.classList.toggle("selected", row.dataset.doc === doc);
-    };
-    try { mark(sessionStorage.getItem(key)); } catch {}
-    document.querySelector("tbody").addEventListener("click", (event) => {
-      const row = event.target.closest("tr[data-doc]");
-      if (!row) return;
-      mark(row.dataset.doc);
-      try { sessionStorage.setItem(key, row.dataset.doc); } catch {}
-    });
-  })();
-</script>
+<script src="/static/selected-row.js"></script>
 {% endif %}
 {% endblock %}

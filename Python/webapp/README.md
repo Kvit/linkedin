@@ -23,6 +23,8 @@ Plan and stages: `docs/superpowers/plans/2026-09-16-contacts-webapp.md`.
 | Home | `/` | Total contacts; counts by industry, stage and handling (`none` = unset), each count a link to the Contacts list with that filter applied; the **Get New Contacts** and **Sync Messages** buttons with a panel of their progress and results |
 | Contacts | `/contacts` | Every contact, 100 a page: filter, click a column heading to sort, search by name or headline |
 | Contact | `/contacts/{doc_id}` | One contact: handling, industry, function, seniority and stage as dropdowns that save at once, the dates beside them; a box to write a message, with **Expand with AI** and **Send**; the conversation as a thread, your messages on the right and theirs on the left, a divider for each day; queued messages; the profile summary |
+| Documents | `/documents` | The files in `gs://rr-recovr-public/marketing/`, newest first: type, size, date, the main link with **Copy**, counted opens, number of sublinks, last open |
+| Document | `/documents/{file name}` | One file: its main link with its opens and bot requests, a form that creates a sublink for a label (a person who is not a contact, or a place), every sublink with its opens, and under each link its newest 20 requests |
 
 Every screen's header says when the data was loaded ("data as of", Chicago
 time), has a **Refresh** button that reloads every contact from Firestore,
@@ -53,6 +55,31 @@ are not synced yet is reported as matching no contact until after the next
 Sync Messages. Opening the view without pressing (a link, the back button)
 shows the marks as of the last press, and so does the count in the header.
 If the read fails, no mark changes and the line says so.
+
+**The lists** (Contacts, Suggested, Documents) open a row's page in a new
+tab, and the row last clicked stays marked in the list, also after a reload
+of that tab (`static/selected-row.js`, kept per browser tab). A click on a column
+heading sorts the Documents list (latest update on top by default) and a
+file's Sublinks table (newest first by default), as on the Contacts list; a
+second click turns the order, and a row with no value in that column comes
+last.
+
+**Documents** lists the bucket folder again on every load, so a file added
+to the bucket shows on the next load with no step here; a file removed from
+the bucket leaves the list. Each file gets one main link the first time
+it is listed (stored with `kind: permanent`), `https://info.paypredict.net/d/<file name in lower case>`, and
+any number of sublinks (`kind: custom`), each counted on its own. The links are served by
+the outreach service (`GET /d/{token}`, no sign-in): it sends the file itself,
+so the recipient's browser never gets a `storage.googleapis.com` address. An
+**open** is a request by a person. A `HEAD` request, a request whose
+User-Agent names a scanner or a link preview (`OUTREACH_DOCUMENT_BOT_AGENTS`),
+and a request without `Accept-Language` are stored as bot requests and not
+counted; a reload from the same address within 60 seconds is not a second open. A scanner that
+presents itself as a browser is counted: the stored requests under each link
+show the user agent and the time. Links and requests are in the Firestore
+collections `document_links` and `document_requests`. Listing needs
+`roles/storage.objectViewer` on the bucket for the service account; without
+it the page says the bucket could not be listed.
 
 **The conversation** shows the transcript the classifiers read: each message
 is one paragraph, dated to the day, with its line breaks joined. When a
@@ -246,10 +273,15 @@ assertion itself as well: its signature, the audience
 the issuer, and the email. Anyone else gets a Google "access denied" page or a
 403.
 
-**Running now:** `v1.2.2`, revision `linkedin-contacts-00011-d2j`, deployed
-2026-09-19 03:22 (UTC) at `https://linkedin-contacts-5czydyxqoa-uc.a.run.app`:
-on the Suggested screen, Save, Clear and Send stay on the page, and a sent
-message is shown locked. Its application startup took 32 seconds. Before it,
+**Running now:** `v1.3.0`, revision `linkedin-contacts-00013-qrc`, deployed
+2026-11-10 05:54 (UTC) at `https://linkedin-contacts-5czydyxqoa-uc.a.run.app`:
+the Documents tab; the Contacts and Documents lists open a row in a new tab
+and keep it marked; the Documents list and the Sublinks table sort by a
+heading. Its application startup took 30 seconds. Before it, `v1.2.3`,
+revision `linkedin-contacts-00012-pm2`, 2026-11-06, a rebuild with the
+current `.env`; `v1.2.2`, revision `linkedin-contacts-00011-d2j`, 2026-09-19
+03:22 (UTC), 32 seconds: on the Suggested screen, Save, Clear and Send stay on
+the page, and a sent message is shown locked;
 `v1.2.1`, revision `linkedin-contacts-00010-ncm`, 03:12 (UTC), 28 seconds, the
 two tabs, What they did and Our conversation; `v1.2.0`, revision
 `linkedin-contacts-00009-wjx`, 2026-09-19 02:05 (UTC), 27 seconds, the first

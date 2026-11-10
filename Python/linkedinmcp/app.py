@@ -29,6 +29,10 @@ wanted. Both are sync `def` handlers -- FastAPI runs those in its thread pool,
 which is where the blocking jobs belong. A failure answers 500 with the
 exception's class name only; the message stays in the service's own log.
 
+One more route is open, as `/health` is: `GET` and `HEAD /d/{token}`, a
+tracked link to a file of the documents bucket (`documents.py`). The file is
+sent from here, and every request on the link is stored.
+
 Modules are imported as modules (`from linkedinmcp import mcp_server`), matching
 the convention `linkedinmcp/settings.py` sets out.
 """
@@ -39,13 +43,17 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from starlette.middleware import Middleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from linkedinmcp import clients, clock, http_auth, jobs, mcp_server, monitor, run_jobs, settings as cfg, state
+from linkedinmcp import clients, clock, documents, http_auth, jobs, mcp_server, monitor, run_jobs, settings as cfg, state
 
 logger = logging.getLogger(__name__)
+
+#: On every answer to a document link: never cached, so each open reaches
+#: this service, and never indexed.
+_LINK_HEADERS = {"Cache-Control": "no-store", "X-Robots-Tag": "noindex"}
 
 
 class _ServeMcpWithoutSlash:
@@ -102,7 +110,8 @@ async def _json_body(request: Request) -> Any:
 
 def create_app(settings: cfg.OutreachSettings | None = None) -> FastAPI:
     """Build the service: the MCP app behind an API key, the key-protected
-    `POST /jobs/{job}` and `POST /webhooks/unipile`, and an open `/health`.
+    `POST /jobs/{job}` and `POST /webhooks/unipile`, an open `/health`, and
+    the open document links, `/d/{token}`.
 
     Pass `settings` to skip environment loading entirely -- that is the path
     every test takes, with
@@ -160,6 +169,50 @@ def create_app(settings: cfg.OutreachSettings | None = None) -> FastAPI:
         checks nothing.
         """
         return {"ok": True}
+
+    @app.api_route("/d/{token}", methods=["GET", "HEAD"])
+    def document_link(token: str, request: Request) -> Response:
+        """A tracked link to a file of the documents bucket. Open, like
+        `/health`: whoever holds the link gets the file, sent from here and
+        never by a redirect to the bucket. Each request is stored, and a
+        person's is counted as an open (`documents.record_request`).
+
+        A link that does not work answers the 404 page and stores nothing.
+        No `Accept-Ranges`, and `Range` is ignored: a PDF viewer told about
+        ranges fetches one open in several requests.
+        """
+        now = clock.utcnow()
+
+        def not_found(kind: str) -> HTMLResponse:
+            return HTMLResponse(documents.not_found_page(kind, now.year), status_code=404, headers=_LINK_HEADERS)
+
+        if not documents.usable_token(token):
+            return not_found("invalid")
+        db = clients.firestore_client()
+        link = documents.get_link(db, settings, token)
+        if link is None:
+            return not_found("invalid")
+        found = documents.read_document(
+            clients.storage_client(), settings, link["document"], body=request.method != "HEAD"
+        )
+        if found is None:
+            return not_found("gone")
+        content, content_type, size = found
+        forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        try:
+            documents.record_request(
+                db, settings, link, method=request.method, user_agent=request.headers.get("user-agent", ""),
+                ip=forwarded or (request.client.host if request.client else ""),
+                accept_language=request.headers.get("accept-language"), now=now,
+            )
+        except Exception:
+            # The recipient still gets the file.
+            logger.exception("the request on document link %s was not stored", token)
+        filename = link["name"].encode("ascii", "replace").decode("ascii").replace('"', "_")
+        headers = {**_LINK_HEADERS, "Content-Disposition": f'inline; filename="{filename}"'}
+        if request.method == "HEAD":
+            headers["Content-Length"] = str(size)  # the file's, not the empty body's
+        return Response(content, media_type=content_type, headers=headers)
 
     @app.post("/jobs/{job}", dependencies=[Depends(http_auth.require_api_key)])
     def run_job(job: str, dry_run: bool = False) -> JSONResponse:

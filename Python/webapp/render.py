@@ -26,6 +26,16 @@ def local(value: datetime | None, tz: str) -> str:
 templates.env.filters["local"] = local
 
 
+def filesize(size: int | None) -> str:
+    """A byte count as `154 KB`, or `1.5 MB` from 1 MB up."""
+    if size is None:
+        return ""
+    return f"{size / 1024:.0f} KB" if size < 1024 * 1024 else f"{size / 1024 / 1024:.1f} MB"
+
+
+templates.env.filters["filesize"] = filesize
+
+
 def qs(params: dict, **changes) -> str:
     """A query string of `params` with `changes` applied, empty values left
     out and a list repeated as one parameter per value: how a sort heading

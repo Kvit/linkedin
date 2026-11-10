@@ -124,6 +124,27 @@ class OutreachSettings(BaseConfig):
         default_factory=list
     )
 
+    #: The bucket and folder whose files the Documents tab lists
+    #: (`documents.py`). The prefix must end with `/`.
+    documents_bucket: str = "rr-recovr-public"
+    documents_prefix: str = "marketing/"
+
+    #: What a document link starts with; the link's id follows.
+    document_link_base: str = "https://info.paypredict.net/d/"
+
+    #: A request whose User-Agent contains one of these (any case) is a
+    #: scanner or a link preview, stored but not counted as an open.
+    document_bot_agents: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            "bot", "crawler", "spider", "preview", "facebookexternalhit",
+            "curl", "wget", "python", "go-http-client", "okhttp", "java",
+        ]
+    )
+
+    #: A person's request from the same address this soon after the link's
+    #: last counted open is a reload, not a new open.
+    document_reopen_seconds: int = Field(default=60, ge=0)
+
     #: Industry labels eligible for an intro. Mirrors `TARGET_INDUSTRIES` in
     #: `send-intros.ipynb`. Setting this to an empty string makes **no contact
     #: eligible** -- a deliberate kill switch, and not the same as leaving it
@@ -176,7 +197,7 @@ class OutreachSettings(BaseConfig):
     jobs_queue: str = "linkedin-jobs"
     jobs_location: str = "us-central1"
 
-    @field_validator("allowed_link_domains", "target_industries", mode="before")
+    @field_validator("allowed_link_domains", "target_industries", "document_bot_agents", mode="before")
     @classmethod
     def _split_csv(cls, value: Any) -> Any:
         """Accept `a.com, b.com` from the environment as well as a real list.

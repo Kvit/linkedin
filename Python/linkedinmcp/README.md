@@ -183,6 +183,7 @@ read-only calls.
 
 | Version | Revision | What it changed |
 |---|---|---|
+| `v2.8.0` | `linkedin-outreach-00029-9xv` | Deployed 2026-11-10. Document links: `GET` and `HEAD /d/{token}`, open to whoever holds the link, send a file of `gs://rr-recovr-public/marketing/` from this service and store every request (`documents.py`, collections `document_links` and `document_requests`); a link that does not work answers a designed 404 page. Five `OUTREACH_DOCUMENT*` settings; `OUTREACH_ALLOWED_LINK_DOMAINS=info.paypredict.net` in `Python/.env`, so a message may link to that host. The domain mapping `info.paypredict.net` was created the same day. Built from commit eef2c32 plus the uncommitted Documents changes. Still 33 tools: the document tools are not built yet. |
 | `v2.7.0` | `linkedin-outreach-00024-zrc` | The four workflows as prompts and `workflow://{name}` resources, named in new server instructions (`workflows.py`). `get_user_activity_summary(needs_comment, not_messaged_days)`: the comment worklist (own posts in the window without a posted comment of mine, the row naming the post) and the message worklist (not messaged in N days, no refused stage or handling); rows add `handling`, `last_sent_date`, `last_reply_date` from `analysis` and leave empty values out. `fetch_user_activity(kinds)`. `get_job` answers short while a job runs and reports progress to the client while it waits. `sync_messages` returns the staged replies (`staged`); a live `get_contacts` no longer returns its connection rows. `update_suggested_message` says drafts are never queued. FastMCP 4.0.5. 33 tools. |
 | `v2.6.2` | `linkedin-outreach-00023-gfs` | `get_user_activity_summary` is described as the primary tool for analysis and `fetch_user_activity` as the text for writing only, shorter and in one order: purpose, when to call, fields. Summary rows add `industry`, `pipeline_stage`, `own_posts`, `profile_changed_fields`, `new_position` and `last_liked_at`, so analysis needs no fetch. Built from commit 6a2f046 plus the uncommitted activity changes. 33 tools. |
 | `v2.6.1` | `linkedin-outreach-00022-fg5` | Summary rows and `fetch_user_activity` carry `last_post_at`: the contact's newest post or repost the crawler has seen, older than its window too (a repost dated when reposted), null until a check that reads posts. Built from commit 6a2f046 plus the uncommitted `profile_changed_at` and `last_post_at` changes. 33 tools. |
@@ -804,7 +805,12 @@ All optional. The default applies unless you set the variable in `Python/.env`.
 | `OUTREACH_MIN_DAYS_BETWEEN_TOUCHES` | `5` | Minimum days between messages to one contact. |
 | `OUTREACH_MAX_TOUCHES` | `3` | Most outbound messages one contact may ever receive, the intro included. |
 | `OUTREACH_MESSAGE_MAX_CHARS` | `1200` | Longest message the service will send. |
-| `OUTREACH_ALLOWED_LINK_DOMAINS` | none | Comma-separated domains a message may link to. Empty means no links at all. |
+| `OUTREACH_ALLOWED_LINK_DOMAINS` | none | Comma-separated domains a message may link to. Empty means no links at all. `Python/.env` sets `info.paypredict.net`, the host of the document links, since 2026-11-09. |
+| `OUTREACH_DOCUMENTS_BUCKET` | `rr-recovr-public` | The bucket whose files the document links serve (`documents.py`). |
+| `OUTREACH_DOCUMENTS_PREFIX` | `marketing/` | The folder in it. Must end with `/`. Its files are listed again on every call; nothing is cached. |
+| `OUTREACH_DOCUMENT_LINK_BASE` | `https://info.paypredict.net/d/` | What a document link starts with; the link's id follows. |
+| `OUTREACH_DOCUMENT_BOT_AGENTS` | `bot,crawler,spider,preview,facebookexternalhit,curl,wget,python,go-http-client,okhttp,java` | A request whose User-Agent contains one of these (any case) is stored but not counted as an open. So is a `HEAD` request, and one without `Accept-Language`. |
+| `OUTREACH_DOCUMENT_REOPEN_SECONDS` | `60` | A person's request from the same address this soon after the link's last counted open is a reload, not a new open. |
 | `OUTREACH_TARGET_INDUSTRIES` | `RCM,Pathology,Medical Lab,Physician Practice` | Industries eligible for an intro. |
 | `OUTREACH_TEMPLATES_DIR` | `templates` | Where message templates (`intro.md`) are read from, relative to the working directory. |
 | `OUTREACH_REQUIRE_APPROVAL` | `false` | Hold every newly queued message for a human; a reply waits regardless. |
@@ -918,7 +924,7 @@ linkedinmcp/
   app.py            ASGI entry point: create_app() builds the app
   settings.py       OutreachSettings, get_settings() and load_environment()
   http_auth.py      ApiKeyMiddleware and the require_api_key dependency
-  clients.py        factories for the Firestore, Unipile and Gemini clients
+  clients.py        factories for the Firestore, Cloud Storage, Unipile and Gemini clients
   clock.py          utcnow() and local_date() -- the one place time is read
   state.py          RuntimeState: the runtime_state/linkedin document
   ledger.py         action_log: the append-only record of every send/fetch
@@ -926,6 +932,8 @@ linkedinmcp/
   decisions.py      decisions: the async question/alert inbox
   guards.py         validate_text() and check_send() -- pure, no I/O
   contacts.py       read helpers behind the read-only MCP tools
+  documents.py      tracked links to the bucket's files: listing, links, which requests count
+  link_page.html    the 404 page a recipient sees (link_logo.jpg is embedded in it)
   fetch_queue.py    fetch_queue: the daily-connections-to-fetch queue
   fetching.py       fetch_one()/preview(): one profile per idle tick
   stars.py          get_stars(): LinkedIn's starred conversations, marked on analysis
@@ -1166,6 +1174,7 @@ client's own job, not the key's.
 | Request | Response | Why |
 |---|---|---|
 | `GET /health` | `200 {"ok": true}` | Open, for a person or an uptime monitor without the key. Cloud Run's own startup probe is a TCP check and never calls it. |
+| `GET` or `HEAD /d/{token}` | `200` with the file (`HEAD`: no body); `404` with a designed page for an unknown link or a file that is gone | Open: a tracked link to a file of the documents bucket, for whoever holds it. The file is sent from here, never by a redirect to the bucket. Every request is stored in `document_requests`; a person's is counted on the link in `document_links`, a scanner's or link preview's is not. `Cache-Control: no-store`, no `Accept-Ranges`. |
 | `POST /mcp/` with a valid key | `200` | The MCP endpoint. Stateless Streamable HTTP. |
 | `POST /mcp/` with no key or a wrong one | `401` | |
 | `POST /mcp`, without the trailing slash | same as `/mcp/` | Rewritten before routing, not redirected. |

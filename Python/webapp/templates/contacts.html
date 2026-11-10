@@ -44,11 +44,9 @@
 <p class="view-on"><strong>Need my answer:</strong> prospects, leads and contacts with no stage whose newest message is theirs, newest first. <a href="/contacts?{{ qs(link, view=None) }}">Show all contacts</a></p>
 {% endif %}
 <p class="muted">{{ total }} contact{{ "" if total == 1 else "s" }}, page {{ page }} of {{ pages }}</p>
-{% macro th(column, label, cls="") -%}
-  <th class="{{ cls }}"><a href="/contacts?{{ qs(link, sort=column, dir='asc' if sort == column and dir == 'desc' else 'desc') }}">{{ label }}{% if sort == column %} {{ '▾' if dir == 'desc' else '▴' }}{% endif %}</a></th>
-{%- endmacro %}
+{% from "_sort.html" import th with context %}
 <div class="table-scroll">
-<table class="list">
+<table class="list" data-selected-key="contacts:selected">
   <thead><tr>
     {{ th("name", "Name") }}<th></th>{{ th("industry", "Industry") }}{{ th("function", "Function") }}
     {{ th("seniority", "Seniority") }}{{ th("pipeline_stage", "Stage") }}{{ th("handling", "Handling") }}
@@ -57,8 +55,8 @@
   </tr></thead>
   <tbody>
   {% for row in rows %}
-    <tr>
-      <td><a href="/contacts/{{ row.doc_id|urlencode }}">{{ row.name or row.doc_id }}</a></td>
+    <tr data-row="{{ row.doc_id }}">
+      <td><a href="/contacts/{{ row.doc_id|urlencode }}" target="_blank">{{ row.name or row.doc_id }}</a></td>
       <td><a href="{{ row.profileUrl or 'https://www.linkedin.com/in/' ~ row.doc_id }}" target="_blank" rel="noopener" title="Open on LinkedIn">in</a></td>
       <td>{{ row.industry or "" }}</td><td>{{ row.function or "" }}</td>
       <td>{{ row.seniority or "" }}</td><td>{{ row.pipeline_stage or "" }}</td><td>{{ row.handling or "" }}</td>
@@ -84,4 +82,5 @@
     }
   });
 </script>
+<script src="/static/selected-row.js"></script>
 {% endblock %}

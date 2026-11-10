@@ -32,10 +32,11 @@ import httpx
 import pytest
 from mcp.types import LATEST_PROTOCOL_VERSION
 
-from linkedinmcp import app, clients, clock, jobs, monitor, settings as cfg, state
+from linkedinmcp import app, clients, clock, documents, jobs, monitor, settings as cfg, state
 from linkedinmcp.http_auth import ApiKeyMiddleware
 from linkedinmcp.settings import OutreachSettings
 from tests.linkedinmcp.fake_firestore import FakeFirestore
+from tests.linkedinmcp.fake_storage import FakeStorage
 
 API_KEY = "test-key-not-a-real-secret"
 
@@ -688,3 +689,87 @@ async def test_the_job_worker_needs_the_key_and_runs_the_job_it_is_given(backend
     assert response.json()["status"] == "succeeded"
     (args, _kwargs), = runs.calls
     assert args == ("send_intro:20260911T140000000000Z", backend.settings)
+
+
+# --- GET and HEAD /d/{token} ----------------------------------------------------
+#
+# The one route a recipient reaches: no key, the file sent by this service,
+# and every request stored (`documents.py`).
+
+PERSON = {"user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0", "accept-language": "en-US"}
+
+
+@pytest.fixture
+def shared(monkeypatch):
+    db, storage = FakeFirestore(), FakeStorage()
+    storage.add("marketing/Recovr_One_Pager.pdf", b"%PDF-1.7 one pager")
+    monkeypatch.setattr(clients, "firestore_client", lambda: db)
+    monkeypatch.setattr(clients, "storage_client", lambda: storage)
+    monkeypatch.setattr(clock, "utcnow", lambda: NOW)
+    settings = OutreachSettings(api_key=API_KEY, _env_file=None)
+    documents.ensure_permanent_links(db, settings, ["Recovr_One_Pager.pdf"], NOW)
+    return SimpleNamespace(db=db, storage=storage, settings=settings, app=app.create_app(settings))
+
+
+def _link(shared):
+    return documents.get_link(shared.db, shared.settings, "recovr-one-pager.pdf")
+
+
+def _requests(shared):
+    return list(shared.db.collection("document_requests").stream())
+
+
+@pytest.mark.anyio
+async def test_document_link_serves_the_file_without_a_key_and_counts_the_open(shared):
+    async with driving(shared.app) as client:
+        response = await client.get("/d/recovr-one-pager.pdf", headers=PERSON)
+
+    assert response.status_code == 200 and response.content == b"%PDF-1.7 one pager"
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["content-disposition"] == 'inline; filename="Recovr_One_Pager.pdf"'
+    assert response.headers["cache-control"] == "no-store" and response.headers["x-robots-tag"] == "noindex"
+    assert "accept-ranges" not in response.headers
+    assert _link(shared)["opens"] == 1
+
+
+@pytest.mark.anyio
+async def test_document_link_head_request_gets_no_body_and_is_not_an_open(shared):
+    async with driving(shared.app) as client:
+        response = await client.head("/d/recovr-one-pager.pdf", headers=PERSON)
+
+    assert response.status_code == 200 and response.content == b""
+    assert response.headers["content-length"] == "18"  # the file's size, as GET sends it
+    assert (_link(shared)["opens"], _link(shared)["bot_requests"]) == (0, 1)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("token", ["nope", "__x__", "a" * 201])
+async def test_document_link_with_an_unknown_or_unusable_token_is_404_and_stores_nothing(shared, token):
+    async with driving(shared.app) as client:
+        response = await client.get(f"/d/{token}", headers=PERSON)
+
+    assert response.status_code == 404 and "<title>This link is not valid</title>" in response.text
+    assert response.headers["content-type"].startswith("text/html")
+    assert _requests(shared) == []
+
+
+@pytest.mark.anyio
+async def test_document_link_to_a_deleted_file_is_404(shared):
+    shared.storage.files.clear()
+    async with driving(shared.app) as client:
+        response = await client.get("/d/recovr-one-pager.pdf", headers=PERSON)
+
+    assert response.status_code == 404 and "<title>This document is no longer available</title>" in response.text
+    assert _requests(shared) == []
+
+
+@pytest.mark.anyio
+async def test_document_link_serves_the_file_when_the_request_cannot_be_stored(shared, monkeypatch):
+    def fail(*args, **kwargs):
+        raise RuntimeError("firestore is down")
+
+    monkeypatch.setattr(documents, "record_request", fail)
+    async with driving(shared.app) as client:
+        response = await client.get("/d/recovr-one-pager.pdf", headers=PERSON)
+
+    assert response.status_code == 200 and response.content == b"%PDF-1.7 one pager"

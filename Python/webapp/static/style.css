@@ -46,7 +46,7 @@ h3 { font-size: 0.9375rem; font-weight: 600; margin: 1rem 0 0.35rem; }
 
 button, select, input { font: inherit; color: inherit; }
 
-select, input[type="search"] {
+select, input[type="search"], input[type="text"] {
   background: var(--slide);
   border: 1px solid var(--rule-strong);
   border-radius: 4px;
@@ -249,6 +249,8 @@ details.multi input[type="checkbox"] { accent-color: var(--hematoxylin); margin:
 }
 .list thead th { position: sticky; top: 0; z-index: 1; background: var(--slide); }
 td.wrap { white-space: normal; min-width: 24rem; max-width: 40rem; }
+/* A short table: as tall as its rows. */
+.table-scroll.fit { max-height: none; min-height: 0; }
 .pager { display: flex; gap: 1rem; margin-top: 0.75rem; }
 
 /* Home */
@@ -481,3 +483,15 @@ details summary { cursor: pointer; margin: 2rem 0 0.5rem; font-weight: 600; }
 tr.selected td { background: var(--hematoxylin-wash); }
 tr.selected td:first-child { box-shadow: inset 3px 0 0 var(--hematoxylin); font-weight: 600; }
 .compose textarea[readonly] { background: var(--glass); cursor: default; }
+
+/* Documents: a link with its Copy button, and the requests under a link. */
+
+.link-cell code, .link-line code { font-size: 0.8125rem; user-select: all; }
+.link-cell button, .link-line button { min-height: 1.6rem; padding: 0.1rem 0.55rem; margin-left: 0.5rem; font-size: 0.8125rem; }
+.link-line { margin: 0 0 0.35rem; }
+tr.requests > td { padding: 0 0.6rem 0.4rem 1.6rem; background: var(--glass); }
+tr.requests:hover > td { background: var(--glass); }
+details.requests summary { cursor: pointer; color: var(--muted); padding: 0.3rem 0; }
+details.requests table { margin: 0.2rem 0 0.4rem; }
+details.requests tbody tr:hover td { background: none; }
+.link-counts { margin: 0 0 0.2rem; }

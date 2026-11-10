@@ -413,3 +413,17 @@ def test_the_unipile_settings_read_zero_pacing_after_load_environment(dotenv_dir
     assert unipile.max_delay_seconds == 0
     assert unipile.long_pause_every == 0
     assert unipile.throttle_retries == 0
+
+
+def test_document_settings_have_the_design_defaults_and_take_a_comma_list(monkeypatch):
+    _env(monkeypatch)
+    settings = OutreachSettings.from_env(env_file=None)
+
+    assert settings.documents_bucket == "rr-recovr-public"
+    assert settings.documents_prefix == "marketing/"
+    assert settings.document_link_base == "https://info.paypredict.net/d/"
+    assert settings.document_reopen_seconds == 60
+    assert {"bot", "preview", "curl"} <= set(settings.document_bot_agents)
+
+    _env(monkeypatch, OUTREACH_DOCUMENT_BOT_AGENTS="Foo, Bar")
+    assert OutreachSettings.from_env(env_file=None).document_bot_agents == ["Foo", "Bar"]

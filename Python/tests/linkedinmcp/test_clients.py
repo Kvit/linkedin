@@ -15,6 +15,8 @@ patched function also proves the factory actually delegates, rather than
 returning something else without ever calling it.
 """
 
+import google.cloud.storage
+
 import lib.firestore
 import lib.unipile
 import pipeline
@@ -67,3 +69,12 @@ def test_firestore_client_returns_a_new_object_on_every_call(monkeypatch):
 
     assert first is not second
     assert len(calls) == 2
+
+
+def test_storage_client_returns_a_new_object_on_every_call(monkeypatch):
+    made = []
+    monkeypatch.setattr(lib.firestore, "use_local_credentials_if_present", lambda: None)
+    monkeypatch.setattr(google.cloud.storage, "Client", lambda project: made.append(project) or object())
+
+    assert clients.storage_client() is not clients.storage_client()
+    assert made == ["vk-linkedin", "vk-linkedin"]

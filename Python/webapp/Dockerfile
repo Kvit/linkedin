@@ -67,7 +67,7 @@ RUN uv sync --no-dev --frozen
 # either: that tool probes Firestore and nothing else, so the container would
 # report itself healthy while being unable to send a single message. One import
 # here costs nothing and turns a silent 7am failure into a red build.
-RUN uv run --no-sync python -c "import linkedinmcp.app, webapp.app, lib.unipile, pipeline, functions, profiles, messages_sync"
+RUN uv run --no-sync python -c "import linkedinmcp.app, webapp.app, lib.unipile, pipeline, functions, profiles, messages_sync, google.cloud.storage"
 
 EXPOSE 8080
 

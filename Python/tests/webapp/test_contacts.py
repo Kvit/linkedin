@@ -149,3 +149,11 @@ def test_release_takes_only_that_field_out_of_hand_set(client, db):
     response = client.post("/contacts/ann/release", data={"name": "industry"}, follow_redirects=False)
     assert response.headers["location"] == "/contacts/ann?released=industry"
     assert (_stored(db)["hand_set"], _stored(db)["industry"]) == (["seniority"], "RCM")
+
+
+def test_the_list_opens_a_contact_in_a_new_tab_and_its_row_can_stay_marked(client):
+    page = client.get("/contacts").text
+
+    assert '<a href="/contacts/ann" target="_blank">' in page
+    assert '<tr data-row="ann">' in page and 'data-selected-key="contacts:selected"' in page
+    assert '<script src="/static/selected-row.js"></script>' in page

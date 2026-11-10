@@ -4,7 +4,9 @@ never read from the environment (`_env_file=None`), the same way
 
 import pytest
 
+from linkedinmcp import clients
 from linkedinmcp.settings import OutreachSettings
+from tests.linkedinmcp.fake_storage import FakeStorage
 from webapp.settings import WebappSettings
 
 ME = "me@example.com"
@@ -15,6 +17,14 @@ AUDIENCE = "/projects/1/locations/us-central1/services/linkedin-contacts"
 def anyio_backend():
     """asyncio only: anyio would also try trio, which is not installed."""
     return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def storage(monkeypatch):
+    """An empty bucket for every webapp test, so none can reach the real one."""
+    fake = FakeStorage()
+    monkeypatch.setattr(clients, "storage_client", lambda: fake)
+    return fake
 
 
 def webapp_settings(*, dev_user=ME, audience=None) -> WebappSettings:

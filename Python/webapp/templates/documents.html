@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Documents{% endblock %}
+{% from "_sort.html" import th with context %}
+{% block content %}
+<h1>Documents</h1>
+{% if problem %}<p class="problem" role="alert">{{ problem }}</p>{% endif %}
+<p class="muted">{{ rows|length }} file{{ "" if rows|length == 1 else "s" }} in {{ folder }}, latest on top. A file added to the bucket shows here on the next load. An open is a request by a person; requests by scanners and link previews are stored but not counted.</p>
+{% if rows %}
+<div class="table-scroll fit">
+<table class="list" data-selected-key="documents:selected">
+  <thead><tr>
+    {{ th("name", "Document") }}{{ th("type", "Type") }}{{ th("size", "Size", "num") }}{{ th("updated_at", "Updated") }}
+    {{ th("url", "Main link") }}{{ th("opens", "Opens", "num") }}{{ th("links", "Sublinks", "num") }}
+    {{ th("last_open_at", "Last open") }}
+  </tr></thead>
+  <tbody>
+  {% for row in rows %}
+    <tr data-row="{{ row.name }}">
+      <td><a href="/documents/{{ row.name|urlencode }}" target="_blank">{{ row.name }}</a></td>
+      <td>{{ row.type }}</td>
+      <td class="num">{{ row.size|filesize }}</td>
+      <td>{{ row.updated_at|local(tz) }}</td>
+      <td class="link-cell">{% if row.url %}<code>{{ row.url }}</code><button type="button" data-copy="{{ row.url }}">Copy</button>{% endif %}</td>
+      <td class="num">{{ row.opens }}</td>
+      <td class="num">{{ row.links }}</td>
+      <td>{{ row.last_open_at|local(tz) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+<script src="/static/copy.js"></script>
+<script src="/static/selected-row.js"></script>
+{% endblock %}
