@@ -73,7 +73,9 @@ reaches Firestore, or does anything heavier than a stdlib import, at module
 scope. `pipeline` is the exception, imported inside the one helper that reads
 a contact's messages: it alone costs ~0.8 s to import.
 
-Every tool report stays small and never leaks a contact's personal fields:
+Every tool report stays small and never leaks a contact's personal fields,
+with one exception: `create_document_links` returns the email address of
+each contact it is asked to link, for the mail connector to write to.
 `contacts.py` already builds every contact-shaped dict as an explicit
 whitelist (never `email*`/`phone*`, `summary` capped), and every tool here
 that shapes a `queue`/`decisions`/`runs` row does the same. "Report, never
@@ -98,8 +100,8 @@ from lib import get_activity
 from lib.unipile import errors as unipile_errors
 from lib.unipile.config import UnipileSettings
 
-from linkedinmcp import clients, clock, contacts, decisions, fetch_queue, guards, monitor, queue, settings as cfg, state
-from linkedinmcp import workflows
+from linkedinmcp import clients, clock, contacts, decisions, documents, fetch_queue, guards, monitor, queue
+from linkedinmcp import settings as cfg, state, workflows
 
 #: `mask_error_details` (ruling P5-4): an exception a tool did not turn into
 #: a result reaches the client as `Error calling tool '<name>'` only; its
@@ -323,6 +325,7 @@ def list_contacts(
     limit: int = 25,
     tags: list[str] | None = None,
     replied: bool | None = None,
+    opened_document: bool = False,
 ) -> dict[str, Any]:
     """List contacts from the `analysis` collection, most recently active
     first (the later of when they last replied and when they were last
@@ -346,6 +349,12 @@ def list_contacts(
     needs_touch=true)` is everyone who has not answered that step and is
     due its follow-up.
 
+    `opened_document` keeps the contacts who opened a document sublink
+    (`create_document_links`) after your last message and have not replied
+    since -- any stage, no wait, not held back, nothing queued -- newest open
+    first: the follow-up list for documents. A row of a contact who opened a
+    document adds `last_document_open_at` and `last_opened_document`.
+
     Returns `{"contacts": [...], "count": n}`, or `{"ok": false, "reason":
     "invalid_since"}` when `since` is not a valid ISO date (`invalid` for bad
     `tags`, or `replied` without them). Every contact row holds only
@@ -365,6 +374,7 @@ def list_contacts(
         rows = contacts.list_contacts(
             db, settings, now, stage=stage, industry=industry, since=since,
             needs_touch=needs_touch, limit=limit, tags=cleaned_tags or None, replied=replied,
+            opened_document=opened_document,
         )
     except ValueError:
         return {"ok": False, "reason": "invalid_since"}
@@ -1106,6 +1116,136 @@ def set_handling(doc_id: str, value: str) -> dict[str, Any]:
     reference.set({"handling": choice}, merge=True)
     cancelled = queue.cancel_for_contact(db, doc_id, f"handling set to {choice}", now)
     return {"ok": True, "handling": choice, "cancelled": cancelled}
+
+
+def _compact(row: dict) -> dict:
+    """`row` without its empty values: an agent reads less."""
+    return {key: value for key, value in row.items() if value not in (None, "", [])}
+
+
+@mcp.tool
+def list_documents() -> dict[str, Any]:
+    """The marketing documents to share with tracked links, newest first.
+
+    Call it to find a document's `name` for `create_document_links`, or to see
+    how often each document was opened. Rows: `name`, `type`, `size` (bytes),
+    `updated_at`, `main_link` (the document's one public link: it counts opens
+    but not who opened), `opens` (opens by a person over all its links),
+    `sublinks` (links made for one recipient each), `last_open_at`. Empty
+    values are left out.
+    """
+    settings = cfg.get_settings()
+    files = documents.list_documents(clients.storage_client(), settings)
+    rows = [
+        _compact({
+            "name": row["name"], "type": row["type"], "size": row["size"],
+            "updated_at": _iso(row["updated_at"], settings.tz), "main_link": row["url"],
+            "opens": row["opens"], "sublinks": row["links"], "last_open_at": _iso(row["last_open_at"], settings.tz),
+        })
+        for row in documents.with_links(clients.firestore_client(), settings, files, clock.utcnow())
+    ]
+    return {"documents": rows, "count": len(rows)}
+
+
+@mcp.tool
+def create_document_links(
+    document: str, doc_ids: list[str] | None = None, labels: list[str] | None = None,
+) -> dict[str, Any]:
+    """Make tracked sublinks to one document: a new link for each contact in
+    `doc_ids` and for each free-text `labels` entry (a person who is not a
+    contact, or a place), at most 50 together. Each link counts its own opens.
+    Every call makes new links.
+
+    `document` is a `name` from `list_documents`. A contact row: `doc_id`,
+    `name`, `first_name`, `email` (stored address, or absent), `url`,
+    `email_html`. A label row: `label`, `url`, `email_html`. An unknown
+    contact: `{"doc_id", "ok": false, "reason": "not_found"}`; the other
+    links are still made. This is the only tool that returns an email address.
+
+    Email: one Gmail draft per recipient, with the link as `email_html` in
+    `htmlBody`, never `url`, never as plain `body`. The Gmail connector turns
+    any link it can see into a google.com redirect that shows the reader a
+    warning page; `email_html` reaches the reader unchanged, as text to copy.
+    A LinkedIn message carries `url` unchanged.
+
+    Refused, nothing stored: `unknown_document` (with `documents`, the names
+    that exist); `invalid` (no recipient, more than 50, a blank label or one
+    over 200 characters, an id no contact could have).
+    """
+    labels = [str(label).strip() for label in labels or []]
+    if any(not label or len(label) > documents.LABEL_MAX for label in labels):
+        return _invalid(f"Each label has 1 to {documents.LABEL_MAX} characters.")
+    ids, refusal = _checked_doc_ids(doc_ids or None)
+    if refusal is not None:
+        return refusal
+    ids = ids or []
+    if not ids and not labels:
+        return _invalid("Name at least one contact in doc_ids or one label.")
+    if len(ids) + len(labels) > MAX_DOC_IDS:
+        return _invalid(f"At most {MAX_DOC_IDS} links per call.")
+    settings = cfg.get_settings()
+    names = [row["name"] for row in documents.list_documents(clients.storage_client(), settings)]
+    if document not in names:
+        return {"ok": False, "reason": "unknown_document", "documents": names}
+    db = clients.firestore_client()
+    now = clock.utcnow()
+    found = contacts.recipients(db, ids)
+    rows = []
+    for doc_id in ids:
+        if doc_id not in found:
+            rows.append({"doc_id": doc_id, "ok": False, "reason": "not_found"})
+            continue
+        link = documents.create_link(db, settings, document, doc_id=doc_id, created_by="mcp", now=now)
+        rows.append(_compact({
+            "doc_id": doc_id, **found[doc_id], "url": link["url"], "email_html": documents.mail_text(link["url"]),
+        }))
+    for label in labels:
+        link = documents.create_link(db, settings, document, label=label, created_by="mcp", now=now)
+        rows.append({"label": label, "url": link["url"], "email_html": documents.mail_text(link["url"])})
+    return {"document": document, "links": rows, "count": sum("url" in row for row in rows)}
+
+
+@mcp.tool
+def list_document_opens(
+    since: str | None = None, document: str | None = None, doc_id: str | None = None, limit: int = 50,
+) -> dict[str, Any]:
+    """Who opened which document: links with at least one open by a person,
+    newest open first. Requests by email scanners and link previews are not
+    opens. For the contacts who opened and have not replied, use
+    `list_contacts(opened_document=true)`.
+
+    Filters: `since` (ISO date or date-time: last open on or after it),
+    `document` (a `name` from `list_documents`), `doc_id` (one contact).
+    `limit` 1 to 100.
+
+    Rows: `url`, `document`, `kind` (`custom` = a sublink, `permanent` = the
+    document's main link), `doc_id` and `name` (a contact's sublink), `label`,
+    `created_by`, `created_at`, `opens`, `first_open_at`, `last_open_at`,
+    `bot_requests`. Empty values are left out. Never an email address.
+    """
+    settings = cfg.get_settings()
+    bound = None
+    if since is not None:
+        bound = _parse_moment(since, settings.tz)
+        if bound is None:
+            return {"ok": False, "reason": "invalid_since"}
+    if doc_id is not None and not _usable_id(doc_id):
+        return {"opens": [], "count": 0}
+    db = clients.firestore_client()
+    found = documents.links(db, settings, name=document, doc_id=doc_id, opened=True, opened_since=bound)
+    found = found[: max(1, min(100, limit))]
+    names = contacts.contact_names(db, sorted({link["doc_id"] for link in found if link.get("doc_id")}))
+    rows = [
+        _compact({
+            "url": link["url"], "document": link["name"], "kind": link.get("kind"), "doc_id": link.get("doc_id"),
+            "name": names.get(link.get("doc_id")), "label": link.get("label"), "created_by": link.get("created_by"),
+            "created_at": _iso(link.get("created_at"), settings.tz), "opens": link.get("opens"),
+            "first_open_at": _iso(link.get("first_open_at"), settings.tz),
+            "last_open_at": _iso(link.get("last_open_at"), settings.tz), "bot_requests": link.get("bot_requests"),
+        })
+        for link in found
+    ]
+    return {"opens": rows, "count": len(rows)}
 
 
 @mcp.tool

@@ -26,6 +26,9 @@ REQUESTS = "document_requests"
 PERMANENT = "permanent"
 CUSTOM = "custom"
 
+#: Longest label of a sublink made for a person who is not a contact, or a place.
+LABEL_MAX = 200
+
 #: What a request is: a scanner or a link preview, or a person.
 BOT = "bot"
 PERSON = "person"
@@ -104,6 +107,20 @@ def usable_token(token: str) -> bool:
 
 def link_url(settings, link_id: str) -> str:
     return settings.document_link_base.rstrip("/") + "/" + link_id
+
+
+def mail_text(url: str) -> str:
+    """`url` as HTML text for an email the Gmail connector writes: the scheme
+    and the host's last label each in a span of their own. The connector, on
+    create and on update, rewrites every link it can see (an anchor, or a URL
+    in plain or HTML text) into an unsigned google.com redirect; this form
+    reaches the reader unchanged, as the full address in text to copy
+    (measured 2026-11-10 for `info.paypredict.net`)."""
+    scheme, _, rest = url.rpartition("://")
+    host, slash, path = rest.partition("/")
+    stem, dot, top = host.rpartition(".")
+    host = f"{stem}<span>.{top}</span>" if dot else host
+    return (f"<span>{scheme}://</span>" if scheme else "") + host + slash + path
 
 
 def _object(settings, name: str) -> str:
@@ -204,8 +221,12 @@ def get_link(db, settings, link_id: str) -> dict | None:
     return _link(settings, snapshot) if snapshot.exists else None
 
 
-def links(db, settings, *, name: str | None = None, doc_id: str | None = None) -> list[dict]:
-    """The links, newest first: all of them, a file's, or a contact's."""
+def links(
+    db, settings, *, name: str | None = None, doc_id: str | None = None,
+    opened: bool = False, opened_since: datetime | None = None,
+) -> list[dict]:
+    """The links -- all, a file's or a contact's -- newest first. With `opened`
+    or `opened_since`, only those opened (since then), newest open first."""
     from google.cloud.firestore_v1.base_query import FieldFilter
 
     query = db.collection(LINKS)
@@ -213,10 +234,44 @@ def links(db, settings, *, name: str | None = None, doc_id: str | None = None) -
         query = query.where(filter=FieldFilter("doc_id", "==", doc_id))
     elif name is not None:
         query = query.where(filter=FieldFilter("document", "==", _object(settings, name)))
+    elif opened_since is not None:
+        query = query.where(filter=FieldFilter("last_open_at", ">=", opened_since))
+    elif opened:
+        query = query.where(filter=FieldFilter("opens", ">", 0))
     found = [_link(settings, snapshot) for snapshot in query.stream()]
     if doc_id is not None and name is not None:
         found = [link for link in found if link["name"] == name]
-    return sorted(found, key=lambda link: link["created_at"], reverse=True)
+    if not (opened or opened_since is not None):
+        return sorted(found, key=lambda link: link["created_at"], reverse=True)
+    found = [
+        link for link in found
+        if (link.get("opens") or 0) > 0 and (opened_since is None or link["last_open_at"] >= opened_since)
+    ]
+    return sorted(found, key=lambda link: link["last_open_at"], reverse=True)
+
+
+def opened_by_contact(db, settings) -> dict[str, dict]:
+    """`{doc_id: {"at", "document"}}`: each contact's newest open over their sublinks."""
+    found: dict[str, dict] = {}
+    for link in links(db, settings, opened=True):  # newest open first
+        doc_id = link.get("doc_id")
+        if link.get("kind") == CUSTOM and doc_id and doc_id not in found:
+            found[doc_id] = {"at": link["last_open_at"], "document": link["name"]}
+    return found
+
+
+def with_links(db, settings, files: list[dict], now: datetime) -> list[dict]:
+    """`files` (from `list_documents`), each with its main link's `url` (made if
+    missing) and its `opens`, `links` (sublinks) and `last_open_at`."""
+    main = ensure_permanent_links(db, settings, [file["name"] for file in files], now)
+    stats = totals(links(db, settings))
+    return [
+        {
+            **file, "url": link_url(settings, main[file["name"]]) if file["name"] in main else None,
+            **stats.get(file["name"], {"opens": 0, "links": 0, "last_open_at": None}),
+        }
+        for file in files
+    ]
 
 
 def totals(found: list[dict]) -> dict[str, dict]:

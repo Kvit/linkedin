@@ -34,7 +34,7 @@ is still running.
 
 - [Where things stand](#where-things-stand)
 - [A normal day](#a-normal-day)
-- [The 33 tools, and when to reach for each](#the-33-tools-and-when-to-reach-for-each)
+- [The 36 tools, and when to reach for each](#the-36-tools-and-when-to-reach-for-each)
 - [Connecting to it](#connecting-to-it)
 - [When something stops](#when-something-stops)
 - [Settings you might change](#settings-you-might-change)
@@ -49,7 +49,7 @@ is still running.
 ## Where things stand
 
 **Everything is built, and a session drives it.** The send path, the load of
-new connections and MCP v2 (33 tools, the six process steps running as jobs)
+new connections and MCP v2 (36 tools, the six process steps running as jobs)
 all exist, are tested and have been verified against the live service. The
 design notes behind them are
 `docs/superpowers/specs/2026-09-09-outreach-agent-design.md` (the service),
@@ -183,6 +183,8 @@ read-only calls.
 
 | Version | Revision | What it changed |
 |---|---|---|
+| `v2.9.1` | `linkedin-outreach-00031-7fs` | Deployed 2026-11-10. `create_document_links` rows add `email_html`, the link as text for an email draft made with the Gmail connector, which rewrites every link it can see into a `google.com/url` redirect (a known defect of Google's Gmail MCP backend, anthropics/claude-code #66010). The description tells the agent to put `email_html` in `htmlBody`. 36 tools. Built from commit 7f0da5b plus the uncommitted Stage 3 changes. |
+| `v2.9.0` | `linkedin-outreach-00030-l5w` | Deployed 2026-11-10. The three document tools, `list_documents`, `create_document_links` (the only tool that returns an email address) and `list_document_opens`, and `list_contacts(opened_document=true)`, the follow-up list of contacts who opened a document sublink and have not replied. 36 tools, checked over HTTP straight after; `list_documents` 11 rows. Built from commit 7f0da5b plus the uncommitted Stage 3 changes. |
 | `v2.8.0` | `linkedin-outreach-00029-9xv` | Deployed 2026-11-10. Document links: `GET` and `HEAD /d/{token}`, open to whoever holds the link, send a file of `gs://rr-recovr-public/marketing/` from this service and store every request (`documents.py`, collections `document_links` and `document_requests`); a link that does not work answers a designed 404 page. Five `OUTREACH_DOCUMENT*` settings; `OUTREACH_ALLOWED_LINK_DOMAINS=info.paypredict.net` in `Python/.env`, so a message may link to that host. The domain mapping `info.paypredict.net` was created the same day. Built from commit eef2c32 plus the uncommitted Documents changes. Still 33 tools: the document tools are not built yet. |
 | `v2.7.0` | `linkedin-outreach-00024-zrc` | The four workflows as prompts and `workflow://{name}` resources, named in new server instructions (`workflows.py`). `get_user_activity_summary(needs_comment, not_messaged_days)`: the comment worklist (own posts in the window without a posted comment of mine, the row naming the post) and the message worklist (not messaged in N days, no refused stage or handling); rows add `handling`, `last_sent_date`, `last_reply_date` from `analysis` and leave empty values out. `fetch_user_activity(kinds)`. `get_job` answers short while a job runs and reports progress to the client while it waits. `sync_messages` returns the staged replies (`staged`); a live `get_contacts` no longer returns its connection rows. `update_suggested_message` says drafts are never queued. FastMCP 4.0.5. 33 tools. |
 | `v2.6.2` | `linkedin-outreach-00023-gfs` | `get_user_activity_summary` is described as the primary tool for analysis and `fetch_user_activity` as the text for writing only, shorter and in one order: purpose, when to call, fields. Summary rows add `industry`, `pipeline_stage`, `own_posts`, `profile_changed_fields`, `new_position` and `last_liked_at`, so analysis needs no fetch. Built from commit 6a2f046 plus the uncommitted activity changes. 33 tools. |
@@ -266,7 +268,7 @@ four. Spec: `docs/superpowers/specs/2026-09-19-agent-workflows-design.md`.
 | `comment_on_posts(days=7, limit=10, live=false)` | the summary's `needs_comment` rows, then a comment draft per post (posted at once with `live=true`); drafts are posted when you say send |
 | `suggest_messages(days=14, not_messaged_days=30, limit=10)` | the summary's `not_messaged_days` rows, each contact's activity, then `update_suggested_message` drafts for the Suggested screen |
 
-## The 33 tools, and when to reach for each
+## The 36 tools, and when to reach for each
 
 Every signature below is the real one, defaults included. Three things hold for
 all of them:
@@ -274,8 +276,10 @@ all of them:
 - **A refusal is a result, not an error.** A tool that will not do something
   answers `{"ok": false, "reason": ..., "detail": ...}` (the queueing tools use
   `{"queued": false, ...}`), and writes nothing.
-- **No tool ever returns an email address, a phone number or a full profile
-  summary** beyond what `get_contact` deliberately truncates.
+- **No tool returns an email address, a phone number or a full profile
+  summary** beyond what `get_contact` deliberately truncates. The one exception
+  is `create_document_links`, which returns the email address of each contact
+  it makes a link for, so a draft can be written to them.
 - **Who may call what is the client's business, not the key's.** The same key
   unlocks everything. Tools marked **(you only)** are the ones meant for a
   session a person drives; withhold them in the client if you ever point an
@@ -292,7 +296,7 @@ decision inbox and the fetch queue.
 
 ### Reading contacts
 
-**`list_contacts(stage=None, industry=None, since=None, needs_touch=False, limit=25, tags=None, replied=None)`**
+**`list_contacts(stage=None, industry=None, since=None, needs_touch=False, limit=25, tags=None, replied=None, opened_document=False)`**
 The working list: contacts most recently active first, where "active" is the
 later of when they last replied and when you last messaged them. `stage` is the
 pipeline stage (`prospect`, `lead`, `soft_no`, `reject`, `not_relevant`,
@@ -302,7 +306,13 @@ before, enough days since, no newer reply from them, under the touch cap, not
 held, nothing already queued). `since` is an ISO date meaning "replied on or
 after local midnight of that day". `tags` restricts to contacts sent a message
 carrying **all** those campaign tags, and `replied` (only with `tags`) keeps
-those who answered it or those who did not. `limit` is capped at 100.
+those who answered it or those who did not. `opened_document=True` is the
+follow-up list for documents: contacts who opened a document sublink after your
+last LinkedIn message and have not replied since, at any stage and with no wait,
+not held and with nothing queued, newest open first. The service sees LinkedIn
+messages only, so a contact who answered by email stays on it until you set the
+handling. A row of a contact with an open adds `last_document_open_at` and
+`last_opened_document`. `limit` is capped at 100.
 
 **`get_contact(doc_id, full=False)`**
 One contact in full before you write to them: everything the list shows, plus
@@ -413,6 +423,45 @@ it.
 My comment on one of the contact's own posts. `draft` saves it; `live` posts it
 on LinkedIn under your name, at most `UNIPILE_MAX_COMMENTS_PER_DAY` a day and one
 per post. Reposts are refused.
+
+### Documents: tracked links
+
+The files of `gs://rr-recovr-public/marketing/`, served at
+`https://info.paypredict.net/d/<id>` (`documents.py`). Each file has one **main
+link**, which counts opens but not who opened, and any number of **sublinks**,
+one per recipient. An open is a request by a person; email scanners and link
+previews are stored but not counted. The Documents tab of the contacts webapp
+shows the same links.
+
+**`list_documents()`**
+One row per file, newest first: `name`, `type`, `size`, `updated_at`,
+`main_link`, `opens`, `sublinks` (how many), `last_open_at`. A file added to the
+bucket shows on the next call.
+
+**`create_document_links(document, doc_ids=None, labels=None)`**
+A new sublink for each contact in `doc_ids` and each free-text label (a person
+who is not a contact, or a place), at most 50 together. A contact row carries
+`name`, `first_name`, `email`, `url` and `email_html`. An unknown contact comes
+back as `not_found` and the other links are still made; an unknown document is
+`unknown_document`, with the names that exist. Every call makes new links.
+
+**An email draft carries `email_html`, not `url`.** Measured 2026-11-10: the
+Gmail connector's `create_draft` rewrites every link it can see -- an `<a href>`,
+a URL in a plain-text body, even a host without `https://` -- into
+`https://www.google.com/url?q=<link>&sa=E` with no Google signature, so the
+reader gets Google's "Redirect Notice" page. `update_draft` rewrites the same
+way, so adding the link in a second step does not help. `email_html` is the
+link with `https://` and the host's last label each in a `<span>` of their own
+(`<span>https://</span>info.paypredict<span>.net</span>/d/...`); the connector
+leaves it alone, and the reader sees `https://info.paypredict.net/d/...` as
+plain text to copy (the form without `https://` was checked on the receiving
+Gmail: not clickable). Put it in `htmlBody`. A LinkedIn message carries `url`
+unchanged.
+
+**`list_document_opens(since=None, document=None, doc_id=None, limit=50)`**
+The links with at least one open, newest open first, with the contact's name,
+the label, the open counts and dates. `since` is an ISO date or date-time. No
+email address.
 
 ### Queueing a message, and the inbox
 
@@ -600,7 +649,7 @@ Every client needs the same two values:
 | **Key** | `OUTREACH_API_KEY` in `Python/.env`. |
 
 The key goes in one of exactly two headers: `x-api-key: <key>`, or
-`Authorization: Bearer <key>`. `tools/list` returns exactly 33 tools, `prompts/list` the four
+`Authorization: Bearer <key>`. `tools/list` returns exactly 36 tools, `prompts/list` the four
 workflows. **A
 connector keeps the tool list it read when it connected** -- after a deploy that
 adds or renames tools, reconnect it.
@@ -940,7 +989,7 @@ linkedinmcp/
   jobs.py           sync(), daily(), tick(), plan_intros(), handle_unipile_webhook()
   steps.py          the six process steps the MCP tools start as jobs
   monitor.py        the job monitor: start, run, follow; Cloud Tasks executor
-  mcp_server.py     the FastMCP server and its 33 tools
+  mcp_server.py     the FastMCP server and its 36 tools
   workflows.py      the four workflow prompts, workflow:// resources and server instructions
   run_jobs.py       the CLI, and the run() the HTTP endpoint shares with it
   Dockerfile        the container image
@@ -1269,7 +1318,7 @@ uv run pytest tests/linkedinmcp
 | `test_app.py` | 37 | Every row of the endpoint table, `/mcp` served without a redirect and still behind the key, `/jobs/*` and `/webhooks/unipile` auth and routing, and that no route ends in `z`. |
 | `test_clients.py` | 3 | Each client factory returns a fresh instance per call. |
 | `test_clock.py` | 3 | UTC "now", local-date conversion, and naive-input rejection. |
-| `test_mcp_server.py` | 171 | All 33 tools, the prompts and the instructions: happy paths, refusal shapes and reason codes, the chat the queueing tools choose and a message without `due_at` being due now, a process step's job followed by `get_job`, campaign tags stored and found again, and that nothing ever returns an email or phone field. |
+| `test_mcp_server.py` | 183 | All 36 tools, the prompts and the instructions: happy paths, refusal shapes and reason codes, the chat the queueing tools choose and a message without `due_at` being due now, a process step's job followed by `get_job`, campaign tags stored and found again, and that nothing ever returns an email or phone field. |
 | `test_monitor.py` | 8 | A job runs once and reports its result, a live step refuses a second start until its job goes quiet, a running job hands its lock to its successor, a failed job frees its lock and raises the alert, a job taken for lost stops at its next report and keeps that record. |
 | `test_steps.py` | 15 | Each process step: a dry run spends nothing, settings narrow the run, the day's intro cap holds, `get_contacts` fetches only the connections it listed, `send_intro` says when writes are blocked; `send_messages` sends what is due a wait apart, stops at its limit, on a pause and on an unknown send, and starts the next job near its time limit. |
 | `test_state.py` | 37 | Every `RuntimeState` method, including lease and throttle-back-off contention, and the lease length. |

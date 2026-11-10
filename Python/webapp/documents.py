@@ -22,9 +22,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-#: Longest label of a link made for a person or a place that is not a contact.
-LABEL_MAX = 200
-
 #: The columns a heading of the Documents list sorts by, and each one's value
 #: of a row; then the same for the Sublinks table and a link.
 DOCUMENT_SORTS = {
@@ -80,17 +77,7 @@ def documents_list(request: Request, sort: str = DOCUMENT_DEFAULT_SORT, dir: str
     except Exception as error:
         logger.exception("listing %s failed", folder)
         files, problem = [], f"The bucket {folder} could not be listed ({type(error).__name__})."
-    rows = []
-    if files:
-        db = clients.firestore_client()
-        permanent = documents.ensure_permanent_links(db, settings, [row["name"] for row in files], clock.utcnow())
-        stats = documents.totals(documents.links(db, settings))
-        for row in files:
-            link_id = permanent.get(row["name"])
-            rows.append({
-                **row, "url": documents.link_url(settings, link_id) if link_id else None,
-                **stats.get(row["name"], {"opens": 0, "links": 0, "last_open_at": None}),
-            })
+    rows = documents.with_links(clients.firestore_client(), settings, files, clock.utcnow()) if files else []
     return render.templates.TemplateResponse(
         request, "documents.html",
         render.page_context(
@@ -120,7 +107,7 @@ def document_page(request: Request, name: str, sort: str = LINK_DEFAULT_SORT, di
                 [link for link in found if link["kind"] == documents.CUSTOM], LINK_SORTS[sort], dir != "asc"
             ),
             sort=sort, dir="asc" if dir == "asc" else "desc",
-            requests=documents.requests_for(db, settings, name), label_max=LABEL_MAX,
+            requests=documents.requests_for(db, settings, name), label_max=documents.LABEL_MAX,
             view_url=f"https://storage.googleapis.com/{settings.documents_bucket}/{quote(file['object'])}",
         ),
     )
@@ -130,8 +117,8 @@ def document_page(request: Request, name: str, sort: str = LINK_DEFAULT_SORT, di
 def create_label_link(request: Request, name: str, label: Annotated[str, Form()] = ""):
     """A new link to the file for a label: a person who is not a contact, or a place."""
     label = label.strip()
-    if not label or len(label) > LABEL_MAX:
-        raise HTTPException(status_code=400, detail=f"A label has 1 to {LABEL_MAX} characters.")
+    if not label or len(label) > documents.LABEL_MAX:
+        raise HTTPException(status_code=400, detail=f"A label has 1 to {documents.LABEL_MAX} characters.")
     _file(request, name)
     documents.create_link(
         clients.firestore_client(), request.app.state.outreach, name, label=label,

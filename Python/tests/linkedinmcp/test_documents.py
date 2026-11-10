@@ -194,3 +194,14 @@ def test_a_main_link_id_held_by_another_file_is_passed_over():
 
     assert documents.ensure_permanent_links(db, SETTINGS, ["A_b.pdf"], NOW) == {"A_b.pdf": "a-b-2.pdf"}
     assert documents.get_link(db, SETTINGS, "a-b.pdf")["document"] == "marketing/Other.pdf"
+
+
+@pytest.mark.parametrize("url, text", [
+    (
+        "https://info.paypredict.net/d/recovr-one-pager-k3x9q.pdf",
+        "<span>https://</span>info.paypredict<span>.net</span>/d/recovr-one-pager-k3x9q.pdf",
+    ),
+    ("http://localhost:8094/d/x.pdf", "<span>http://</span>localhost:8094/d/x.pdf"),
+])
+def test_mail_text_is_the_link_as_text_the_gmail_connector_leaves_alone(url, text):
+    assert documents.mail_text(url) == text

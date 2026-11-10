@@ -8,7 +8,9 @@ Every returned dict is built as an explicit whitelist, never `{**data,
 and `phoneNumbers`, and this module's whole job is to make sure neither ever
 reaches a caller. `summary` -- up to 35 KB on `analysis` -- is truncated by
 `get_contact` unless `full=True`, and `list_contacts` never asks Firestore
-for it at all (its `.select([...])` never names it).
+for it at all (its `.select([...])` never names it). The one exception is
+`recipients`: it returns the email address of the contacts its caller names,
+for `create_document_links` to hand to the mail connector.
 
 `db` is always an explicit parameter and `now` is always passed in rather
 than read from the wall clock (contract §0). Every query is single-field --
@@ -30,7 +32,7 @@ from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from lib.contacts import activity_key, headline
-from linkedinmcp import fetch_queue, queue
+from linkedinmcp import documents, fetch_queue, queue
 
 ANALYSIS_COLLECTION = "analysis"
 EXTRACTED_COLLECTION = "extracted"
@@ -58,6 +60,9 @@ REPORT_COLUMNS = (
 )
 
 REPORT_MAX_ROWS = 500
+
+#: The email fields `analysis` holds. Only `recipients` reads them.
+EMAIL_FIELDS = ("email1", "email2")
 
 #: The most values one Firestore `in` filter takes.
 _IN_MAX = 30
@@ -187,6 +192,18 @@ def _needs_touch(doc_id: str, analysis: dict, *, now: datetime, settings, open_i
     return True
 
 
+def _opened_unanswered(doc_id: str, analysis: dict, opened_at: datetime, *, open_ids: set, holds) -> bool:
+    """Opened a document after the last message either way, not held back,
+    nothing queued. Any stage, no wait: an emailed contact may have no
+    LinkedIn message at all."""
+    for field in ("last_sent_date", "last_reply_date"):
+        if analysis.get(field) is not None and analysis[field] >= opened_at:
+            return False
+    if str(analysis.get("handling") or "").strip().lower() in holds:
+        return False
+    return doc_id not in open_ids
+
+
 def _replied_after(analysis: dict, sent_at: datetime) -> bool:
     """Whether the contact's newest reply came after `sent_at`."""
     last_reply = analysis.get("last_reply_date")
@@ -195,7 +212,7 @@ def _replied_after(analysis: dict, sent_at: datetime) -> bool:
 
 def list_contacts(
     db, settings, now, *, stage=None, industry=None, since=None, needs_touch=False, limit=25,
-    tags=None, replied=None,
+    tags=None, replied=None, opened_document=False,
 ) -> list[dict]:
     """Contact rows, newest activity first, at most `limit` (clamped 1..100).
 
@@ -216,6 +233,12 @@ def list_contacts(
     went, and whether they replied after it; `replied` keeps those who did
     (`True`) or did not (`False`).
 
+    `opened_document` keeps the contacts who opened a document sublink and
+    have not been written to or answered since (`_opened_unanswered`); without
+    `tags` they are read by id, and the page is sorted by the open, newest
+    first. Every row of a contact with a counted open adds
+    `last_document_open_at` and `last_opened_document`.
+
     `since` accepts a `date`, a `datetime` (time-of-day ignored) or an ISO
     date string, and means local midnight of that date in `settings.tz`. A
     contact with no `last_reply_date` never matches an explicit `since`.
@@ -232,10 +255,14 @@ def list_contacts(
     collection = db.collection(ANALYSIS_COLLECTION)
     fields = list(_ROW_FIELDS)
     tagged = queue.tagged_sends(db, tags) if tags else None
+    opened = documents.opened_by_contact(db, settings)
 
     if tagged is not None:
         queries = []
         primary = "tags"
+    elif opened_document:
+        queries = []
+        primary = "opened"
     elif stage is not None:
         queries = [collection.where(filter=FieldFilter("pipeline_stage", "==", stage))]
         primary = "stage"
@@ -255,12 +282,12 @@ def list_contacts(
         ]
         primary = None
 
-    if tagged is not None:
+    if primary in ("tags", "opened"):
         rows = []
-        for chunk in itertools.batched(sorted(tagged), _ID_PAGE):
+        for chunk in itertools.batched(sorted(tagged if tagged is not None else opened), _ID_PAGE):
             snapshots = db.get_all([collection.document(doc_id) for doc_id in chunk], field_paths=fields)
             rows.extend((snapshot.id, snapshot.to_dict() or {}) for snapshot in snapshots if snapshot.exists)
-        if replied is not None:
+        if tagged is not None and replied is not None:
             rows = [(doc_id, data) for doc_id, data in rows if _replied_after(data, tagged[doc_id]) == replied]
     else:
         found = {snapshot.id: snapshot.to_dict() or {} for query in queries for snapshot in query.select(fields).stream()}
@@ -287,7 +314,19 @@ def list_contacts(
             if _needs_touch(doc_id, data, now=now, settings=settings, open_ids=open_ids, holds=holds)
         ]
 
-    rows.sort(key=lambda pair: activity_key(pair[1]), reverse=True)
+    if opened_document:
+        import functions
+
+        open_ids = queue.open_contact_ids(db)
+        rows = [
+            (doc_id, data)
+            for doc_id, data in rows
+            if doc_id in opened
+            and _opened_unanswered(doc_id, data, opened[doc_id]["at"], open_ids=open_ids, holds=functions.HANDLING_HOLDS)
+        ]
+        rows.sort(key=lambda pair: opened[pair[0]]["at"], reverse=True)
+    else:
+        rows.sort(key=lambda pair: activity_key(pair[1]), reverse=True)
     page = rows[:clamped_limit]
 
     extracted_by_id: dict[str, dict] = {}
@@ -298,6 +337,10 @@ def list_contacts(
                 extracted_by_id[snapshot.id] = snapshot.to_dict() or {}
 
     result = [_row(doc_id, data, extracted_by_id.get(doc_id, {}), settings.tz) for doc_id, data in page]
+    for row in result:
+        if row["doc_id"] in opened:
+            row["last_document_open_at"] = _iso_local(opened[row["doc_id"]]["at"], settings.tz)
+            row["last_opened_document"] = opened[row["doc_id"]]["document"]
     if tagged is not None:
         for row, (doc_id, data) in zip(result, page, strict=True):
             row["tagged"] = {
@@ -566,3 +609,31 @@ def get_conversation(db, doc_id: str, *, max_chars: int = 20000) -> dict | None:
         "newest_inbound_date": _iso_utc(entry["newest_inbound_date"]),
         "chat_ids": chat_ids,
     }
+
+
+def _named(db, analysis: dict[str, dict]) -> dict[str, str | None]:
+    """`{doc_id: name}` for `analysis` rows, `extracted.fullName` the fallback."""
+    extracted = _fields_by_id(db, EXTRACTED_COLLECTION, list(analysis), ["fullName"])
+    return {doc_id: _name(data, extracted.get(doc_id, {})) for doc_id, data in analysis.items()}
+
+
+def contact_names(db, doc_ids: list[str]) -> dict[str, str | None]:
+    """`{doc_id: name}` of the contacts that exist."""
+    return _named(db, _fields_by_id(db, ANALYSIS_COLLECTION, doc_ids, ["firstName", "lastName"]))
+
+
+def recipients(db, doc_ids: list[str]) -> dict[str, dict]:
+    """`{doc_id: {"name", "first_name", "email"}}` of the contacts that exist.
+
+    The only reader here that returns an email address: the first non-empty
+    of `EMAIL_FIELDS`, else `None`.
+    """
+    analysis = _fields_by_id(db, ANALYSIS_COLLECTION, doc_ids, ["firstName", "lastName", *EMAIL_FIELDS])
+    names = _named(db, analysis)
+    found = {}
+    for doc_id, data in analysis.items():
+        name = names[doc_id]
+        first = (data.get("firstName") or "").strip() or (name.split()[0] if name else None)
+        email = next((str(data[field]).strip() for field in EMAIL_FIELDS if str(data.get(field) or "").strip()), None)
+        found[doc_id] = {"name": name, "first_name": first, "email": email}
+    return found

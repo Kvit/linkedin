@@ -48,8 +48,9 @@ import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
-from linkedinmcp import clients, clock, decisions, fetch_queue, guards, mcp_server, monitor, queue
+from linkedinmcp import clients, clock, decisions, documents, fetch_queue, guards, mcp_server, monitor, queue
 from tests.linkedinmcp.fake_firestore import FakeFirestore
+from tests.linkedinmcp.fake_storage import FakeStorage
 from tests.linkedinmcp.fake_unipile import FakeUnipile, relation, seed_contact, seed_item, seed_message, store_snapshot
 
 #: Deliberately unlike every default in `OutreachSettings`, so a hard-coded
@@ -176,14 +177,14 @@ async def call_tool(name: str, args: dict) -> dict:
 READ_TOOLS = frozenset({
     "get_status", "list_contacts", "get_contact", "get_conversation",
     "list_queue", "list_decisions", "get_run_report", "get_job", "contact_report",
-    "get_user_activity_summary", "fetch_user_activity",
+    "get_user_activity_summary", "fetch_user_activity", "list_documents", "list_document_opens",
 })
 
 #: The agent-side write tools (task 2g; `queue_message` split into
 #: `send_follow_up` and `send_reply`, MCP v2).
 AGENT_WRITE_TOOLS = frozenset({
     "send_follow_up", "send_reply", "cancel_queued", "set_handling", "ask_user", "mark_decision_applied",
-    "update_suggested_message", "comment_on_post",
+    "update_suggested_message", "comment_on_post", "create_document_links",
 })
 
 #: The human-side tools (task 2g; `clear_handling` by ruling P2-25): only ever
@@ -202,17 +203,18 @@ PROCESS_TOOLS = frozenset({
 
 @pytest.mark.anyio
 async def test_tool_set_is_exact(env, fake_db):
-    """The service exposes exactly thirty-three tools: `get_status` and ten
-    read-only tools, eight agent-side write tools, eight human-side tools and
+    """The service exposes exactly thirty-six tools: `get_status` and twelve
+    read-only tools, nine agent-side write tools, eight human-side tools and
     the six process steps (MCP v2, `send_messages`, `contact_report` since
-    2026-09-15, and the three activity tools since 2026-09-19). Ledger ruling P2-11: this pins the
+    2026-09-15, the three activity tools since 2026-09-19, and the three
+    document tools since 2026-11-10). Ledger ruling P2-11: this pins the
     exact set, so a task adding a tool has to change this line and justify
     it.
     """
     async with Client(mcp_server.mcp) as client:
         tools = await client.list_tools()
     assert {tool.name for tool in tools} == READ_TOOLS | AGENT_WRITE_TOOLS | HUMAN_TOOLS | PROCESS_TOOLS
-    assert len(tools) == 33
+    assert len(tools) == 36
     assert all(tool.description for tool in tools), "every tool's docstring is what the agent reads"
 
 
@@ -1994,7 +1996,8 @@ async def test_the_four_workflows_are_prompts_and_resources_and_the_instructions
     assert "not_messaged_days=30" in recipe[0].text
     assert all(name in instructions for name in prompts) and len(instructions) <= 2048
     touched = {"get_user_activity_summary", "fetch_user_activity", "get_job", "update_suggested_message",
-               "comment_on_post", "sync_messages", "send_messages"}
+               "comment_on_post", "sync_messages", "send_messages",
+               "list_documents", "create_document_links", "list_document_opens", "list_contacts"}
     assert all(len(t.description) <= 2048 for t in tools if t.name in touched)  # Claude Code cuts at about 2 KB
 
 
@@ -2049,3 +2052,82 @@ async def test_comment_on_post_saves_a_draft_and_refuses_bad_input(env, fake_db)
     assert (await call_tool("comment_on_post", loud))["reason"] == "invalid"
     assert (await call_tool("comment_on_post", {"doc_id": "ann", "post_id": "nope", "text": "x"}))["reason"] == "invalid"
     assert (await call_tool("comment_on_post", {"doc_id": "nobody", "post_id": "own", "text": "x"}))["reason"] == "not_found"
+
+
+# --- the document tools (Documents tab, Stage 3) -------------------------------
+
+
+@pytest.fixture
+def bucket(monkeypatch):
+    """The documents bucket, holding one file; no test reaches the real one."""
+    fake = FakeStorage()
+    fake.add("marketing/Recovr_One_Pager.pdf", b"%PDF-1.7 one pager")
+    monkeypatch.setattr(clients, "storage_client", lambda: fake)
+    return fake
+
+
+@pytest.mark.anyio
+async def test_list_documents_tool_returns_each_file_with_its_main_link(env, fake_db, bucket):
+    payload = await call_tool("list_documents", {})
+
+    assert payload["count"] == 1
+    row = payload["documents"][0]
+    assert (row["name"], row["type"], row["size"]) == ("Recovr_One_Pager.pdf", "PDF", 18)
+    assert row["main_link"] == "https://info.paypredict.net/d/recovr-one-pager.pdf"
+    assert (row["opens"], row["sublinks"]) == (0, 0) and row["updated_at"].endswith(TZ_OFFSET)
+
+
+@pytest.mark.anyio
+async def test_create_document_links_returns_one_link_and_the_email_per_named_contact(env, fake_db, bucket):
+    seed_contact(fake_db, "ann", firstName="Ann", lastName="Lee", email1="", email2="ann@example.com")
+
+    payload = await call_tool(
+        "create_document_links",
+        {"document": "Recovr_One_Pager.pdf", "doc_ids": ["ann", "ghost"], "labels": ["email signature"]},
+    )
+
+    assert payload["document"] == "Recovr_One_Pager.pdf" and payload["count"] == 2
+    ann, ghost, label = payload["links"]
+    assert (ann["doc_id"], ann["name"], ann["first_name"], ann["email"]) == ("ann", "Ann Lee", "Ann", "ann@example.com")
+    assert ann["url"].startswith("https://info.paypredict.net/d/recovr-one-pager-")
+    assert ann["email_html"] == "<span>https://</span>info.paypredict<span>.net</span>/d/" + ann["url"].rsplit("/", 1)[1]
+    assert ghost == {"doc_id": "ghost", "ok": False, "reason": "not_found"}
+    assert label["label"] == "email signature" and label["url"] != ann["url"] and "<span>" in label["email_html"]
+    stored = fake_db.collection("document_links").document(ann["url"].rsplit("/", 1)[1]).get().to_dict()
+    assert (stored["doc_id"], stored["kind"], stored["created_by"]) == ("ann", "custom", "mcp")
+
+
+@pytest.mark.anyio
+async def test_create_document_links_refuses_an_unknown_document_and_bad_recipients(env, fake_db, bucket):
+    payload = await call_tool("create_document_links", {"document": "nope.pdf", "labels": ["x"]})
+    assert payload["reason"] == "unknown_document" and payload["documents"] == ["Recovr_One_Pager.pdf"]
+    assert (await call_tool("create_document_links", {"document": "Recovr_One_Pager.pdf"}))["reason"] == "invalid"
+    blank = {"document": "Recovr_One_Pager.pdf", "labels": ["  "]}
+    assert (await call_tool("create_document_links", blank))["reason"] == "invalid"
+    many = {"document": "Recovr_One_Pager.pdf", "doc_ids": [f"c{n}" for n in range(30)], "labels": [f"l{n}" for n in range(21)]}
+    assert (await call_tool("create_document_links", many))["reason"] == "invalid"
+    assert [link for link in fake_db.collection("document_links").stream() if link.to_dict()["kind"] == "custom"] == []
+
+
+@pytest.mark.anyio
+async def test_list_document_opens_lists_opened_links_without_an_email(env, fake_db, bucket):
+    seed_contact(fake_db, "ann", firstName="Ann", lastName="Lee", email1="ann@example.com")
+    settings = mcp_server.cfg.get_settings()
+    opened = documents.create_link(fake_db, settings, "Recovr_One_Pager.pdf", doc_id="ann", created_by="mcp", now=NOW)
+    documents.create_link(fake_db, settings, "Recovr_One_Pager.pdf", label="unopened", created_by="mcp", now=NOW)
+    documents.record_request(
+        fake_db, settings, opened, method="GET", user_agent="Mozilla/5.0 Chrome/130.0", ip="203.0.113.7",
+        accept_language="en-US", now=NOW + timedelta(hours=1),
+    )
+
+    payload = await call_tool("list_document_opens", {})
+
+    assert payload["count"] == 1
+    row = payload["opens"][0]
+    assert (row["doc_id"], row["name"], row["opens"], row["kind"]) == ("ann", "Ann Lee", 1, "custom")
+    assert row["document"] == "Recovr_One_Pager.pdf" and row["url"] == opened["url"]
+    assert not [key for key in row if key.lower().startswith(("email", "phone"))]
+    assert (await call_tool("list_document_opens", {"since": "2026-09-12"}))["count"] == 0
+    assert (await call_tool("list_document_opens", {"since": "soon"}))["reason"] == "invalid_since"
+    followed = await call_tool("list_contacts", {"opened_document": True})
+    assert [row["doc_id"] for row in followed["contacts"]] == ["ann"]

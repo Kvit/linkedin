@@ -5,7 +5,7 @@ against a seeded `FakeFirestore`, never through the MCP layer.
 Every query here is single-field (ruling P2-3): one `where`, chosen by
 priority (`stage` > `industry` > `needs_touch` > `since`), or with none of
 them two single-field `order_by`s, with every other requested filter applied
-in Python. Since
+in Python. `tags` and `opened_document` instead read their contacts by id. Since
 `FakeFirestore` does not log the calls made against it, "which query ran" is
 proven by the RESULT SET each filter choice produces (the brief's own
 fallback: "assert which query ran if the fake records calls, otherwise the
@@ -28,7 +28,10 @@ from tests.linkedinmcp.fake_firestore import FakeFirestore
 # Deliberately unlike `OutreachSettings`' defaults (5 and 3), matching the
 # CAPS_ENV values `test_mcp_server.py` already uses -- a test that passed
 # against the real defaults by accident fails here.
-SETTINGS = SimpleNamespace(tz="Asia/Kolkata", min_days_between_touches=9, max_touches=2)
+SETTINGS = SimpleNamespace(
+    tz="Asia/Kolkata", min_days_between_touches=9, max_touches=2,
+    documents_prefix="marketing/", document_link_base="https://info.paypredict.net/d/",
+)
 
 NOW = datetime(2026, 9, 10, 12, 0, 0, tzinfo=UTC)
 
@@ -714,3 +717,48 @@ def test_get_conversation_truncates_to_the_last_max_chars_keeping_the_newest():
     assert clipped["truncated"] is True
     assert clipped["transcript"] == full["transcript"][-50:]
     assert clipped["transcript"].endswith("b" * 50)
+
+
+# --- list_contacts(opened_document=...): who opened a document -------------------
+
+
+def seed_open(db, doc_id, at, name="Recovr_One_Pager.pdf"):
+    """A sublink for `doc_id` with one counted open at `at`."""
+    db.collection("document_links").document(f"link-{doc_id}").set({
+        "document": f"marketing/{name}", "kind": "custom", "doc_id": doc_id, "label": None, "created_by": "mcp",
+        "created_at": at - timedelta(days=1), "opens": 1, "bot_requests": 0, "first_open_at": at, "last_open_at": at,
+    })
+
+
+def test_opened_document_lists_who_opened_and_did_not_reply():
+    db = FakeFirestore()
+    opened = NOW - timedelta(days=1)
+    before, after = opened - timedelta(days=2), opened + timedelta(hours=1)
+    seed_analysis(db, "a", pipeline_stage="lead", last_sent_date=before)  # any stage, no wait
+    seed_analysis(db, "b", firstName="Bea")  # never messaged on LinkedIn: emailed only
+    seed_analysis(db, "c", last_sent_date=before, last_reply_date=after)  # replied after the open
+    seed_analysis(db, "d", last_sent_date=before, handling="exclude")  # held back
+    seed_analysis(db, "e", last_sent_date=before)  # a message already queued
+    seed_analysis(db, "f", last_sent_date=after)  # messaged after the open
+    db.collection(queue.QUEUE_COLLECTION).document("q-e").set({"status": queue.PENDING, "contact_doc_id": "e"})
+    for doc_id in "acdef":
+        seed_open(db, doc_id, opened)
+    seed_open(db, "b", opened + timedelta(minutes=30))
+
+    rows = contacts.list_contacts(db, SETTINGS, NOW, opened_document=True)
+
+    assert [row["doc_id"] for row in rows] == ["b", "a"]  # newest open first
+    assert rows[1]["last_opened_document"] == "Recovr_One_Pager.pdf"
+
+
+def test_rows_carry_the_last_document_open_only_when_there_is_one():
+    db = FakeFirestore()
+    seed_analysis(db, "a", last_reply_date=NOW - timedelta(days=3))
+    seed_analysis(db, "z", last_reply_date=NOW - timedelta(days=2))
+    seed_open(db, "a", NOW - timedelta(days=1))
+
+    rows = {row["doc_id"]: row for row in contacts.list_contacts(db, SETTINGS, NOW)}
+
+    assert rows["a"]["last_opened_document"] == "Recovr_One_Pager.pdf"
+    assert rows["a"]["last_document_open_at"] == "2026-09-09T17:30:00+05:30"
+    assert "last_opened_document" not in rows["z"] and "last_document_open_at" not in rows["z"]
