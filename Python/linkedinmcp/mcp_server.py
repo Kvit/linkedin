@@ -1619,7 +1619,9 @@ def sync_messages(classify: bool = True, dry_run: bool = True) -> dict[str, Any]
         "to 40 seconds apart like the notebook. Profiles are "
         "stored, NOT classified: the result's `stored_slugs` are what to pass to "
         "`classify_contacts(doc_ids=...)`. Whatever this job does not fetch stays in the fetch queue "
-        "for a later `get_contacts`. Each profile fetched is a LinkedIn profile view and counts against the day's "
+        "for a later `get_contacts`. `already_stored` counts queue entries marked stored because their profile "
+        "was stored elsewhere (no profile view). "
+        "Each profile fetched is a LinkedIn profile view and counts against the day's "
         "profile limit; ten take about five minutes."
     )
 )

@@ -91,7 +91,9 @@ class Transport:
     # --- reads: retried -------------------------------------------------------
 
     def get(self, path: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        return self._retrying("GET", path, params=params)
+        # Reads follow redirects: Unipile answers a percent-encoded profile
+        # slug with a 301 to the same path plus "/". Writes never do.
+        return self._retrying("GET", path, params=params, follow_redirects=True)
 
     # --- writes: never retried ------------------------------------------------
 

@@ -55,6 +55,23 @@ def test_read_retries_server_errors_then_succeeds():
 
 
 @respx.mock
+def test_read_follows_the_redirect_for_a_non_ascii_slug():
+    """Unipile answers a percent-encoded slug with a 301 to the same path plus `/`."""
+    first = respx.get(url__regex=r".*/users/jos%C3%A9-1(\?.*)?$").mock(
+        return_value=httpx.Response(301, headers={"location": "/api/v1/users/jos%C3%A9-1/?account_id=a"})
+    )
+    second = respx.get(url__regex=r".*/users/jos%C3%A9-1/(\?.*)?$").mock(
+        return_value=httpx.Response(200, json={"public_identifier": "josé-1"})
+    )
+
+    body = build().get("/api/v1/users/josé-1", params={"account_id": "a"})
+
+    assert body == {"public_identifier": "josé-1"}
+    assert (first.call_count, second.call_count) == (1, 1)
+    assert second.calls.last.request.url.params["account_id"] == "a"
+
+
+@respx.mock
 def test_a_read_outlasts_a_gateway_blip():
     """Unipile's gateway returns 502 for a few seconds at a time.
 

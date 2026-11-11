@@ -183,6 +183,8 @@ read-only calls.
 
 | Version | Revision | What it changed |
 |---|---|---|
+| `v2.9.4` | `linkedin-outreach-00034-794` | Deployed 2026-11-10. Reads follow redirects (`lib/unipile/transport.py`, `Transport.get`); writes do not. Unipile answers a profile slug with non-ASCII characters (`®`, accents, Cyrillic, emoji) with HTTP 301 to the same path plus `/`, which the client raised as `UnipileError`, so every such profile was marked `failed` after 3 attempts. The 11 `failed` fetch-queue entries, all non-ASCII, were reset to `queued` by hand. Checked live: two `get_contacts` runs stored all 11 (1 + 10), none failed; `fetch_queue` then held 0 `failed`. 36 tools. Built from commit 32c41c9 plus uncommitted changes. |
+| `v2.9.3` | `linkedin-outreach-00033-zj8` | Deployed 2026-11-10. `get_contacts` marks `stored` every `queued` fetch-queue entry whose profile is already in `extracted`, with no profile view, and reports the count as `already_stored`. Before this, only `tick` closed such entries, and no `tick` had run since 2026-09-14. Checked live: one `get_contacts(days=0, max_profiles=0, dry_run=false)` marked 598 entries in 2 min 40 s; `fetch_queue.queued` went from 606 to 8. 36 tools. Built from commit 32c41c9 plus uncommitted changes. |
 | `v2.9.2` | `linkedin-outreach-00032-w8t` | Deployed 2026-11-10. `email_html` shows the full address: `<span>https://</span>info.paypredict<span>.net</span>/d/<id>`, read by the recipient as `https://info.paypredict.net/d/<id>` in plain text. Checked in the deployed image. 36 tools. Built from commit 7f0da5b plus the uncommitted Stage 3 changes. |
 | `v2.9.1` | `linkedin-outreach-00031-7fs` | Deployed 2026-11-10. `create_document_links` rows add `email_html`, the link as text for an email draft made with the Gmail connector, which rewrites every link it can see into a `google.com/url` redirect (a known defect of Google's Gmail MCP backend, anthropics/claude-code #66010). The description tells the agent to put `email_html` in `htmlBody`. 36 tools. Built from commit 7f0da5b plus the uncommitted Stage 3 changes. |
 | `v2.9.0` | `linkedin-outreach-00030-l5w` | Deployed 2026-11-10. The three document tools, `list_documents`, `create_document_links` (the only tool that returns an email address) and `list_document_opens`, and `list_contacts(opened_document=true)`, the follow-up list of contacts who opened a document sublink and have not replied. 36 tools, checked over HTTP straight after; `list_documents` 11 rows. Built from commit 7f0da5b plus the uncommitted Stage 3 changes. |
@@ -523,7 +525,9 @@ Finds first-degree connections with no stored profile -- all of them, or with
 `days`, only those connected in the last `days` days -- adds them to the fetch
 queue, and fetches up to `max_profiles` **of those** (0 to 10, 20-40 seconds
 apart, newest connection first). It never reaches into the rest of the queue, so
-`days` bounds the profile views too. Profiles are stored, not classified: the
+`days` bounds the profile views too. A queue entry whose profile is already in
+`extracted` is marked `stored` without a profile view (`already_stored` in the
+result). Profiles are stored, not classified: the
 result's `stored_slugs` is what you pass to `classify_contacts`. Every fetch is a
 real profile view against the day's limit, so run the dry one first.
 
@@ -897,6 +901,17 @@ to Cloud Run, then reads the service URL back and writes it to
 `platform/ids.env`. It stops at the first failed step and tells you which step
 failed and what state Cloud Run was left in. It also sets the job executor and
 the service's own URL, which the process steps need.
+
+**One instance always runs, and at most 10** (set 2026-11-10). After 15 minutes
+without a request Cloud Run stopped the last instance, and the next document
+link waited 11.6 s for a new one. Both limits are settings of the service, not
+of `deploy.cmd`:
+
+```powershell
+gcloud run services update linkedin-outreach --project vk-linkedin --region us-central1 --min 1 --max 10
+```
+
+`--min default` or `--max default` removes a limit.
 
 Cloud Run answers on two URLs for the same service:
 `https://linkedin-outreach-<hash>-uc.a.run.app`, which the script reads back and
@@ -1321,7 +1336,7 @@ uv run pytest tests/linkedinmcp
 | `test_clock.py` | 3 | UTC "now", local-date conversion, and naive-input rejection. |
 | `test_mcp_server.py` | 183 | All 36 tools, the prompts and the instructions: happy paths, refusal shapes and reason codes, the chat the queueing tools choose and a message without `due_at` being due now, a process step's job followed by `get_job`, campaign tags stored and found again, and that nothing ever returns an email or phone field. |
 | `test_monitor.py` | 8 | A job runs once and reports its result, a live step refuses a second start until its job goes quiet, a running job hands its lock to its successor, a failed job frees its lock and raises the alert, a job taken for lost stops at its next report and keeps that record. |
-| `test_steps.py` | 15 | Each process step: a dry run spends nothing, settings narrow the run, the day's intro cap holds, `get_contacts` fetches only the connections it listed, `send_intro` says when writes are blocked; `send_messages` sends what is due a wait apart, stops at its limit, on a pause and on an unknown send, and starts the next job near its time limit. |
+| `test_steps.py` | 16 | Each process step: a dry run spends nothing, settings narrow the run, the day's intro cap holds, `get_contacts` fetches only the connections it listed and closes queue entries already stored, `send_intro` says when writes are blocked; `send_messages` sends what is due a wait apart, stops at its limit, on a pause and on an unknown send, and starts the next job near its time limit. |
 | `test_state.py` | 37 | Every `RuntimeState` method, including lease and throttle-back-off contention, and the lease length. |
 | `test_ledger.py` | 17 | Entry validation per kind, `record`, `count_since`. |
 | `test_queue.py` | 72 | Every legal transition, the create-only ids, the atomic settle, campaign tags. |

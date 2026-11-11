@@ -137,7 +137,9 @@ def get_contacts(job) -> dict:
 
     1. List the relations and drop those already in `extracted`, those
        outside the window, and slugs no Firestore document can have.
-    2. Add each to `fetch_queue` (create-only), so whatever this job does
+    2. Mark `stored` every `queued` record whose profile is already in
+       `extracted` (`already_stored`): no profile view. Then add each new
+       connection to `fetch_queue` (create-only), so whatever this job does
        not fetch, a later `get_contacts` will.
     3. Fetch up to `max_profiles` of the connections step 1 listed -- never
        the rest of the queue, so `days` bounds the profile views too -- in
@@ -154,7 +156,8 @@ def get_contacts(job) -> dict:
     (`stored_slugs`) -- exactly what to pass to
     `classify_contacts(doc_ids=...)`. A dry run stops after step 1: no queue
     entry, no profile view; it lists the new connections (`connections`),
-    and its `would_fetch` counts what step 3 would fetch.
+    its `would_fetch` counts what step 3 would fetch, and its
+    `already_stored` what step 2 would mark.
     """
     params = job.params
     days = int(params.get("days", 0))
@@ -179,13 +182,18 @@ def get_contacts(job) -> dict:
         new.append(relation)
     new.sort(key=lambda relation: relation.created_at or datetime.min.replace(tzinfo=UTC), reverse=True)
 
-    listed = {"new_connections": len(new), "unusable_slugs": unusable}
+    # Queued records whose profile something else stored: step 1 never lists them.
+    already_stored = sorted(fetch_queue.queued_ids(db) & stored_ids)
+    listed = {"new_connections": len(new), "unusable_slugs": unusable, "already_stored": len(already_stored)}
     job.report(done=0, total=max_profiles, note=f"{len(new)} new connections")
     scope = {relation.public_identifier for relation in new}
     if dry_run:
         rows = [_connection_row(relation, fetch_queue.get(db, relation.public_identifier)) for relation in new[:MAX_ROWS]]
         fetchable = len(scope - fetch_queue.settled_ids(db))
         return {"dry_run": True, **listed, "would_fetch": min(max_profiles, fetchable), "connections": rows}
+
+    for slug in already_stored:
+        fetch_queue.mark(db, slug, fetch_queue.STORED, now, classified=fetching._classified(db, slug))
 
     enqueued = 0
     for relation in new:

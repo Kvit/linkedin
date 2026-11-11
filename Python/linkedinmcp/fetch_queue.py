@@ -173,6 +173,14 @@ def next_queued(db, now: datetime, *, slugs: set[str] | None = None) -> dict | N
     return items[0]
 
 
+def queued_ids(db) -> set[str]:
+    """The slugs still `queued`. ONE equality query, ids only."""
+    from google.cloud.firestore_v1.base_query import FieldFilter
+
+    query = db.collection(FETCH_COLLECTION).where(filter=FieldFilter("status", "==", QUEUED))
+    return {snapshot.id for snapshot in query.select([]).stream()}
+
+
 def settled_ids(db) -> set[str]:
     """The slugs this queue is done with -- `stored`, `short` or `failed` --
     which `next_queued` never returns again. ONE `in` query over the three,

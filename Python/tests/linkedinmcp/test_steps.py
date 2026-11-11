@@ -150,6 +150,30 @@ def test_get_contacts_fetches_only_the_connections_it_listed_so_the_dry_run_matc
     assert fetch_queue.get(db, "old-conn")["status"] == fetch_queue.QUEUED
 
 
+def test_get_contacts_closes_queued_records_whose_profile_is_already_stored(db, tmp_path, monkeypatch, no_gemini):
+    """A profile stored outside this step leaves its queue record `queued`,
+    and no listed connection holds it: the step marks it `stored` itself,
+    with no profile view. A dry run only counts it."""
+    monkeypatch.setattr(steps, "_sleep", lambda seconds: None)
+    old = NOW - timedelta(days=60)
+    for slug in ("stored", "waiting"):
+        fetch_queue.enqueue(db, slug, provider_id=f"ACoAA-{slug}", name=slug, connected_at=old, now=NOW)
+    db.collection("extracted").document("stored").set({"summary": LONG_SUMMARY})
+    client = FakeUnipile(relations=[relation("stored", "ACoAA-stored", old)])
+    settings = make_settings(tmp_path)
+    params = {"days": 0, "max_profiles": 5}
+
+    dry = steps.get_contacts(make_job(db, settings, "get_contacts", {**params, "dry_run": True}, client))
+    assert dry["already_stored"] == 1
+    assert fetch_queue.get(db, "stored")["status"] == fetch_queue.QUEUED
+
+    live = steps.get_contacts(make_job(db, settings, "get_contacts", {**params, "dry_run": False}, client))
+    assert live["already_stored"] == 1
+    assert fetch_queue.get(db, "stored")["status"] == fetch_queue.STORED
+    assert fetch_queue.get(db, "waiting")["status"] == fetch_queue.QUEUED
+    assert client.users.profile_calls == []
+
+
 # =============================================================================
 # classify_contacts
 # =============================================================================
