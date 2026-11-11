@@ -1,0 +1,32 @@
+{#- The conversation, oldest first: `parts` from `contacts.thread`, `sides`, `conversation`, `unsynced`, `first_name`. -#}
+{% if parts %}
+  <p class="thread-count">{{ sides.count("them") }} from {{ first_name }}, {{ sides.count("me") }} from you</p>
+  {% if conversation.truncated %}<p class="thread-note">Older messages are not shown.</p>{% endif %}
+  {% for part in parts %}
+    {% if parts|length > 1 %}<h3 class="thread-part">Conversation {{ part.number or loop.index }}</h3>{% endif %}
+    <ol class="messages">
+    {% for message in part.messages %}
+      {% if message.day and (loop.first or message.day != loop.previtem.day) %}
+      <li class="day"><time datetime="{{ message.day.isoformat() }}">{{ message.day.strftime("%a %d %b %Y") }}</time></li>
+      {% endif %}
+      <li class="message {{ message.side or 'other' }}">
+        {%- if message.side %}<span class="who">{{ "You" if message.side == "me" else first_name }}</span>{% endif %}
+        <p>{{ message.text }}</p>
+      </li>
+    {% endfor %}
+    </ol>
+  {% endfor %}
+{% elif not unsynced %}
+  <p class="thread-note">No messages.</p>
+{% endif %}
+{% if unsynced %}
+  <ol class="messages unsynced-list">
+    <li class="day">Sent from here, not stored by a sync yet</li>
+    {% for item in unsynced %}
+    <li class="message me unsynced">
+      <span class="who">You, {{ (item.sent_at or item.sending_at)|local(tz) }}{% if item.status != "sent" %}, {{ item.status }}{% endif %}</span>
+      <p>{{ item.text }}</p>
+    </li>
+    {% endfor %}
+  </ol>
+{% endif %}

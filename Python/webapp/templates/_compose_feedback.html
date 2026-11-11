@@ -1,0 +1,14 @@
+{#- The lines under a message box after a warned or refused send (`compose.send_now`). -#}
+{%- if compose.warnings %}
+<div class="compose-warning" role="alert">
+  <ul>{% for warning in compose.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+  <p>Press Send anyway to send it.</p>
+</div>
+{%- endif %}
+{%- if compose.refusal %}
+<p class="compose-refusal" role="alert">{{ compose.refusal[1] }}
+  {%- if compose.open_item and compose.open_item.status in ("pending", "approved") %}
+  <button type="submit" name="cancel_item" value="{{ compose.open_item.id }}">Cancel it and send mine</button>
+  {%- endif %}
+</p>
+{%- endif %}

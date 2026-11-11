@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}{{ contact.name or contact.doc_id }}{% endblock %}
+{% macro day(value) -%}{{ value[:16]|replace("T", " ") if value else "" }}{%- endmacro %}
+{% block content %}
+{% set first_name = (contact.name or "").split(" ")[0] or "Them" %}
+<div class="contact-head">
+  <h1>{{ contact.name or contact.doc_id }}</h1>
+  <a href="{{ contact.profile_url }}" target="_blank" rel="noopener">LinkedIn profile</a>
+  {% if contact.headline %}<p class="headline">{{ contact.headline }}</p>{% endif %}
+</div>
+{% if notice %}<p class="notice" role="status">{{ notice }}</p>{% endif %}
+
+<div class="contact-layout">
+<aside class="contact-side">
+<dl class="detail">
+  {% for field in fields %}
+  <dt>{{ field.label }}</dt>
+  <dd>
+    <form method="post" action="/contacts/{{ contact.doc_id|urlencode }}/field" class="inline">
+      <input type="hidden" name="name" value="{{ field.name }}">
+      <select name="value" onchange="this.form.submit()" aria-label="{{ field.label }}">
+        {%- if field.current not in field.options %}
+        <option value="" disabled selected>{{ field.current }}</option>
+        {%- endif %}
+        {%- for value in field.options %}
+        <option value="{{ value }}"{% if value == field.current %} selected{% endif %}>{{ value }}</option>
+        {%- endfor %}
+      </select>
+    </form>
+    {%- if field.by_hand %}
+    <span class="by-hand">set by hand</span>
+    <form method="post" action="/contacts/{{ contact.doc_id|urlencode }}/release" class="inline">
+      <input type="hidden" name="name" value="{{ field.name }}">
+      <button type="submit" class="link" title="Let the classifiers change this value again">Release</button>
+    </form>
+    {%- endif %}
+    {%- if field.name == "handling" %}
+    <span class="hint">exclude or manual cancels this contact's queued messages</span>
+    {%- elif field.name == "pipeline_stage" and contact.stage_reason %}
+    <span class="hint">{{ contact.stage_reason }}</span>
+    {%- endif %}
+  </dd>
+  {% endfor %}
+</dl>
+<dl class="detail facts">
+  <dt>Sent / replied</dt><dd class="num">{{ contact.sent_total or 0 }} / {{ contact.replied_total or 0 }}</dd>
+  <dt>Last sent</dt><dd>{{ day(contact.last_sent_date) }}</dd>
+  <dt>Last reply</dt><dd>{{ day(contact.last_reply_date) }}</dd>
+  <dt>Intro sent</dt><dd>{{ day(contact.intro_sent_at) }}</dd>
+  <dt>Connected</dt><dd>{{ connected_at|local(tz) }}</dd>
+</dl>
+</aside>
+
+<div class="contact-main">
+<section class="compose" aria-labelledby="compose-title">
+  <h2 id="compose-title">New message</h2>
+  <form method="post" action="/contacts/{{ contact.doc_id|urlencode }}/send" class="compose-form"
+        data-ai="/contacts/{{ contact.doc_id|urlencode }}/expand" data-limit="{{ max_chars }}"
+        data-ai-empty="Write a note first: Expand with AI turns it into the message."
+        data-ai-busy="Writing the message. A Pro model can take half a minute.">
+    <input type="hidden" name="token" value="{{ compose.token }}">
+    {%- if compose.warnings %}<input type="hidden" name="confirm" value="1">{% endif %}
+    <textarea name="text" rows="6" aria-label="The message, or a note for Expand with AI"
+              placeholder="Write the message, or a note for Expand with AI">{{ compose.text }}</textarea>
+    <div class="compose-bar">
+      <span class="compose-count" aria-live="polite"><span data-count>{{ compose.text|length }}</span> / {{ "{:,}".format(max_chars) }} characters</span>
+      <button type="button" data-ai-button>Expand with AI</button>
+      <button type="submit" class="primary">{{ "Send anyway" if compose.warnings else "Send" }}</button>
+    </div>
+    <p class="compose-status" data-status role="status" hidden></p>
+    {% include "_compose_feedback.html" %}
+  </form>
+</section>
+
+<section class="thread" aria-labelledby="thread-title">
+  <h2 id="thread-title">Conversation</h2>
+  {% include "_thread.html" %}
+</section>
+</div>
+</div>
+
+<h2>Queue</h2>
+{% if contact.queue %}
+<table>
+  <thead><tr><th>Kind</th><th>Status</th><th>Due</th><th>By</th><th>Text</th></tr></thead>
+  <tbody>
+  {% for item in contact.queue %}
+    <tr><td>{{ item.kind }}</td><td>{{ item.status }}</td><td>{{ day(item.due_at) }}</td><td>{{ item.created_by }}</td><td class="wrap">{{ item.text }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="muted">Nothing queued.</p>{% endif %}
+
+<details><summary>Profile summary{% if contact.summary_truncated %} (truncated){% endif %}</summary><pre>{{ contact.summary or "" }}</pre></details>
+<script src="/static/compose.js"></script>
+{% endblock %}

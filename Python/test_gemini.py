@@ -1,74 +1,26 @@
 """
-Tests for Gemini structured output (JSON schema enforcement).
+Live tests for the Gemini classifier used by analysis.ipynb and new-contacts.ipynb.
 
-Focuses exclusively on verifying that the model honours the
-response_mime_type="application/json" + response_json_schema contract used
-throughout analysis.ipynb.
+Verifies that the model honours the response_mime_type="application/json" +
+response_schema contract (the Literal-typed ProfileAnalysis) and that clear-cut
+profiles land on the labels the taxonomy rules prescribe. The contract is
+imported from `profiles` rather than copied, so the prompt under test is the
+prompt in production.
 """
 
 import os
+
 import pytest
-from pydantic import BaseModel
 from dotenv import load_dotenv
 from google import genai
-from google.genai import types
+
+from profiles import MODEL, ProfileAnalysis, generation_config
 
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# Shared config – mirrors analysis.ipynb exactly
+# Shared config -- imported from profiles.py, the module in production
 # ---------------------------------------------------------------------------
-
-MODEL = "gemini-3.1-pro-preview"
-
-ANALYSIS_INSTRUCTIONS = """You are an expert at analyzing LinkedIn profiles to identify potential buyers for a healthcare RCM (Revenue Cycle Management) technology company.
-
-Our product, Recovr by Pinnacle Services, is AI-powered claim denial recovery software sold to:
-- Pathology Practices
-- Medical Diagnostic Laboratories  
-- Revenue cycle management (RCM) firms and billing companies
-
-Analyze the provided profile summary and classify using EXACTLY these controlled values:
-
-## industry — Use one of:
-- "RCM" — works at an RCM firm, billing company, or billing department
-- "Pathology" — works in lab, pathology, or diagnostic services
-- "Medical Lab" — works at a physician practice, clinic, or medical group
-- "Hospital" — works at a hospital or integrated health system
-- "Health IT" — works at a healthcare software or health tech vendor
-- "Health Insurance Payer" — works on the payer or insurance side
-- "Pharma" — pharmaceutical, biotech, or medical device company
-- "Other Healthcare" — healthcare adjacent but none of the above
-- "Non-Healthcare" — not in healthcare at all
-
-## function — Use one of:
-- "Operations" — operations, revenue cycle, billing, coding, claims, or collections role
-- "Finance" — finance, accounting, or financial leadership role
-- "IT" — information technology, software, or technical role
-- "Clinical" — clinical role such as physician, nurse, or lab technician
-- "Executive" — CEO, COO, CFO, or other executive role
-- "Consulting" — works at a consulting firm or in a consulting role
-- "Owner" — business owner, founder, or partner
-- "Sales & Marketing" — sales, marketing, business development, or customer success role
-- "Other" — none of the above or cannot determine from summary
-
-## seniority — Use one of:
-- "Executive" — CEO, CFO, COO, CTO, CMO, CIO, CRO
-- "VP" — Vice President level
-- "Director" — Director level
-- "Manager" — Manager or Supervisor level
-- "Staff" — staff-level, no direct reports
-- "Owner / Partner" — business owner, partner, or founder
-- "Unknown" — cannot determine from summary
-
-If the summary is too short or vague to classify, use your best judgment from whatever context is available. Never return empty strings — use "Unknown" or "Other" when uncertain."""
-
-
-class ProfileAnalysis(BaseModel):
-    industry: str
-    function: str
-    seniority: str
-
 
 REQUIRED_KEYS = ("industry", "function", "seniority")
 
@@ -95,6 +47,15 @@ PROFILES = {
         "Director of Marketing at Adidas with 12 years building global brand campaigns, "
         "managing cross-functional teams, and driving digital transformation initiatives."
     ),
+    "practice_lab_manager": (
+        "Laboratory Manager at Lakeside Endocrinology Associates, a 12-physician "
+        "practice with an in-office CLIA-certified laboratory. Oversees phlebotomy, "
+        "testing workflow and laboratory billing."
+    ),
+    "hospital_lab_director": (
+        "Medical Director of Laboratory Medicine at Mercy Regional Hospital, a 400-bed "
+        "community hospital. Board-certified clinical pathologist."
+    ),
     "short": "Engineer",
 }
 
@@ -115,11 +76,7 @@ def client():
 @pytest.fixture(scope="session")
 def structured_config():
     """GenerateContentConfig enforcing the analysis JSON schema."""
-    return types.GenerateContentConfig(
-        system_instruction=ANALYSIS_INSTRUCTIONS,
-        response_mime_type="application/json",
-        response_json_schema=ProfileAnalysis.model_json_schema(),
-    )
+    return generation_config()
 
 
 def call(client, summary, config):
@@ -191,70 +148,55 @@ class TestSchemaContract:
 
 
 class TestSemanticOutput:
-    """Spot-check that field *values* make sense for well-defined profiles."""
+    """Spot-check that field *values* follow the taxonomy rules for clear-cut profiles."""
 
-    def test_tech_profile_industry(self, client, structured_config):
+    def test_tech_profile(self, client, structured_config):
         result = call(client, PROFILES["tech_senior"], structured_config)
-        assert "tech" in result["industry"].lower(), (
-            f"Expected technology industry, got: {result['industry']}"
-        )
+        assert result["industry"] == "Non-Healthcare", result
+        assert result["function"] == "IT", result
+        # "Senior Software Engineer" who "led teams": individual contributor or team lead.
+        assert result["seniority"] in ("Staff", "Manager"), result
 
-    def test_tech_profile_function(self, client, structured_config):
-        result = call(client, PROFILES["tech_senior"], structured_config)
-        assert "engineer" in result["function"].lower() or "tech" in result["function"].lower(), (
-            f"Expected engineering function, got: {result['function']}"
-        )
-
-    def test_tech_profile_seniority(self, client, structured_config):
-        result = call(client, PROFILES["tech_senior"], structured_config)
-        assert result["seniority"].lower() in (
-            "senior", "lead", "staff", "principal", "mid", "manager"
-        ), f"Unexpected seniority for senior engineer: {result['seniority']}"
-
-    def test_finance_profile_industry(self, client, structured_config):
+    def test_finance_profile_is_other_not_finance(self, client, structured_config):
+        """Investment banking is Other; Finance is reserved for finance roles inside operating organizations."""
         result = call(client, PROFILES["finance_vp"], structured_config)
-        assert any(w in result["industry"].lower() for w in ("finance", "bank", "investment")), (
-            f"Expected finance industry, got: {result['industry']}"
-        )
+        assert result["industry"] == "Non-Healthcare", result
+        assert result["function"] == "Other", result
+        assert result["seniority"] == "VP", result
 
-    def test_finance_profile_seniority_is_senior(self, client, structured_config):
-        result = call(client, PROFILES["finance_vp"], structured_config)
-        assert result["seniority"].lower() in (
-            "vp", "vice president", "senior", "executive", "director"
-        ), f"Unexpected seniority for VP: {result['seniority']}"
-
-    def test_healthcare_profile_industry(self, client, structured_config):
+    def test_healthcare_profile(self, client, structured_config):
         result = call(client, PROFILES["healthcare_entry"], structured_config)
-        assert "health" in result["industry"].lower() or "medical" in result["industry"].lower(), (
-            f"Expected healthcare industry, got: {result['industry']}"
-        )
+        assert result["industry"] == "Hospital", result
+        assert result["function"] == "Clinical", result
+        assert result["seniority"] == "Staff", result
 
-    def test_healthcare_profile_seniority_is_entry(self, client, structured_config):
-        result = call(client, PROFILES["healthcare_entry"], structured_config)
-        assert result["seniority"].lower() in (
-            "entry", "junior", "associate", "mid"
-        ), f"Expected entry-level seniority, got: {result['seniority']}"
-
-    def test_marketing_profile_function(self, client, structured_config):
+    def test_marketing_profile(self, client, structured_config):
         result = call(client, PROFILES["marketing_director"], structured_config)
-        assert "market" in result["function"].lower(), (
-            f"Expected marketing function, got: {result['function']}"
-        )
+        assert result["industry"] == "Non-Healthcare", result
+        assert result["function"] == "Sales & Marketing", result
+        assert result["seniority"] == "Director", result
 
-    def test_marketing_profile_seniority_is_director(self, client, structured_config):
-        result = call(client, PROFILES["marketing_director"], structured_config)
-        assert result["seniority"].lower() in (
-            "director", "senior", "executive", "vp", "manager"
-        ), f"Expected director-level seniority, got: {result['seniority']}"
+    def test_practice_owned_lab_is_medical_lab(self, client, structured_config):
+        """A laboratory owned by a physician practice is a target: Medical Lab, not Physician Practice."""
+        result = call(client, PROFILES["practice_lab_manager"], structured_config)
+        assert result["industry"] == "Medical Lab", result
+        assert result["function"] == "Operations", result
+        assert result["seniority"] == "Manager", result
+
+    def test_hospital_owned_lab_is_hospital(self, client, structured_config):
+        """A hospital's laboratory is not a target: it stays under Hospital."""
+        result = call(client, PROFILES["hospital_lab_director"], structured_config)
+        assert result["industry"] == "Hospital", result
+        assert result["function"] == "Clinical", result
 
 
 # ---------------------------------------------------------------------------
-# 3. Consistency – same input yields structurally identical output
+# 3. Consistency -- same input yields identical output
 # ---------------------------------------------------------------------------
 
 
 class TestConsistency:
-    """Two calls with the same profile must return structurally identical output."""
+    """Two calls with the same clear-cut profile must return the same labels."""
 
     def test_same_keys_across_calls(self, client, structured_config):
         r1 = call(client, PROFILES["tech_senior"], structured_config)
@@ -263,11 +205,7 @@ class TestConsistency:
             f"Key sets differ between calls: {r1.keys()} vs {r2.keys()}"
         )
 
-    def test_same_industry_across_calls(self, client, structured_config):
+    def test_same_labels_across_calls(self, client, structured_config):
         r1 = call(client, PROFILES["finance_vp"], structured_config)
         r2 = call(client, PROFILES["finance_vp"], structured_config)
-        # Both should at least agree on the broad industry category
-        assert (
-            any(w in r1["industry"].lower() for w in ("finance", "bank", "investment")) and
-            any(w in r2["industry"].lower() for w in ("finance", "bank", "investment"))
-        ), f"Industry inconsistent across calls: {r1['industry']!r} vs {r2['industry']!r}"
+        assert r1 == r2, f"Labels differ between calls: {r1} vs {r2}"

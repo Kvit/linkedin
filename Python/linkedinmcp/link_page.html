@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>$title</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&amp;family=Open+Sans:wght@400;600&amp;display=swap">
+<style>
+  /* The look of the marketing documents this service sends (Recovr_One_Pager.html). */
+  :root {
+    --orange: #E85C33;
+    --orange-dark: #C4441E;
+    --charcoal: #333333;
+    --charcoal-soft: #444444;
+    --gray-mid: #808080;
+    --white: #FFFFFF;
+    --display-stack: "Montserrat", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --text-stack: "Open Sans", "Helvetica Neue", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--white);
+    color: var(--charcoal-soft);
+    font-family: var(--text-stack);
+    font-size: 17px;
+    line-height: 1.55;
+    -webkit-text-size-adjust: 100%;
+  }
+  .page {
+    min-height: 100vh;
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 40px 24px 28px;
+    display: flex;
+    flex-direction: column;
+  }
+  .masthead {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 16px;
+    border-bottom: 3px solid var(--orange);
+    padding-bottom: 12px;
+  }
+  .masthead img { height: 40px; width: auto; display: block; }
+  .meta, footer, .eyebrow {
+    font-family: var(--display-stack);
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--gray-mid);
+    line-height: 1.6;
+  }
+  .meta { text-align: right; }
+  .meta strong, footer strong { color: var(--charcoal); font-weight: 700; }
+  main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 56px 0;
+  }
+  .eyebrow { color: var(--orange); font-weight: 700; font-size: 11px; margin: 0 0 14px; }
+  h1 {
+    font-family: var(--display-stack);
+    font-weight: 700;
+    font-size: 34px;
+    line-height: 1.14;
+    letter-spacing: -0.01em;
+    color: var(--charcoal);
+    margin: 0 0 16px;
+  }
+  h1 .accent { color: var(--orange); white-space: nowrap; }
+  p.message { margin: 0 0 30px; max-width: 30em; }
+  .button {
+    display: inline-block;
+    background: var(--orange);
+    color: var(--white);
+    font-family: var(--display-stack);
+    font-weight: 600;
+    font-size: 14px;
+    letter-spacing: 0.04em;
+    text-decoration: none;
+    padding: 14px 24px;
+    border-radius: 3px;
+    transition: background-color 0.15s ease;
+  }
+  .button:hover { background: var(--orange-dark); }
+  .button:focus-visible { outline: 3px solid var(--charcoal); outline-offset: 3px; }
+  footer {
+    border-top: 2px solid var(--orange);
+    padding-top: 12px;
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+  }
+  @media (max-width: 480px) {
+    .page { padding-top: 28px; }
+    .masthead img { height: 30px; }
+    .meta { font-size: 9px; letter-spacing: 0.12em; }
+    main { padding: 44px 0; }
+    h1 { font-size: 27px; }
+    footer { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="masthead">
+    <img src="$logo" alt="Pinnacle Services" width="776" height="162">
+    <div class="meta"><strong>Recovr<sup>&reg;</sup></strong><br>AI-Powered Denial &amp; Rejection Recovery</div>
+  </header>
+  <main>
+    <p class="eyebrow">Error 404</p>
+    <h1>$headline <span class="accent">$accent</span></h1>
+    <p class="message">$message</p>
+    <a class="button" href="https://www.pinnacleservice.co">Visit pinnacleservice.co</a>
+  </main>
+  <footer>
+    <div><strong>Pinnacle Services Corporation</strong> &middot; Houston, Texas</div>
+    <div>&copy; $year &middot; Recovr&trade; is a trademark of Pinnacle Services Corp.</div>
+  </footer>
+</div>
+</body>
+</html>

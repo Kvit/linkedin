@@ -1,0 +1,16 @@
+{
+  "object": "UserProfile",
+  "provider": "LINKEDIN",
+  "provider_id": "ACoAAATEST",
+  "public_identifier": "throttled-person",
+  "first_name": "Throttled",
+  "last_name": "Person",
+  "headline": "Director of Revenue Cycle",
+  "network_distance": "THIRD_DEGREE",
+  "websites": [],
+  "throttled_sections": ["skills", "experience"],
+  "work_experience_total_count": 6,
+  "work_experience": [],
+  "skills_total_count": 30,
+  "skills": []
+}

@@ -1,0 +1,53 @@
+# Build context for the outreach service is Python/ itself (see
+# linkedinmcp/Dockerfile and linkedinmcp/deploy.cmd, both of which build from
+# here with `-f linkedinmcp/Dockerfile`). Keep that context small, and -- more
+# importantly than size -- keep the one credential out of every layer that must
+# never be in one.
+
+# The Firestore service-account key. Cloud Run authenticates as the runtime
+# service account through Application Default Credentials, so this file is
+# not merely unnecessary in the image, it is a credential that must never be
+# baked into a layer. Only one copy exists in the tree today (Python/), but
+# this is the one line in this file where "any depth" is the right answer,
+# not just the context root -- unlike the .env line below, a stray nested
+# copy must not slip through, so this keeps the `**/` prefix even though the
+# brief that specified this file showed it without one.
+**/*service-account.json
+
+# NOT excluded: .env. The container has no other source of Unipile and Gemini
+# credentials, so linkedinmcp/Dockerfile copies Python/.env in deliberately and
+# the service reads the same configuration the notebooks do. linkedinmcp/.env,
+# if it exists, ships too and layers overrides on top. Adding `.env`, `*.env` or
+# `**/.env` here would fail the build at the Dockerfile's `COPY .env`, and an
+# image without the file would refuse to start anyway: `OUTREACH_API_KEY` lives
+# there too.
+#
+# The consequence is that **the image contains real secrets**: anyone with read
+# access to the Artifact Registry repository can pull it and extract them. That
+# is the accepted trade for a one-command deploy.
+
+.venv/
+
+# A bare, slash-less pattern in .dockerignore matches only at the context
+# root (see the .env comment above) -- so plain `__pycache__/` and `*.pyc`
+# would catch Python/__pycache__ and miss linkedinmcp/__pycache__,
+# lib/__pycache__, lib/unipile/__pycache__ and lib/unipile/resources/__pycache__,
+# all of which exist in this tree right now and would otherwise ride into the
+# image via `COPY lib/ lib/` and `COPY linkedinmcp/ linkedinmcp/`. The `**/`
+# prefix matches at every depth.
+**/__pycache__/
+**/*.pyc
+
+.git/
+.superpowers/
+*.ipynb
+*.csv
+*.txt
+tests/
+
+# Do NOT add *.md here. pyproject.toml declares `readme = "README.md"`, and
+# hatchling reads that file to build the project's metadata; `uv sync` (see
+# linkedinmcp/Dockerfile) installs this project, not just its dependencies, so a
+# missing README.md fails the build with
+# "OSError: Readme file does not exist: README.md". This already happened
+# once on Dockerfile.deploy -- keep README.md shipping into the context.

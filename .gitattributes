@@ -1,0 +1,31 @@
+# Line endings: LF everywhere, CRLF only for Windows batch files.
+#
+# Without this, core.autocrlf decides per machine and the tree drifts: some
+# files land CRLF, their neighbours LF, and every diff shows whole files as
+# changed. These attributes win over core.autocrlf on every machine.
+#
+# After changing this file, apply it to what is already committed with:
+#   git add --renormalize .
+
+* text=auto eol=lf
+
+# cmd.exe mis-parses a batch file saved with LF only. PowerShell does not care,
+# so .ps1 stays LF with everything else.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Never line-ending-convert these.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.xlsx binary
+*.xls binary
+*.parquet binary
+*.pkl binary
+*.woff binary
+*.woff2 binary

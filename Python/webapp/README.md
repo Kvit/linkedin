@@ -1,0 +1,319 @@
+# The contacts webapp
+
+A private web application over the LinkedIn contacts in Firestore, for one
+person. It runs on Google Cloud Run as `linkedin-contacts`, behind Google
+sign-in (Identity-Aware Proxy, IAP), and is built in stages: each stage adds one
+function after the previous one is approved.
+
+It complements the other two ways of working the contacts:
+
+| Surface | Does |
+|---|---|
+| The notebooks | volume: load the backlog, classify thousands, the bulk intro campaign |
+| The Claude agent, through `linkedinmcp` | the daily increment behind code guards |
+| **This webapp** | see everything about a contact in one place, filter the whole collection, correct and write by hand |
+
+Design: `docs/superpowers/specs/2026-09-16-contacts-webapp-design.md`.
+Plan and stages: `docs/superpowers/plans/2026-09-16-contacts-webapp.md`.
+
+## What it does now (stages 1 to 5 and 8, the Need my answer and My Stars views, and the message box)
+
+| Screen | Path | Shows |
+|---|---|---|
+| Home | `/` | Total contacts; counts by industry, stage and handling (`none` = unset), each count a link to the Contacts list with that filter applied; the **Get New Contacts** and **Sync Messages** buttons with a panel of their progress and results |
+| Contacts | `/contacts` | Every contact, 100 a page: filter, click a column heading to sort, search by name or headline |
+| Contact | `/contacts/{doc_id}` | One contact: handling, industry, function, seniority and stage as dropdowns that save at once, the dates beside them; a box to write a message, with **Expand with AI** and **Send**; the conversation as a thread, your messages on the right and theirs on the left, a divider for each day; queued messages; the profile summary |
+| Documents | `/documents` | The files in `gs://rr-recovr-public/marketing/`, newest first: type, size, date, the main link with **Copy**, counted opens, number of sublinks, last open |
+| Document | `/documents/{file name}` | One file: its main link with its opens and bot requests, a form that creates a sublink for a label (a person who is not a contact, or a place), every sublink with its opens, and under each link its newest 20 requests |
+
+Every screen's header says when the data was loaded ("data as of", Chicago
+time), has a **Refresh** button that reloads every contact from Firestore,
+a **Need my answer** button with the number of contacts waiting on you, and a
+**My Stars** button with the number of contacts whose LinkedIn conversation is
+starred. The Contact screen's dropdowns and Send, the Home screen's two
+buttons, and My Stars write; the rest only reads.
+
+**Need my answer** opens the Contacts list narrowed to the prospects, leads and
+contacts with no stage who wrote last: their newest readable message is newer
+than your newest readable one, or you never wrote to them. A contact staged
+`soft_no`, `reject`, `not_relevant` or `unknown` is left out. A system event,
+a deleted message or a blank one does not count as an answer. The list is sorted by when they wrote, newest
+first; the other filters and the sort still work inside the view, and
+**Show all contacts** leaves it. The number is counted when the data is
+loaded, so press **Refresh** after a sync or after answering someone.
+
+**My Stars** reads which conversations are starred in LinkedIn now, marks
+those contacts in `analysis` (`linkedin_starred: true`), clears the mark on
+contacts whose conversation was unstarred since (`linkedin_starred: false`),
+and opens the Contacts list narrowed to the marked contacts. A press takes
+about 4 seconds: LinkedIn offers no way to ask for starred conversations
+alone, or for what changed, so every press reads all 3,350 conversations
+(`linkedinmcp/stars.py`). The line above the list says how many conversations
+are starred and how many marks were added and cleared. A starred conversation
+is matched to its contact through the stored messages, so one whose messages
+are not synced yet is reported as matching no contact until after the next
+Sync Messages. Opening the view without pressing (a link, the back button)
+shows the marks as of the last press, and so does the count in the header.
+If the read fails, no mark changes and the line says so.
+
+**The lists** (Contacts, Suggested, Documents) open a row's page in a new
+tab, and the row last clicked stays marked in the list, also after a reload
+of that tab (`static/selected-row.js`, kept per browser tab). A click on a column
+heading sorts the Documents list (latest update on top by default) and a
+file's Sublinks table (newest first by default), as on the Contacts list; a
+second click turns the order, and a row with no value in that column comes
+last.
+
+**Documents** lists the bucket folder again on every load, so a file added
+to the bucket shows on the next load with no step here; a file removed from
+the bucket leaves the list. Each file gets one main link the first time
+it is listed (stored with `kind: permanent`), `https://info.paypredict.net/d/<file name in lower case>`, and
+any number of sublinks (`kind: custom`), each counted on its own. The links are served by
+the outreach service (`GET /d/{token}`, no sign-in): it sends the file itself,
+so the recipient's browser never gets a `storage.googleapis.com` address. An
+**open** is a request by a person. A `HEAD` request, a request whose
+User-Agent names a scanner or a link preview (`OUTREACH_DOCUMENT_BOT_AGENTS`),
+and a request without `Accept-Language` are stored as bot requests and not
+counted; a reload from the same address within 60 seconds is not a second open. A scanner that
+presents itself as a browser is counted: the stored requests under each link
+show the user agent and the time. Links and requests are in the Firestore
+collections `document_links` and `document_requests`. Listing needs
+`roles/storage.objectViewer` on the bucket for the service account; without
+it the page says the bucket could not be listed.
+
+**The conversation** shows the transcript the classifiers read: each message
+is one paragraph, dated to the day, with its line breaks joined. When a
+contact has more than one LinkedIn conversation, each gets a heading. Very
+long histories show the newest 20,000 characters and say so.
+
+**Writing a message.** The box above the conversation takes the message
+itself, or a note to expand. The count under it is shown in bold past 1,200
+characters, the limit the outreach service applies.
+
+- **Expand with AI** sends the box's text as the instruction to Gemini, with
+  the contact's classification, whole profile summary and conversation as
+  context (the text the stage classifier reads), and puts the message it
+  writes in the box; **Undo** brings the note back. It asks for a note
+  between two executives in your voice: the note is the whole content (no
+  call, demo, meeting length, date, price or promise it does not name), the
+  conversation only makes it specific and is never retold, a short note makes
+  a short message ("check status" is one or two sentences), one paragraph,
+  "Hi" and the first name, no sign-off, no email address or phone number, no
+  sales jargon and none of the listed stock phrases ("jump on a call", "just
+  following up", "let me know if you have any questions" and others). The line under the box names the
+  model version that wrote it and the seconds it took. Nothing is stored.
+  The model is `WEBAPP_EXPAND_MODEL`, by default `gemini-pro-latest`, Google's
+  name for its newest Pro model.
+- **Send** sends the box's text to the contact at once through Unipile. It is
+  refused, with the text kept and the reason shown, when the text check
+  fails (empty, too long, a `{slot}` left in, a link to a domain not allowed),
+  when handling is `exclude`, when LinkedIn sends are blocked or paused, when
+  a message to them is already queued (a pending or approved one offers
+  **Cancel it and send mine**, which cancels it only when the send passes
+  every other check), when the day's message budget is used, or
+  when their LinkedIn id is not known. It asks for a second press, **Send
+  anyway**, when their stage is `soft_no`, `reject` or `not_relevant`, or
+  when you already wrote to them today and they have not written since.
+- **What a send writes:** an `outreach_queue` item `manual:{doc_id}:{token}`
+  with kind `manual` and tags `["manual"]`, created before the LinkedIn call
+  and settled `sent` with LinkedIn's message id after it; an `action_log`
+  row, so the outreach service's 24-hour count includes it; `last_sent_date`
+  and `sent_total` merged into `analysis`. The Need my answer count drops at
+  once. Then **Sync Messages** starts as if pressed on Home; it stores the
+  message in `messages` with `tags: ["manual"]`, copied from the queue item.
+  Until then the conversation ends with the message, marked as not stored
+  by a sync yet. A Refresh before the sync ends puts the contact back in
+  Need my answer.
+- **A form sends once:** each page carries a new token, and the item's id
+  holds it, so a double click or a resubmitted page sends nothing more.
+- **When LinkedIn refuses it** the item is settled `failed` and the page says
+  why; a rate limit or a disconnected account also pauses sends, and a
+  restriction blocks them, as the outreach service does. When LinkedIn gives
+  no clear answer the item is `unknown`, an alert is raised, and the next
+  sync marks it sent if the message turns up, failed after 48 hours. Such a
+  message is stored with `tags: []`.
+
+**The look.** The colours are the two stains a pathology slide is read in:
+hematoxylin blue-violet for your messages and every action, eosin pink-red for
+the contact's messages and the Need my answer count. Interface text is
+Atkinson Hyperlegible Next and message text is Literata, both loaded from
+Google Fonts in the browser, with system fonts as the fallback.
+
+**Buttons on the Home screen.** Each runs process steps on the outreach
+service, for real, never as a dry run:
+
+- **Get New Contacts** runs `get_contacts` for up to 10 new connections, which
+  views their LinkedIn profiles, takes about five minutes and counts against
+  the day's profile limit, then `classify_contacts` on exactly the profiles it
+  stored. The panel lists each classified contact with its industry, function,
+  seniority and whether it is in a target industry. When nothing was stored,
+  nothing is classified.
+- **Sync Messages** runs `sync_messages`: it stores the LinkedIn messages newer
+  than the last one it synced, cancels queued messages to anyone who replied,
+  refreshes the contact stats and stages up to 50 conversations.
+
+One run at a time: both buttons are disabled while a run is going, and the Home
+screen reloads itself every 3 seconds, reading the running job each time. The
+run advances only while the Home screen is open, so the second step of Get New
+Contacts starts when you next open it. The latest run is held in memory, so a
+restart or a deploy forgets it; the outreach service still finishes its jobs,
+and `get_run_report` there lists them. After a run, press **Refresh** to see
+the changes in the lists and counts.
+
+**Filters on the Contacts screen.** Tick one or more values for industry,
+function, seniority, stage or handling, choose Any, Yes or No for **Message
+Sent** and **Message Received**, and press **Apply**; **Clear** removes them
+all. Values ticked in one filter widen it, so industry RCM and Pathology keeps
+both; different filters narrow each other, and combine with the search and
+the sort, and the sort headings and page links keep them. Each list shows the
+values the contacts actually hold, most frequent first; `none` is an unset
+value, so industry `none` lists the unclassified contacts.
+
+- **Message Sent**: Yes keeps the contacts you have written to (`sent_total`
+  above 0), No those you have not; Any, the default, does not filter.
+- **Message Received**: Yes keeps the contacts with at least one readable
+  message from them, as the Contact screen's conversation shows it, No those
+  with none; Any is the default. This is not the **Replied** column, which
+  counts only answers in a conversation you opened: on 2026-09-16, 159
+  contacts had written to you and show no replies.
+- **Connected**: the date from the fetch queue, set for the connections the
+  outreach service found, else the date LinkedIn Helper stored. On 2026-09-16,
+  2,806 of 28,675 contacts had one; the column is empty for the rest.
+
+**Editing a contact.** On the Contact screen, Handling, Industry, Function,
+Seniority and Stage are dropdowns, Handling first. Choosing a value saves it to
+the contact's `analysis` document at once, updates that contact's row in the
+in-memory table, and reloads the page with a line saying what was saved. A
+write that another website's page sends is refused with 403: the browser's
+`Sec-Fetch-Site` header must say the request came from this site.
+
+- **Handling** offers `none`, `exclude` and `manual`. `exclude` or `manual`
+  also cancels the contact's pending and approved queued messages, and the
+  page says how many; `none` clears the field.
+- **Industry, Function, Seniority and Stage** offer the values the classifiers
+  use. A value chosen here is marked **set by hand**: the field's name goes
+  into the document's `hand_set` list and the time into `hand_set_at`; a stage
+  also gets the reason "set by hand". The classification notebooks,
+  `classify_contacts` and `classify_stages` then leave that field alone, but a
+  new message from the contact, or `classify_stages` with `force`, still
+  re-stages them. The outreach service does this from `v2.4.0`, deployed
+  2026-09-16.
+- **Release** takes the field out of `hand_set`, so the classifiers may change
+  it again; the value stays until they do.
+- A field without a value shows `none` greyed out. It cannot be chosen, so a
+  classification or a stage can be changed here but not cleared.
+
+**How the data is loaded.** At startup the app reads every `analysis` document
+(selected fields only, never `summary` or email addresses), every `extracted`
+name, headline and connection date, the fetch queue's connection dates and
+every message into one table in memory; that took 14 to 17 seconds on
+2026-09-16 for 28,675 contacts. Lists, filters, sorting, search and counts work
+on that table, so they answer in milliseconds. It is not reloaded on its own:
+press Refresh (about 15 seconds; the page waits) after a notebook or the agent
+changed contacts. The Contact screen reads Firestore directly each time it
+opens, so it is always current.
+
+The load happens inside the startup and inside the Refresh request, never in
+the background, because Cloud Run gives a container CPU only while it starts or
+answers a request.
+
+## Running it locally, in the dev container
+
+From `Python/`, inside the dev container (see the project's dev container
+notes), with the outreach URL read from `linkedinmcp/platform/ids.env`:
+
+```bash
+WEBAPP_DEV_USER=vk@pinnacleservice.co WEBAPP_ALLOWED_EMAIL=vk@pinnacleservice.co WEBAPP_OUTREACH_URL=$(sed -n 's/^OUTREACH_URL=//p' linkedinmcp/platform/ids.env) uv run --no-sync uvicorn --factory webapp.app:create_app --host 0.0.0.0 --port 8080
+```
+
+It reads the real Firestore database through the local service-account key.
+`WEBAPP_DEV_USER` skips Google sign-in and treats every request as that user;
+the app prints a warning when it is set, and the deploy script never sets it.
+Port 8080 inside the container reaches Windows through VS Code only once the
+container has been rebuilt: `forwardPorts` gained 8080 on 2026-09-16, after the
+running container was created.
+
+To run the built image on Windows instead, from `Python/` in PowerShell: it
+answers at `http://127.0.0.1:8090`, from this machine only, about 15 seconds
+after it starts (the contact table loads first). The key is mounted read-only
+and is not in the image. The last line stops and removes it.
+
+```powershell
+docker build -f webapp/Dockerfile -t linkedin-contacts:build .
+$outreach = (Select-String -Path linkedinmcp\platform\ids.env -Pattern '^OUTREACH_URL=(.+)$').Matches[0].Groups[1].Value
+docker run -d --name contacts-local -p 127.0.0.1:8090:8080 -e WEBAPP_DEV_USER=vk@pinnacleservice.co -e WEBAPP_ALLOWED_EMAIL=vk@pinnacleservice.co -e WEBAPP_OUTREACH_URL=$outreach -v "$PWD\vk-linkedin-master-service-account.json:/app/vk-linkedin-master-service-account.json:ro" linkedin-contacts:build
+docker rm -f contacts-local
+```
+
+Tests, also in the container:
+
+```bash
+uv run --no-sync pytest tests/webapp -q
+```
+
+## Deploying
+
+From `Python/` on Windows (Docker and gcloud run on the host, not in the
+container), logged in to gcloud as the project owner:
+
+```bash
+webapp\deploy.cmd v0.1.0
+```
+
+Use a new tag for every deploy. The script builds and pushes the image, turns on
+IAP and its service agent, deploys with `--iap --no-allow-unauthenticated` and
+exactly one instance, and grants access. Every step changes nothing when it is
+already in place, so the same command is the first deploy and every later one.
+It ends by printing the service URL.
+
+**Access.** Only `vk@pinnacleservice.co` gets through IAP
+(`roles/iap.httpsResourceAccessor` on the service), and the app checks the IAP
+assertion itself as well: its signature, the audience
+`/projects/<project number>/locations/us-central1/services/linkedin-contacts`,
+the issuer, and the email. Anyone else gets a Google "access denied" page or a
+403.
+
+**Running now:** `v1.3.0`, revision `linkedin-contacts-00013-qrc`, deployed
+2026-11-10 05:54 (UTC) at `https://linkedin-contacts-5czydyxqoa-uc.a.run.app`:
+the Documents tab; the Contacts and Documents lists open a row in a new tab
+and keep it marked; the Documents list and the Sublinks table sort by a
+heading. Its application startup took 30 seconds. Before it, `v1.2.3`,
+revision `linkedin-contacts-00012-pm2`, 2026-11-06, a rebuild with the
+current `.env`; `v1.2.2`, revision `linkedin-contacts-00011-d2j`, 2026-09-19
+03:22 (UTC), 32 seconds: on the Suggested screen, Save, Clear and Send stay on
+the page, and a sent message is shown locked;
+`v1.2.1`, revision `linkedin-contacts-00010-ncm`, 03:12 (UTC), 28 seconds, the
+two tabs, What they did and Our conversation; `v1.2.0`, revision
+`linkedin-contacts-00009-wjx`, 2026-09-19 02:05 (UTC), 27 seconds, the first
+Suggested screen; and `v1.1.0`, revision `linkedin-contacts-00008-zxd`,
+2026-09-17 03:09 (UTC), 31 seconds.
+
+**The deploy needed no console step.** IAP's built-in sign-in admits accounts
+of the organization that owns the project, and `vk-linkedin` belongs to the
+`pinnacleservice.co` organization. In a project without an organization,
+`gcloud run deploy --iap` warns that setup is required: open **Security,
+Identity-Aware Proxy** in the Cloud console, configure the OAuth consent screen
+when asked, then deploy again.
+
+**If sign-in succeeds but the app answers 403**, the container log names the
+reason: `IAP assertion rejected: ... (aud=..., expected ...)` means the audience
+differs from the one the deploy script computed.
+
+```bash
+gcloud run services logs read linkedin-contacts --region us-central1 --project vk-linkedin --limit 50
+```
+
+**Settings** (Cloud Run environment variables; everything else comes from
+`Python/.env`, as for the outreach service):
+
+| Variable | Meaning |
+|---|---|
+| `WEBAPP_ALLOWED_EMAIL` | The one Google account allowed in |
+| `WEBAPP_IAP_AUDIENCE` | The IAP JWT audience, computed by `deploy.cmd` |
+| `WEBAPP_OUTREACH_URL` | The outreach service's MCP URL, for the Home buttons and the sync after a send |
+| `WEBAPP_EXPAND_MODEL` | The Gemini model of Expand with AI; default `gemini-pro-latest` |
+| `WEBAPP_DEV_USER` | Local runs only |
+
+**Cost.** One instance stays up (`--min-instances=1`) so the contact table is
+always loaded; with Cloud Run's default request-based billing an idle instance
+is charged at the reduced idle rate.

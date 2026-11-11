@@ -1,0 +1,4 @@
+{#- A column heading that sorts its list: `sort` and `dir` are the page's, `link` its other query parameters. -#}
+{% macro th(column, label, cls="") -%}
+  <th class="{{ cls }}"><a href="{{ request.url.path|urlencode }}?{{ qs(link|default({}), sort=column, dir='asc' if sort == column and dir == 'desc' else 'desc') }}">{{ label }}{% if sort == column %} {{ '▾' if dir == 'desc' else '▴' }}{% endif %}</a></th>
+{%- endmacro %}

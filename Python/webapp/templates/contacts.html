@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Contacts{% endblock %}
+{% block content %}
+{% macro choice(name, label) -%}
+  {%- set chosen = filters[name] %}
+  <details class="multi">
+    <summary>{{ label }} <span class="picked">{{ chosen|join(", ") if chosen else "All" }}</span></summary>
+    <fieldset>
+      <legend>{{ label }}</legend>
+      {%- for value in choices[name] %}
+      <label><input type="checkbox" name="{{ name }}" value="{{ value }}"{% if value in chosen %} checked{% endif %}> {{ value }}</label>
+      {%- endfor %}
+    </fieldset>
+  </details>
+{%- endmacro %}
+{% macro yes_no(name, label) -%}
+  <label>{{ label }}
+    <select name="{{ name }}">
+      {%- for value, text in (("", "Any"), ("yes", "Yes"), ("no", "No")) %}
+      <option value="{{ value }}"{% if link.get(name, "") == value %} selected{% endif %}>{{ text }}</option>
+      {%- endfor %}
+    </select>
+  </label>
+{%- endmacro %}
+<form method="get" action="/contacts" class="filters">
+  <input type="search" name="q" value="{{ q }}" placeholder="name or headline">
+  {{ choice("industry", "Industry") }}
+  {{ choice("function", "Function") }}
+  {{ choice("seniority", "Seniority") }}
+  {{ choice("stage", "Stage") }}
+  {{ choice("handling", "Handling") }}
+  {{ yes_no("sent", "Message Sent") }}
+  {{ yes_no("received", "Message Received") }}
+  <input type="hidden" name="sort" value="{{ sort }}"><input type="hidden" name="dir" value="{{ dir }}">
+  {% if filters.view %}<input type="hidden" name="view" value="{{ filters.view }}">{% endif %}
+  <button type="submit">Apply</button>
+  <a href="/contacts">Clear</a>
+</form>
+{% if notice %}<p class="notice" role="status">{{ notice }}</p>{% endif %}
+{% if filters.view == "stars" %}
+<p class="view-on"><strong>My Stars:</strong> contacts whose LinkedIn conversation is starred, as of the last press of My Stars. <a href="/contacts?{{ qs(link, view=None) }}">Show all contacts</a></p>
+{% endif %}
+{% if filters.view == "needs_answer" %}
+<p class="view-on"><strong>Need my answer:</strong> prospects, leads and contacts with no stage whose newest message is theirs, newest first. <a href="/contacts?{{ qs(link, view=None) }}">Show all contacts</a></p>
+{% endif %}
+<p class="muted">{{ total }} contact{{ "" if total == 1 else "s" }}, page {{ page }} of {{ pages }}</p>
+{% from "_sort.html" import th with context %}
+<div class="table-scroll">
+<table class="list" data-selected-key="contacts:selected">
+  <thead><tr>
+    {{ th("name", "Name") }}<th></th>{{ th("industry", "Industry") }}{{ th("function", "Function") }}
+    {{ th("seniority", "Seniority") }}{{ th("pipeline_stage", "Stage") }}{{ th("handling", "Handling") }}
+    {{ th("sent_total", "Sent", "num") }}{{ th("replied_total", "Replied", "num") }}{{ th("connected_at", "Connected") }}
+    {{ th("last_sent_date", "Last sent") }}{{ th("last_reply_date", "Last reply") }}{{ th("headline", "Headline") }}
+  </tr></thead>
+  <tbody>
+  {% for row in rows %}
+    <tr data-row="{{ row.doc_id }}">
+      <td><a href="/contacts/{{ row.doc_id|urlencode }}" target="_blank">{{ row.name or row.doc_id }}</a></td>
+      <td><a href="{{ row.profileUrl or 'https://www.linkedin.com/in/' ~ row.doc_id }}" target="_blank" rel="noopener" title="Open on LinkedIn">in</a></td>
+      <td>{{ row.industry or "" }}</td><td>{{ row.function or "" }}</td>
+      <td>{{ row.seniority or "" }}</td><td>{{ row.pipeline_stage or "" }}</td><td>{{ row.handling or "" }}</td>
+      <td class="num">{{ row.sent_total if row.sent_total is not none else "" }}</td>
+      <td class="num">{{ row.replied_total if row.replied_total is not none else "" }}</td>
+      <td>{{ row.connected_at|local(tz) }}</td>
+      <td>{{ row.last_sent_date|local(tz) }}</td><td>{{ row.last_reply_date|local(tz) }}</td>
+      <td class="wrap">{{ row.headline or "" }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<nav class="pager">
+  {% if page > 1 %}<a href="/contacts?{{ qs(link, page=page - 1) }}">previous</a>{% endif %}
+  {% if page < pages %}<a href="/contacts?{{ qs(link, page=page + 1) }}">next</a>{% endif %}
+</nav>
+<script>
+  // One filter's list open at a time; a click outside the lists closes it.
+  document.addEventListener("click", (event) => {
+    for (const open of document.querySelectorAll("details.multi[open]")) {
+      if (!open.contains(event.target)) open.open = false;
+    }
+  });
+</script>
+<script src="/static/selected-row.js"></script>
+{% endblock %}

@@ -1,0 +1,181 @@
+"""The contacts webapp: `uvicorn --factory webapp.app:create_app`.
+
+No module-level `app`, for the reason `linkedinmcp/app.py` gives: building
+one at import would read settings and break test collection. Pass
+`settings`, `outreach` and `contacts` to skip the environment entirely --
+the path every test takes.
+
+Five screens: Home (`/`, with the buttons of `routine.py`), Contacts
+(`/contacts`), Contact (`/contacts/{doc_id}`, in `contacts.py`, with the
+message box of `compose.py`), Suggested (`/suggested`, in `suggested.py`:
+the drafts stored on `activity` records) and Documents (`/documents`, in
+`documents.py`: tracked links to the marketing files). The header's My Stars button
+(`POST /stars`) marks the contacts whose LinkedIn conversation is starred
+(`linkedinmcp.stars`) and lists them. All but `/health` sit behind
+`auth.IapMiddleware`.
+"""
+
+import asyncio
+import logging
+import re
+from contextlib import asynccontextmanager
+from urllib.parse import urlencode
+
+from fastapi import FastAPI, Request
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
+
+from linkedinmcp import clients, clock, settings as outreach_cfg, stars
+from webapp import auth, compose, contacts as contact_screen, documents as document_screen, projection, render
+from webapp import routine, settings as cfg, suggested
+
+logger = logging.getLogger(__name__)
+
+PER_PAGE = 100
+
+#: The Home screen's count tables: the Contacts filter each count opens
+#: (`projection.VALUE_FILTERS` names its column), and the heading.
+COUNTED = {"industry": "Industry", "stage": "Stage", "handling": "Handling"}
+
+
+def _read_stars() -> dict:
+    """`stars.get_stars` with a Unipile client of its own, closed after."""
+    client = clients.unipile_client()
+    try:
+        return stars.get_stars(clients.firestore_client(), client)
+    finally:
+        client.close()
+
+
+def stars_notice(params) -> str:
+    """The line My Stars leaves on the list, read from its redirect."""
+    at = params.get("at", "")
+    if not re.fullmatch(r"\d{2}:\d{2}", at):
+        return ""
+    if params.get("stars") == "failed":
+        return f"Reading the starred conversations from LinkedIn failed at {at}, so nothing changed: the list shows the last successful read."
+    numbers = [params.get(name, "") for name in ("starred", "added", "removed", "unmatched")]
+    if not all(number.isdigit() for number in numbers):
+        return ""
+    starred, added, removed, unmatched = numbers
+    line = f"{starred} starred conversation{'' if starred == '1' else 's'} in LinkedIn at {at}: {added} marked, {removed} cleared."
+    return line + (f" {unmatched} matched no contact." if unmatched != "0" else "")
+
+
+def create_app(
+    settings: cfg.WebappSettings | None = None,
+    *,
+    outreach: outreach_cfg.OutreachSettings | None = None,
+    contacts: projection.Contacts | None = None,
+) -> FastAPI:
+    """Build the app: the guarded screens, the open `/health`, the frame."""
+    if settings is None:
+        outreach_cfg.load_environment()  # `.env`, then zero pacing: before any Unipile client
+        settings = cfg.get_settings()
+    if outreach is None:
+        outreach = outreach_cfg.get_settings()
+    if contacts is None:
+        contacts = projection.Contacts(clients.firestore_client)
+    if settings.dev_user is not None:
+        logger.warning("WEBAPP_DEV_USER is set: every request is treated as %s", settings.dev_user)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Before the port opens: startup has CPU on Cloud Run, a background
+        # thread would not. A failed build fails the startup, loudly.
+        if contacts.frame is None:
+            await asyncio.to_thread(contacts.rebuild)
+        yield
+
+    app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app.state.settings = settings
+    app.state.outreach = outreach
+    app.state.contacts = contacts
+    app.state.routine = routine.Routine()
+    app.add_middleware(
+        auth.IapMiddleware, audience=settings.iap_audience, allowed_email=settings.allowed_email,
+        dev_user=settings.dev_user,
+    )
+    app.mount("/static", StaticFiles(directory=render.STATIC_DIR), name="static")
+    app.include_router(contact_screen.router)
+    app.include_router(compose.router)
+    app.include_router(routine.router)
+    app.include_router(suggested.router)
+    app.include_router(document_screen.router)
+
+    @app.get("/health")
+    def health() -> dict[str, bool]:
+        return {"ok": True}
+
+    @app.get("/")
+    async def home(request: Request):
+        """The counts, and the buttons' panel: a run going is advanced first."""
+        await routine.advance(app)
+        frame = contacts.frame
+        tallies = [
+            (name, heading, projection.counts(frame, projection.VALUE_FILTERS[name])) for name, heading in COUNTED.items()
+        ]
+        return render.templates.TemplateResponse(
+            request, "home.html",
+            render.page_context(
+                request, total=frame.height, tallies=tallies, actions=routine.ACTIONS,
+                run=app.state.routine.run, running=app.state.routine.running,
+            ),
+        )
+
+    @app.get("/contacts")
+    def contacts_list(request: Request, q: str = "", sort: str = "activity_at", dir: str = "desc", page: int = 1):
+        """The list. The filters (`industry`, `function`, `seniority`,
+        `stage`, `handling`, and `sent` and `received` as `yes` or `no`)
+        are read by `projection.Filters.from_params`, which ignores a value
+        the data does not hold."""
+        frame = contacts.frame
+        known = projection.choices(frame)
+        filters = projection.Filters.from_params(request.query_params, known)
+        found, total = projection.query(
+            frame, q=q, filters=filters, sort=sort, descending=(dir != "asc"), page=page, per_page=PER_PAGE
+        )
+        pages = max(1, -(-total // PER_PAGE))
+        return render.templates.TemplateResponse(
+            request, "contacts.html",
+            render.page_context(
+                request, rows=found.to_dicts(), total=total, q=q, sort=sort, dir=dir, page=page, pages=pages,
+                choices=known, filters=filters, link={"q": q, **filters.params(), "sort": sort, "dir": dir},
+                notice=stars_notice(request.query_params) if filters.view == "stars" else "",
+            ),
+        )
+
+    @app.post("/stars")
+    async def my_stars(request: Request) -> RedirectResponse:
+        """My Stars: read which LinkedIn conversations are starred now, mark
+        and unmark the contacts in `analysis`, patch their rows, and open the
+        list of them. Inside the request: about 4 seconds on the real data. A
+        failed read writes nothing, and the list says so."""
+        at = render.local(clock.utcnow(), outreach.tz)[11:]  # HH:MM
+        try:
+            found = await asyncio.to_thread(_read_stars)
+        except Exception:
+            logger.exception("reading the starred LinkedIn conversations failed")
+            return RedirectResponse(f"/contacts?{urlencode({'view': 'stars', 'stars': 'failed', 'at': at})}", status_code=303)
+        for value, doc_ids in ((True, found["added"]), (False, found["removed"])):
+            for doc_id in doc_ids:
+                contacts.patch(doc_id, linkedin_starred=value)
+        notice = {
+            "view": "stars", "starred": found["starred"], "added": len(found["added"]),
+            "removed": len(found["removed"]), "unmatched": found["unmatched"], "at": at,
+        }
+        return RedirectResponse(f"/contacts?{urlencode(notice)}", status_code=303)
+
+    @app.post("/refresh")
+    def refresh(request: Request) -> RedirectResponse:
+        """Rebuild inside this request (about 10 seconds on the real data),
+        then return to the screen it was pressed on. A failed build keeps
+        the previous frame and answers 500; the log names the cause."""
+        try:
+            contacts.rebuild()
+        except Exception:
+            logger.exception("refresh failed; the previous frame is still served")
+            raise
+        return RedirectResponse(render.back_to(request), status_code=303)
+
+    return app

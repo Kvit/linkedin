@@ -1,0 +1,18 @@
+{
+  "object": "UserRelationsList",
+  "items": [
+    {
+      "object": "UserRelation",
+      "connection_urn": "urn:li:fsd_connection:ACoAAFIXTURERELATION0000000000000000000",
+      "created_at": 1788896278000,
+      "first_name": "Dana Reyes,",
+      "last_name": "MBA, BSN, RN, CCDS, CCS",
+      "member_id": "ACoAAFIXTURERELATION0000000000000000000",
+      "member_urn": "urn:li:fsd_profile:ACoAAFIXTURERELATION0000000000000000000",
+      "headline": "Healthcare Revenue Cycle Executive | RN | Denials",
+      "public_identifier": "danareyesrn",
+      "public_profile_url": "https://www.linkedin.com/in/danareyesrn/"
+    }
+  ],
+  "cursor": "eyJsaW1pdCI6Miwic3RhcnRJbmRleCI6Mn0="
+}

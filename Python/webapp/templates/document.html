@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}{{ file.name }}{% endblock %}
+{#- The newest requests on one link, closed until opened. -#}
+{% macro request_list(found) %}
+<details class="requests">
+  <summary>Newest {{ found|length }} request{{ "" if found|length == 1 else "s" }}</summary>
+  <table>
+    <thead><tr><th>Time</th><th>By</th><th>Counted</th><th>User agent</th></tr></thead>
+    <tbody>
+    {% for row in found %}
+      <tr><td>{{ row.at|local(tz) }}</td><td>{{ row.kind }}</td><td>{{ "yes" if row.counted else "no" }}</td><td class="wrap">{{ row.user_agent }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</details>
+{% endmacro %}
+{% from "_sort.html" import th with context %}
+{% block content %}
+<div class="contact-head">
+  <h1>{{ file.name }}</h1>
+  <a href="{{ view_url }}" target="_blank" rel="noopener" title="Opens the file in the bucket; not counted">View</a>
+</div>
+<p class="muted">{{ file.type }} &middot; {{ file.size|filesize }} &middot; updated {{ file.updated_at|local(tz) }}</p>
+
+{% if permanent %}
+<h2>Main link</h2>
+<p class="muted">One address for this file. It counts opens and cannot say who opened it.</p>
+<p class="link-line"><code>{{ permanent.url }}</code><button type="button" data-copy="{{ permanent.url }}">Copy</button></p>
+<p class="link-counts">{{ permanent.opens }} open{{ "" if permanent.opens == 1 else "s" }},
+  {%- if permanent.last_open_at %} the last at {{ permanent.last_open_at|local(tz) }},{% endif %}
+  {{ permanent.bot_requests }} bot request{{ "" if permanent.bot_requests == 1 else "s" }}</p>
+{% if requests.get(permanent.id) %}{{ request_list(requests.get(permanent.id)) }}{% endif %}
+{% endif %}
+
+<h2>New sublink</h2>
+<form method="post" action="/documents/{{ file.name|urlencode }}/links" class="filters">
+  <label>Label <input type="text" name="label" maxlength="{{ label_max }}" required size="40"
+    placeholder="a person who is not a contact, or a place"></label>
+  <button type="submit">Create sublink</button>
+</form>
+<p class="muted">A sublink is a link of its own for one recipient or one place, counted separately.</p>
+
+<h2>Sublinks</h2>
+{% if links %}
+<div class="table-scroll fit">
+<table class="list">
+  <thead><tr>
+    {{ th("recipient", "Recipient") }}{{ th("created_by", "Created by") }}{{ th("created_at", "Created") }}
+    {{ th("opens", "Opens", "num") }}{{ th("last_open_at", "Last open") }}{{ th("bot_requests", "Bot requests", "num") }}
+    {{ th("link", "Link") }}
+  </tr></thead>
+  <tbody>
+  {% for link in links %}
+    <tr>
+      <td>{{ link.label or link.doc_id }}</td>
+      <td>{{ link.created_by }}</td>
+      <td>{{ link.created_at|local(tz) }}</td>
+      <td class="num">{{ link.opens }}</td>
+      <td>{{ link.last_open_at|local(tz) }}</td>
+      <td class="num">{{ link.bot_requests }}</td>
+      <td class="link-cell"><code>{{ link.url }}</code><button type="button" data-copy="{{ link.url }}">Copy</button></td>
+    </tr>
+    {% if requests.get(link.id) %}
+    <tr class="requests"><td colspan="7">{{ request_list(requests.get(link.id)) }}</td></tr>
+    {% endif %}
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted">No sublinks yet.</p>
+{% endif %}
+<script src="/static/copy.js"></script>
+{% endblock %}

@@ -55,6 +55,15 @@ analysis.csv  /  analysis.txt
 | `main.py` | FastAPI server with `/add-profile/` and `/echo/` endpoints |
 | `functions.py` | Helper functions for profile processing (ID extraction, text joining) |
 | `collection-tocsv.py` | Export Firestore collection to CSV and TXT files |
+| `messages_sync.py` | Incrementally sync LinkedIn messages into the `messages` collection, joined to contacts (importable; the outreach service's `sync` job uses it) |
+| `profiles.py` | Profile classification with Gemini, shared by the notebooks' copies and the outreach service |
+| `linkedinmcp/` | The LinkedIn outreach service (MCP server + scheduled jobs on Cloud Run) — see [below](#outreach-service-linkedinmcp) |
+| `analysis.ipynb` | Classify profiles with Gemini, including re-classifying changed summaries |
+| `new-contacts.ipynb` | Pull new connections through Unipile, store them, then classify the unclassified backlog |
+| `send-intros.ipynb` | Send `templates/intro.md` to target-industry connections we have never messaged |
+| `templates/intro.md` | The intro message body, sent verbatim |
+| `lib/unipile/` | Unipile API client for LinkedIn contacts and messaging |
+| `tests/` | Test suite (`pytest`; `pytest -m live` hits the real API, read-only) |
 | `Dockerfile.deploy` | Docker configuration for cloud deployment |
 
 ## API Endpoints
@@ -76,8 +85,88 @@ Create a `.env` file in the project root and configure:
 |----------|-------------|----------|
 | `GOOGLE_API_KEY` | Google Gemini API key for analysis notebooks | For notebooks |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to GCP service account JSON | Optional* |
+| `UNIPILE_API_KEY` | Unipile access token | For LinkedIn ops |
+| `UNIPILE_DNS` | Unipile tenant host, e.g. `api62.unipile.com:19262` | For LinkedIn ops |
+
+Every other setting has a working default; see [the reference below](#unipile-configuration-reference) and `.env.example`.
 
 *If not set, the app looks for `vk-linkedin-master-service-account.json` in the project root.
+
+### Unipile configuration reference
+
+Every variable below is optional and shown with its default. Defaults live in
+[`lib/unipile/config.py`](lib/unipile/config.py); the pacing mechanism is in
+[`lib/unipile/pacing.py`](lib/unipile/pacing.py).
+
+**Daily caps** — per account, over a **rolling 24 hours**. Hitting one raises
+`BudgetExhausted`.
+
+Counters are held in memory and seeded by `SendBudget.reconcile`, which
+`new-contacts.ipynb` calls at the start of a run (Phase A2). It counts the last
+24 hours from the stores that outlive the process — `created_at` on the contacts
+saved to Firestore, LinkedIn's own list of sent invitations, the timestamps on
+messages sent — so those stores are the durable state and nothing is written to
+disk. Allowance returns gradually as actions age out, rather than a spent cap
+becoming a full one at midnight, and the count sees invitations sent from
+LinkedIn directly, which a local tally never could.
+
+A process that spends without reconciling first starts from zero; the budget logs
+a warning the first time that happens.
+
+| Variable | Default | What it does |
+|----------|---------|--------------|
+| `UNIPILE_MAX_INVITES_PER_DAY` | `25` | Connection invitations per day. |
+| `UNIPILE_MAX_MESSAGES_PER_DAY` | `50` | Messages per day, new chats and replies alike. |
+| `UNIPILE_MAX_PROFILE_FETCHES_PER_DAY` | `250` | Profile reads per day. The binding constraint in practice; retries of a throttled fetch count against it too. |
+
+**Pacing** — every budgeted call waits first. The gap is drawn fresh each time
+from a distribution skewed toward the short end, so the mean sits near a third
+of the way up the range (~26s for 20-40), not at the midpoint.
+
+| Variable | Default | What it does |
+|----------|---------|--------------|
+| `UNIPILE_MIN_DELAY_SECONDS` | `20` | Shortest gap between calls. Raising it is the most effective way to look less automated, and the most expensive in wall-clock time. |
+| `UNIPILE_MAX_DELAY_SECONDS` | `40` | Longest ordinary gap. |
+| `UNIPILE_LONG_PAUSE_EVERY` | `10` | Average number of calls between long breaks. Each call rolls independently, so breaks do not fall on a fixed stride. `0` disables them. |
+| `UNIPILE_LONG_PAUSE_MIN_SECONDS` | `120` | Shortest long break. |
+| `UNIPILE_LONG_PAUSE_MAX_SECONDS` | `300` | Longest long break. |
+
+At these defaults a full 250-profile day takes roughly three hours before any
+retries. That is the intended cost.
+
+**Throttle recovery** — throttling arrives as HTTP 200 with the requested
+sections empty, never as an error.
+
+| Variable | Default | What it does |
+|----------|---------|--------------|
+| `UNIPILE_THROTTLE_RETRIES` | `2` | Extra attempts for a profile whose sections were withheld. `2` means up to three fetches, waiting ~2x then ~4x the normal gap. Each attempt is charged to the daily profile budget. `0` skips the profile immediately and leaves it for a later run. |
+| `UNIPILE_MAX_CONSECUTIVE_THROTTLED` | `5` | Profiles in a row that may exhaust their retries before `get_profile` raises `ThrottleLockout` and the run stops. One complete profile resets the count. `0` disables the stop. |
+
+Retries bound one slug; the lockout bounds the run. Without it a throttled
+account keeps fetching at the 8x pace until the daily budget is gone, storing
+nothing — roughly 83 slugs and many hours for zero profiles.
+
+The backoff multiplier itself is not an environment variable: each withheld
+response doubles every subsequent gap, capped by `HumanCadence.MAX_BACKOFF`
+(`8.0`) in [`lib/unipile/pacing.py`](lib/unipile/pacing.py). A clean response
+resets it.
+
+**Provider quota** — LinkedIn reports its own invitation quota usage as a
+percentage; these act on that reading, independently of the caps above.
+
+| Variable | Default | What it does |
+|----------|---------|--------------|
+| `UNIPILE_USAGE_WARN_PCT` | `75` | Log a warning past this reported usage. |
+| `UNIPILE_USAGE_HALT_PCT` | `90` | Stop sending invitations at this reading. |
+
+**Other**
+
+| Variable | Default | What it does |
+|----------|---------|--------------|
+| `UNIPILE_ACCOUNT_ID` | resolved from `GET /accounts` | Pin a specific connected account. |
+| `UNIPILE_PROFILE_SECTIONS` | `about,experience,education,skills,certifications,languages,projects` | Sections to request. Without them the API returns no experience, education, skills or About text at all. Asking for more also gives LinkedIn more to withhold. |
+| `UNIPILE_TIMEOUT_SECONDS` | `30` | HTTP timeout per request. Reads retry 4 times over 2/10/30s on 5xx and network errors; writes are never retried. |
+
 
 ### Installation
 
@@ -153,6 +242,162 @@ python collection-tocsv.py
 
 This generates `analysis.csv` and `analysis.txt` from the `analysis` Firestore collection.
 
+## Message Sync (`messages_sync.py`)
+
+Pulls LinkedIn messages into the `messages` Firestore collection, resolving each
+one to a contact in `extracted` / `analysis` so conversations and classifications
+can be analysed together.
+
+It was `messages-sync.py` until the outreach service needed to import it (a
+hyphen is not a valid module name); the service's `sync` job calls its
+`forward_pass` and `refresh_contact_stats`.
+
+```bash
+uv run python messages_sync.py
+```
+
+Only messages Firestore does not already hold are fetched. A steady-state run
+costs about three requests and under two seconds; a first run backfills to the
+floor set by `--since` in roughly fifteen pages.
+
+| Flag | Effect |
+|------|--------|
+| `--since YYYY-MM-DD` | Oldest message to fetch. Default `2023-01-01`. Lowering it later resumes the backfill automatically; raising it discards nothing. |
+| `--dry-run` | Read everything, write nothing. |
+| `--max-pages N` | Stop after N pages per pass. Re-run to continue. |
+| `--rescan-days N` | Also re-read the last N days, refreshing edits and deletions. Default `0`. |
+| `--no-contact-join` | Skip contact resolution; store the raw provider and member ids only. |
+| `--no-contact-stats` | Skip the per-contact reply and send tallies merged into `analysis`. |
+| `--verify` | Compare the stored range against the provider and report any gap. |
+
+### How it resumes
+
+`messages` always holds a contiguous range of history. Both watermarks are
+derived from the collection on every run rather than stored beside it, so there
+is no sync state to corrupt or reset -- an interruption from a dropped
+connection, a rate limit or `--max-pages` is repaired by running the script
+again. New messages are written oldest-first so that a partial write leaves a
+shorter contiguous range rather than a gap.
+
+### Contact stats
+
+After the passes, every contact's engagement is recomputed from the whole
+collection and merged onto their `analysis` document:
+
+| Field | Meaning |
+|-------|---------|
+| `replied_total` | Replies received. `0` means messaged but never answered. |
+| `last_reply_date` | When the most recent reply arrived. Absent when there is none. |
+| `last_reply_message_id` | That reply's document id in `messages`. |
+| `sent_total` | Messages sent to this contact. |
+| `last_sent_date` | When we last wrote to them. |
+
+A **reply** is an inbound message in a conversation *we* opened. One arriving
+before our first message in that chat is someone approaching us -- a recruiter or
+a vendor -- and counting it would overstate the reply rate by 35%: 616 contacts
+have sent an inbound message, only 456 have answered one of ours. The test is
+applied per conversation and the totals roll up per contact.
+
+The fields are recomputed whole on every run rather than incremented. The
+classification notebooks replace an `analysis` document wholesale, so any field
+they do not know about is deleted the moment a contact is re-classified -- the
+next sync restores these. For the same reason the pass merges rather than sets:
+`analysis` holds the only copy of some contacts' names and email addresses.
+
+The pass is skipped, and says so, when `--max-pages` stopped the backfill
+part-way. A reply is judged against the oldest part of a conversation, which is
+exactly what a partial history lacks, so a truncated collection would not shade
+these counts -- it would zero them. Contacts with no classification yet are
+skipped rather than created.
+
+### Campaign tags
+
+Every `messages` document has `tags`. A message the outreach service sent
+through its queue carries its queue item's campaign tags, for example
+`["recovr", "stage-1"]`, matched by the message id Unipile answered the send
+with. Every other message has `[]`, including the notebooks' own sends and
+every reply. The tags are looked up again each time a message is written, so a
+`--rescan-days` run keeps them. A one-time backfill on 2026-09-11 gave the
+7,332 documents stored before then `tags: []`.
+
+### Known limits
+
+A message edited or deleted *after* it was stored is not re-read, so its stored
+copy keeps the state it had at sync time. Use `--rescan-days` to refresh a recent
+window. Attachments are stored as metadata only; documents carrying any are
+flagged `attachments_fetched: False` for a later pass.
+
+Read state is not recoverable at all. `seen` and `seen_by` come back as `0` and
+`{}` for every LinkedIn message in both directions -- including ones a contact
+demonstrably read, since they replied to them -- so whether someone opened a
+message cannot be known from this data. A reply is the only evidence of
+engagement it holds.
+
+## Intro Campaign (`send-intros.ipynb`)
+
+Sends the message in `templates/intro.md`, unchanged, to every first-degree
+connection classified into a target industry that no message has ever gone to.
+Open the notebook and run it top to bottom; `DRY_RUN = True` is the default.
+
+Phase A0 runs `messages_sync.py` as a subprocess before anything reads
+`analysis`, so `sent_total` reflects today rather than whenever that script was
+last run by hand. It writes to Firestore even under `DRY_RUN` -- it mirrors your
+own mailbox rather than acting on LinkedIn, and a dry run built on a stale
+`sent_total` would name the wrong candidates, which is the one thing a dry run
+exists to get right. A non-zero exit stops the notebook instead of quietly
+selecting from old data. `SYNC_MESSAGES_FIRST = False` skips it.
+
+Candidate selection is driven from `GET /users/relations` rather than from
+Firestore. `memberDistance` on a stored contact is whatever it was when the
+profile was scraped and is never refreshed: on the first real run, 32 of 173
+candidates -- 18% -- were stored as second-degree despite being connections
+today, so a Firestore-side distance filter would silently drop nearly a fifth of
+the campaign. The relation list is also the only place the `ACoAA` provider id
+the send endpoints take can be had; `analysis` does not hold it.
+
+### The `handling` override
+
+A contact whose `handling` field in `analysis` is `exclude` or `manual` is never
+messaged, whatever their industry says. `exclude` is a decision never to write to
+them; `manual` reserves them for a personal message that a templated intro
+arriving first would pre-empt. The field is set by hand -- 85 of 28,318
+documents carry one -- which makes it the most deliberate signal in the
+collection, so it outranks every automatic one.
+
+Matched after trimming and lowercasing, because a hand-maintained field collects
+stray capitals and padding and a near-miss here fails open: it sends the message
+anyway. Edit `HANDLING_HOLDS` in the notebook's configuration cell to change
+which values hold a contact back.
+
+### Three guards against a duplicate message
+
+| Guard | Source | Catches |
+|-------|--------|---------|
+| an open conversation | LinkedIn, live | anything, including a chat *they* opened and we never answered |
+| `sent_total` | `analysis`, refreshed by Phase A0 | contacts messaged before this campaign existed |
+| `intro_sent_at` | `analysis`, written by the notebook | a re-run before the next message sync |
+
+They are not redundant. `sent_total` is **absent**, not zero, for someone never
+written to -- 4,906 of the 4,912 -- and absent entirely for anyone messaged
+below the `--since` floor of the last sync, so it narrows the list rather than
+protecting it. The live chat map is what protects it. `intro_sent_at` is a
+separate field because `refresh_contact_stats` deletes `sent_total` from any
+contact whose messages it cannot find.
+
+`select_intro_candidates` in `functions.py` holds the whole filter and is
+tested; the notebook only orchestrates.
+
+### Pacing
+
+Sends go through `send_message` / `start_chat`, which enforce the daily cap and
+wait one `HumanCadence` interval first -- there is no path from the notebook
+that skips them. Gaps are 20-40s drawn from a right-skewed distribution, with a
+random 2-5 minute break averaging one every 10 sends, because LinkedIn watches
+the rhythm of actions and not only their count. A full 50-message day is
+therefore around 40 minutes of wall clock. `RateLimited` or `AccountRestricted` stops
+the run; re-running later resumes, and Phase C picks up the conversations the
+previous run opened.
+
 ## AI Classification (`analysis.ipynb`)
 
 AI classification is **not automatic**. You run this notebook manually whenever you want to process new profiles.
@@ -163,9 +408,17 @@ The notebook uses Google Gemini to classify each profile into three dimensions:
 
 | Field | Values |
 |-------|--------|
-| `industry` | RCM, Pathology, Medical Lab, Hospital, Health IT, Health Insurance Payer, Pharma, Other Healthcare, Non-Healthcare |
+| `industry` | RCM, Pathology, Medical Lab, Physician Practice, Hospital, Health IT, Health Insurance Payer, Pharma, Other Healthcare, Non-Healthcare |
 | `function` | Operations, Finance, IT, Clinical, Executive, Consulting, Owner, Sales & Marketing, Other |
 | `seniority` | Executive, VP, Director, Manager, Staff, Owner, Unknown |
+
+All three fields describe the person's **current** role. `industry` is the employer's business, and
+laboratories are split by owner because that is what decides who buys: `Medical Lab` is a lab that is
+independent or owned by a physician practice, `Pathology` is a pathology practice (including its lab),
+`Physician Practice` is a practice with no lab in evidence, and hospital-owned labs and pathology
+departments stay under `Hospital`. Functional executives take their domain (a CFO is `Finance`, not
+`Executive`); founders take `seniority = Owner`. The vocabulary is enforced by `Literal` types on the
+`ProfileAnalysis` schema, so Gemini cannot return a label outside these lists.
 
 ### How the notebook works
 
@@ -181,6 +434,7 @@ The notebook is incremental — it does not re-call Gemini for records that are 
 4. **Phase D** — Send only the flagged subset to Gemini. Results are written back to `analysis`.
 
 To force reclassification of every record (e.g. after changing the prompt), set `REPROCESS_ALL = True` in the configuration cell before running.
+The taxonomy changed on 2026-09-08 (`Medical Lab`, `Pathology` and `RCM` were redefined, `Physician Practice` added), so records classified before that date must be reprocessed once.
 
 ### Setup
 
@@ -191,3 +445,260 @@ GOOGLE_API_KEY=your-api-key-here
 ```
 
 Note: The core API server (`main.py`) does not require Gemini — it only uses Firestore.
+
+## Pipeline Classification (`pipeline-classify.py`)
+
+Reads every conversation in `messages` and writes a sales-pipeline stage onto the
+contact's `analysis` document with Gemini. The rules live in `pipeline.py`, so
+the same code classifies one contact from another script the moment a message
+arrives.
+
+```bash
+uv run python pipeline-classify.py --dry-run --limit 30   # first look; read pipeline-review.csv
+uv run python pipeline-classify.py                        # incremental
+```
+
+| Flag | Effect |
+|------|--------|
+| `--dry-run` | Call Gemini but write nothing to Firestore. Still billed; the review CSV is the point. |
+| `--limit N` | At most N Gemini calls, newest conversations first. |
+| `--contact DOC_ID` | Only this contact, whatever is stored. Repeatable. |
+| `--reprocess-all` | Reclassify everyone with an inbound message, e.g. after a prompt change. |
+| `--concurrency N` | Gemini calls in flight at once. Default 4. Many 429 failures mean your tier is lower: use 1 and check the rate limits in AI Studio. |
+| `--thinking-level L` | `low` (default, the docs' recommendation for classification), `medium` or `high`. Recorded on every CSV row. |
+| `--csv PATH` | Where the review file goes. Default `pipeline-review.csv`. |
+
+### Stages
+
+| `pipeline_stage` | Meaning |
+|------------------|---------|
+| `lead` | Showed interest: asked how it works or what it costs, described their denials problem, asked for a call or material, offered an introduction. |
+| `prospect` | The default. The contact was selected by industry and seniority targeting, and nothing they wrote changes that: a courtesy reply -- "thanks for connecting", "will keep it in mind" -- or no reply at all. |
+| `soft_no` | A circumstance stops them, not a lack of interest: between roles, not the decision-maker, workload or budget, stepped away "at present". The obstacle can expire, so they keep receiving product updates. |
+| `reject` | They say they do not want it: "not interested", "no need", covered by another vendor and not looking to change. A softening phrase -- "at this time", "right now" -- is politeness, not a reason, and does not make it a `soft_no`. |
+| `not_relevant` | Not a buyer at all, in any timeframe: recruiting, selling to us, asking for career advice. |
+| `unknown` | The text cannot be read at all. Readable text with no signal is `prospect`. |
+
+The line between `reject` and `soft_no` is what the refusal speaks to. A no about
+their **interest** is `reject`, however politely hedged. A no about their
+**circumstances** is `soft_no`, because the obstacle can expire and they never
+said the product was unwanted.
+
+Gemini reads the contact's profile `summary`, the `industry`, `function` and
+`seniority` already on file, and the whole conversation. The three
+classifications are shown as given and are never re-judged -- the model returns
+a stage and a reason, nothing else. Target-market fit is not part of the label:
+a hospital executive who asks about the product is a `lead`. Combine the two at
+query time -- `pipeline_stage == "lead"` and `industry` in `TARGET_INDUSTRIES`
+-- for an outreach list.
+
+Only contacts with at least one inbound message reach the model (617 today); one
+message is enough, since a single "no, thank you" disqualifies. The 1,299
+contacts who never answered are `prospect` by rule with no call. A contact with
+no `analysis` document is skipped, never created.
+
+The call uses `gemini-3.8-flash` in JSON mode with a Pydantic schema, reads
+`response.parsed`, runs at `thinking_level=low` by default (the docs'
+recommendation for classification), leaves temperature at its default, and has
+retries on -- the SDK ships with them off. Calls run four at a time through the
+async client.
+
+### Checking the rulings
+
+Every row of `pipeline-review.csv` has the transcript, the stage, the model's
+one-sentence reason and the thinking level it ran at, on dry runs too. To see
+whether more reasoning changes the calls:
+
+```bash
+uv run python pipeline-classify.py --dry-run --reprocess-all --thinking-level medium --csv pipeline-review-medium.csv
+```
+
+writes a second file to diff against the first without touching Firestore. If
+`medium` wins, change `DEFAULT_THINKING_LEVEL` in `pipeline.py`, run
+`PIPELINE_THINKING_LEVEL=medium uv run pytest test_gemini_pipeline.py`, then
+`--reprocess-all` to re-stage everyone.
+
+### Fields
+
+| Field | Meaning |
+|-------|---------|
+| `pipeline_stage` | One of the six stages. |
+| `pipeline_reason` | One sentence from the model naming the words that decided it, or `messaged, no reply yet`. |
+| `pipeline_classified_at` | When. Server timestamp. |
+| `pipeline_message_id` | The inbound message the stage was read from. Absent for the rule. |
+
+### Re-runs
+
+`pipeline_message_id` is the incremental key. When `messages_sync.py` stores a
+newer inbound message from a contact, the next run rebuilds their whole
+transcript and classifies again; the latest signal wins, so an interested
+contact who later declines becomes `reject`. Our own follow-ups never trigger a
+reclassification, and neither does a changed profile summary or a re-run of
+`analysis.ipynb`. A Gemini failure writes nothing, so the contact is queued
+again next run. The rule never overwrites a stage the model assigned, and a run
+with nothing new writes nothing.
+
+Fields are merged, never set: `analysis` holds the only copy of some contacts'
+names and emails. `collection-tocsv.py` exports them with everything else.
+
+### One contact at a time
+
+For a webhook or a sync hook, `pipeline.classify_contact` reads only that
+contact's messages and applies the same rules. It is idempotent: with nothing
+new to read it makes no call and no write, so it is safe on every event,
+including our own outbound messages.
+
+```python
+import asyncio
+from google.cloud import firestore
+from pipeline import classify_contact, gemini_client
+
+db = firestore.Client(project="vk-linkedin", database="linkedin")
+run = asyncio.run(classify_contact(db, gemini_client(), "some-linkedin-slug"))
+if run.rows:
+    print(run.rows[0]["stage"], run.rows[0]["reason"])
+```
+
+Inside async code (a FastAPI handler), `await classify_contact(...)` directly.
+One Gemini client per event loop: its HTTP pool binds to the loop it first runs
+on, so build it where the loop lives, and classify several contacts from
+synchronous code with one `run_pipeline(db, client, contacts=[...])` rather than
+a loop of `asyncio.run`.
+
+### Tests
+
+`uv run pytest tests/test_pipeline.py` covers the transcript, the planner and
+the prompt without credentials. `uv run pytest test_gemini_pipeline.py -v` hits
+the model with one conversation per stage plus rule probes, eleven calls in one
+event loop; it is not collected by the default run and skips without
+`GOOGLE_API_KEY`.
+
+## Outreach service (`linkedinmcp/`)
+
+A Claude agent works the **daily increment** through this service, while the
+notebooks above stay the tools for **volume** work (backlogs, bulk intro runs).
+It runs on Cloud Run as `linkedin-outreach`: an MCP server the agent and Claude
+Code connect to, plus three scheduled jobs — `tick` (sends the next due queued
+message, or fetches one new connection's profile), `sync` (mirrors messages and
+reacts to replies) and `daily` (queues the day's intros and new connections).
+Every send passes code-level guards and a claim/settle protocol, so nothing goes
+out twice and the agent can only queue, never send.
+
+Its MCP tools follow the scripts above, one tool per step with the script's
+settings as parameters: `sync_messages` (`messages_sync.py`), `get_contacts`
+(`new-contacts.ipynb` A-D), `classify_contacts` (its Phase E),
+`classify_stages` (`pipeline-classify.py`) and `send_intro`
+(`send-intros.ipynb`, queued for the tick to send). Each runs as a job the
+agent follows with `get_job`; a dry run spends nothing.
+
+**Do not run `send-intros.ipynb` Phase E while the service's `outreach-tick`
+Scheduler job is resumed** — the service queues intros itself, and the
+notebook's Phase E checks only its own in-memory snapshot.
+
+Everything else — tools, jobs, configuration, deploying, scheduling, the Claude
+platform setup and the switches that turn sending on — is in
+[`linkedinmcp/README.md`](linkedinmcp/README.md).
+
+## Contacts webapp (`webapp/`)
+
+A private web application for working the contacts by hand: every contact in
+one sortable, searchable table, counts by industry, stage and handling, and one
+contact's classification, conversation and queued messages on one screen. It
+runs on Cloud Run as `linkedin-contacts` behind Google sign-in for one account,
+and is built in approved stages. Running it, testing it and deploying it are in
+[`webapp/README.md`](webapp/README.md).
+
+## LinkedIn operations (`lib/unipile`)
+
+Replaces LinkedIn Helper for contact and messaging work, using the Unipile API.
+It is a pure API client: HTTP, typed models, pagination and send budgets. It
+does not touch Firestore and does not run campaigns -- orchestration stays in
+your scripts and notebooks.
+
+```python
+from functions import join_keys
+from lib.unipile import SUMMARY_KEYS, UnipileClient, to_lh_document
+
+with UnipileClient.from_env() as li:
+    for relation in li.users.iter_relations():
+        if relation.public_identifier in already_in_firestore:
+            continue
+
+        profile = li.users.get_profile(relation.public_identifier)
+        if not profile.is_complete:
+            continue  # LinkedIn throttled sections; retry another day
+
+        document = to_lh_document(profile)
+        document["summary"] = join_keys(document, SUMMARY_KEYS)
+        db.collection("extracted").document(document["id"]).set(document)
+```
+
+The resulting document matches the LinkedIn Helper shape, so the same Gemini prompt
+and `analysis.ipynb` work on both sources unchanged.
+
+### Pacing and throttling
+
+LinkedIn watches the *rhythm* of calls, not just their number, so the client
+waits a randomised, browsing-like interval before every profile fetch, message
+and invitation: mostly 20-40s, skewed short, with a 2-5 minute break roughly
+every 10 calls. All of it is tunable in `.env` (`UNIPILE_MIN_DELAY_SECONDS`,
+`UNIPILE_LONG_PAUSE_EVERY`, ...). At that pace a full 250-profile day takes
+about three hours, which is the point.
+
+Throttling does not arrive as an error. LinkedIn returns HTTP 200 with the
+withheld sections empty, named in `throttled_sections`. When that happens the
+client says so, doubles every subsequent gap, and retries the fetch
+(`UNIPILE_THROTTLE_RETRIES`, default 2); a clean response restores the normal
+pace. Each attempt costs a fetch from the daily budget, because LinkedIn
+counted it either way.
+
+```
+LinkedIn withheld skills, experience for jane-doe (attempt 1 of 3) -- throttling
+detected; pausing longer, then trying again.
+LinkedIn is throttling -- waiting 2m 38s before the next call (pace slowed 4x).
+```
+
+A profile whose sections never arrive is **never stored**: `to_lh_document`
+refuses to build a document from an incomplete profile, so a classification can
+never be cached from data LinkedIn withheld. Those slugs are simply retried on a
+later run.
+
+When throttling does not clear, the retries alone would not stop anything — they
+bound one slug, not the run. So after `UNIPILE_MAX_CONSECUTIVE_THROTTLED`
+profiles in a row exhaust their retries (default 5), `get_profile` raises
+`ThrottleLockout` and the caller stops for the day. A single complete profile
+resets the count.
+
+
+`new-contacts.ipynb` runs exactly this loop and then classifies. Its two halves
+are deliberately independent: the fetch phase stores documents in `extracted`,
+and the classify phase ignores what that phase just fetched, asking Firestore
+instead which documents in `extracted` have no complete document in `analysis`.
+So a run interrupted between the two, or a profile that arrived through
+`POST /add-profile/`, is picked up by the next run rather than sitting stored and
+unclassified forever.
+
+### Things worth knowing
+
+- **Reads retry, writes never.** Invitations and messages are not idempotent, so
+  a retry after a timeout would send a second one to a real person.
+- **Budgets are enforced, not advisory.** Every invitation, message and profile
+  fetch is capped over a rolling 24 hours and delayed by a random interval. The
+  counters are counted from Firestore and LinkedIn at the start of each run, so a
+  notebook restart does not hand back a fresh allowance.
+- **The count undercounts profile fetches.** A fetch LinkedIn withheld, or one
+  whose summary was too short to store, cost a read but saved no contact, so no
+  later count can see it. Within a run those fetches are still charged normally.
+- **Incomplete profiles must not be stored.** LinkedIn returns throttled
+  sections as empty with HTTP 200. Check `profile.is_complete` before writing,
+  or the pipeline caches a classification built from partial data.
+- **Restriction trips a circuit breaker.** After a `403 account_restricted` the
+  client refuses further writes, though withdrawing invitations still works.
+
+### Running the tests
+
+```bash
+uv run pytest                 # unit tests, fully mocked
+uv run pytest -m live         # read-only smoke tests against the real account
+```
+

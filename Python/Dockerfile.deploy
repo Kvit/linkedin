@@ -10,8 +10,11 @@ RUN pip install uv
 COPY pyproject.toml /app/
 COPY uv.lock* /app/
 
-# Install dependencies
-RUN uv sync --no-dev
+# Install dependencies. --no-install-project because this image carries only
+# main.py and functions.py, not the package `pyproject.toml` now declares; the
+# CMD passes --no-sync for the same reason -- an unguarded `uv run` re-syncs,
+# tries to build the project, and fails on the README this image never copies.
+RUN uv sync --no-dev --no-install-project
 
 # Copy application code
 COPY main.py /app
@@ -24,4 +27,4 @@ EXPOSE 8080
 COPY .env /etc/environment
 
 # Run app.py when the container launches
-CMD ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uv", "run", "--no-sync", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
